@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 5 de 6)  ·  2 sucursales + bodega central
+--  PostgreSQL 16  ·  Esquema v1.1  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -760,16 +760,47 @@ CREATE TABLE turno_caja (
   fecha_apertura         timestamptz   NOT NULL DEFAULT now(),
   monto_inicial_nio      numeric(12,2) NOT NULL DEFAULT 0 CHECK (monto_inicial_nio >= 0),
   monto_inicial_usd      numeric(12,2) NOT NULL DEFAULT 0 CHECK (monto_inicial_usd >= 0),
+  -- Fondo que debía haber según el cierre anterior (NULL = primer turno de la caja)
+  fondo_esperado_nio     numeric(12,2),
+  fondo_esperado_usd     numeric(12,2),
+  diferencia_apertura_nio numeric(12,2) GENERATED ALWAYS AS (monto_inicial_nio - fondo_esperado_nio) STORED,
+  diferencia_apertura_usd numeric(12,2) GENERATED ALWAYS AS (monto_inicial_usd - fondo_esperado_usd) STORED,
   estado                 varchar(10)   NOT NULL DEFAULT 'ABIERTO' CHECK (estado IN ('ABIERTO','CERRADO')),
   usuario_cierre_id      bigint        REFERENCES usuario(id),
   fecha_cierre           timestamptz,
+  -- Al cerrar: efectivo que se retira y lo que queda como fondo del día siguiente
+  retiro_nio             numeric(12,2) CHECK (retiro_nio >= 0),
+  retiro_usd             numeric(12,2) CHECK (retiro_usd >= 0),
+  fondo_siguiente_nio    numeric(12,2) CHECK (fondo_siguiente_nio >= 0),
+  fondo_siguiente_usd    numeric(12,2) CHECK (fondo_siguiente_usd >= 0),
+  justificacion_diferencia varchar(500),
+  cierre_forzado         boolean       NOT NULL DEFAULT false,
   observaciones          varchar(500),
   CONSTRAINT ck_turno_cierre CHECK (
-    (estado = 'ABIERTO' AND fecha_cierre IS NULL AND usuario_cierre_id IS NULL) OR
-    (estado = 'CERRADO' AND fecha_cierre IS NOT NULL AND usuario_cierre_id IS NOT NULL))
+    (estado = 'ABIERTO' AND fecha_cierre IS NULL AND usuario_cierre_id IS NULL AND fondo_siguiente_nio IS NULL) OR
+    (estado = 'CERRADO' AND fecha_cierre IS NOT NULL AND usuario_cierre_id IS NOT NULL
+                        AND fondo_siguiente_nio IS NOT NULL AND fondo_siguiente_usd IS NOT NULL))
 );
 -- Solo un turno abierto por caja
 CREATE UNIQUE INDEX ux_turno_abierto_por_caja ON turno_caja (caja_id) WHERE estado = 'ABIERTO';
+
+-- Billetes y monedas válidos (para el conteo por denominación)
+CREATE TABLE denominacion (
+  moneda  char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  valor   numeric(10,2) NOT NULL CHECK (valor > 0),
+  tipo    varchar(7)    NOT NULL CHECK (tipo IN ('BILLETE','MONEDA')),
+  activa  boolean       NOT NULL DEFAULT true,
+  PRIMARY KEY (moneda, valor, tipo)
+);
+
+-- Conteo del efectivo al cierre, billete por billete
+CREATE TABLE cierre_denominacion (
+  turno_id  bigint        NOT NULL REFERENCES turno_caja(id),
+  moneda    char(3)       NOT NULL,
+  valor     numeric(10,2) NOT NULL,
+  cantidad  integer       NOT NULL CHECK (cantidad >= 0),
+  PRIMARY KEY (turno_id, moneda, valor)
+);
 
 -- Retiros / ingresos de efectivo durante el turno (pago a proveedor, cambio de billetes…)
 CREATE TABLE caja_movimiento (
@@ -949,6 +980,8 @@ CREATE TRIGGER tg_detalle_inmutable BEFORE UPDATE OR DELETE ON venta_detalle
 CREATE TRIGGER tg_detalle_pieza_inmutable BEFORE UPDATE OR DELETE ON venta_detalle_pieza
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
 CREATE TRIGGER tg_pago_inmutable BEFORE UPDATE OR DELETE ON venta_pago
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+CREATE TRIGGER tg_cierre_denominacion_inmutable BEFORE UPDATE OR DELETE ON cierre_denominacion
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
 CREATE TRIGGER tg_cierre_inmutable BEFORE UPDATE OR DELETE ON cierre_caja_detalle
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
@@ -1222,24 +1255,58 @@ END $$;
 -- ---------------------------------------------------------------------
 -- 9.2 Caja
 -- ---------------------------------------------------------------------
+-- Fondo que dejó el último cierre de la caja (lo que debería haber al abrir)
+CREATE OR REPLACE FUNCTION fn_fondo_sugerido(p_caja integer)
+RETURNS TABLE (fondo_nio numeric, fondo_usd numeric, turno_anterior bigint)
+LANGUAGE sql STABLE AS $$
+  SELECT t.fondo_siguiente_nio, t.fondo_siguiente_usd, t.id
+    FROM turno_caja t
+   WHERE t.caja_id = p_caja AND t.estado = 'CERRADO'
+   ORDER BY t.fecha_cierre DESC
+   LIMIT 1
+$$;
+
+-- Apertura: se declara el efectivo contado. Si no coincide con el fondo que dejó el cierre anterior,
+-- la diferencia queda registrada y, si supera la tolerancia, se alerta al admin.
 CREATE OR REPLACE FUNCTION fn_abrir_turno(
   p_usuario bigint, p_caja integer, p_inicial_nio numeric DEFAULT 0, p_inicial_usd numeric DEFAULT 0
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
-DECLARE v_id bigint; v_sucursal integer;
+DECLARE v_id bigint; v_sucursal integer; v_f record; v_dif numeric;
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'CAJA_ABRIR');
   SELECT sucursal_id INTO v_sucursal FROM caja WHERE id = p_caja AND activa;
   IF v_sucursal IS NULL THEN RAISE EXCEPTION 'La caja % no existe o está inactiva', p_caja; END IF;
   PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
+  IF EXISTS (SELECT 1 FROM turno_caja WHERE caja_id = p_caja AND estado = 'ABIERTO') THEN
+    RAISE EXCEPTION 'La caja % ya tiene un turno abierto: ciérrelo antes de abrir otro', p_caja;
+  END IF;
 
+  SELECT * INTO v_f FROM fn_fondo_sugerido(p_caja);
   BEGIN
-    INSERT INTO turno_caja (caja_id, usuario_apertura_id, monto_inicial_nio, monto_inicial_usd)
-    VALUES (p_caja, p_usuario, p_inicial_nio, p_inicial_usd)
+    INSERT INTO turno_caja (caja_id, usuario_apertura_id, monto_inicial_nio, monto_inicial_usd,
+                            fondo_esperado_nio, fondo_esperado_usd)
+    VALUES (p_caja, p_usuario, coalesce(p_inicial_nio, 0), coalesce(p_inicial_usd, 0),
+            v_f.fondo_nio, v_f.fondo_usd)
     RETURNING id INTO v_id;
   EXCEPTION WHEN unique_violation THEN
     RAISE EXCEPTION 'La caja % ya tiene un turno abierto', p_caja;
   END;
+
+  IF v_f.turno_anterior IS NOT NULL THEN
+    v_dif := (coalesce(p_inicial_nio, 0) - v_f.fondo_nio)
+           + (coalesce(p_inicial_usd, 0) - v_f.fondo_usd) * fn_tipo_cambio_vigente();
+    IF abs(v_dif) > coalesce(fn_parametro_num('CAJA_TOLERANCIA_DIFERENCIA_NIO'), 0) THEN
+      INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+      VALUES ('CAJA_DIFERENCIA_APERTURA',
+              format('Apertura con diferencia de C$ %s en %s', round(v_dif, 2), (SELECT nombre FROM sucursal WHERE id = v_sucursal)),
+              jsonb_build_object('turno_id', v_id, 'turno_anterior', v_f.turno_anterior,
+                                 'esperado_nio', v_f.fondo_nio, 'contado_nio', p_inicial_nio,
+                                 'esperado_usd', v_f.fondo_usd, 'contado_usd', p_inicial_usd,
+                                 'diferencia_total_nio', round(v_dif, 2), 'abierto_por', p_usuario),
+              v_sucursal);
+    END IF;
+  END IF;
   RETURN v_id;
 END $$;
 
@@ -1284,27 +1351,62 @@ LANGUAGE sql STABLE AS $$
    ORDER BY p.mp, p.mon
 $$;
 
--- Cierre de turno ("arqueo"). p_contado:
---   [{"metodo":"EFECTIVO","moneda":"NIO","monto":5230.50},
---    {"metodo":"EFECTIVO","moneda":"USD","monto":40},
---    {"metodo":"TARJETA","moneda":"NIO","monto":3100}]
--- Lo no informado se toma como 0 contado.
+-- Cierre de turno (arqueo ciego).
+--   p_efectivo:     conteo por denominación
+--                   [{"moneda":"NIO","valor":1000,"cantidad":3}, {"moneda":"USD","valor":20,"cantidad":2}, ...]
+--   p_no_efectivo:  totales de vouchers / transferencias [{"metodo":"TARJETA","monto":3100}, ...]
+--   p_retiro_nio/usd: efectivo que se retira; lo que queda es el fondo del día siguiente
+--   p_justificacion: obligatoria solo si la diferencia total supera CAJA_TOLERANCIA_DIFERENCIA_NIO.
+--                    Quien cierra no ve montos: solo se le pide explicar.
+-- Devuelve el ticket de cierre (sin diferencias).
 CREATE OR REPLACE FUNCTION fn_cerrar_turno(
-  p_usuario bigint, p_turno bigint, p_contado jsonb, p_observaciones text DEFAULT NULL
-) RETURNS TABLE (metodo text, moneda char(3), esperado numeric, contado numeric, diferencia numeric)
+  p_usuario        bigint,
+  p_turno          bigint,
+  p_efectivo       jsonb,
+  p_no_efectivo    jsonb   DEFAULT '[]',
+  p_retiro_nio     numeric DEFAULT 0,
+  p_retiro_usd     numeric DEFAULT 0,
+  p_justificacion  text    DEFAULT NULL,
+  p_observaciones  text    DEFAULT NULL
+) RETURNS jsonb
 LANGUAGE plpgsql AS $$
-DECLARE v_estado text; v_sucursal integer;
+DECLARE
+  v_t record; v_sucursal integer; v_contado_nio numeric; v_contado_usd numeric;
+  v_dif_total numeric; v_tol numeric; v_invalida text;
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'CAJA_CERRAR');
-
-  SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
+  SELECT t.*, c.sucursal_id AS suc INTO v_t
     FROM turno_caja t JOIN caja c ON c.id = t.caja_id
    WHERE t.id = p_turno
    FOR UPDATE OF t;                                 -- nadie más cierra/vende a la vez
-  IF v_estado IS NULL THEN RAISE EXCEPTION 'El turno % no existe', p_turno; END IF;
-  IF v_estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El turno % ya está cerrado', p_turno; END IF;
+  IF v_t.id IS NULL THEN RAISE EXCEPTION 'El turno % no existe', p_turno; END IF;
+  IF v_t.estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El turno % ya está cerrado', p_turno; END IF;
+  v_sucursal := v_t.suc;
   PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
 
+  -- Conteo por denominación
+  SELECT string_agg(format('%s %s', x->>'moneda', x->>'valor'), ', ') INTO v_invalida
+    FROM jsonb_array_elements(coalesce(p_efectivo, '[]'::jsonb)) x
+   WHERE NOT EXISTS (SELECT 1 FROM denominacion d
+                      WHERE d.moneda = upper(x->>'moneda') AND d.valor = (x->>'valor')::numeric AND d.activa)
+      OR coalesce((x->>'cantidad')::integer, -1) < 0;
+  IF v_invalida IS NOT NULL THEN RAISE EXCEPTION 'Denominación o cantidad inválida: %', v_invalida; END IF;
+
+  INSERT INTO cierre_denominacion (turno_id, moneda, valor, cantidad)
+  SELECT p_turno, upper(x->>'moneda'), (x->>'valor')::numeric, sum((x->>'cantidad')::integer)
+    FROM jsonb_array_elements(coalesce(p_efectivo, '[]'::jsonb)) x
+   GROUP BY 2, 3;
+
+  SELECT coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'NIO'), 0),
+         coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'USD'), 0)
+    INTO v_contado_nio, v_contado_usd
+    FROM cierre_denominacion WHERE turno_id = p_turno;
+
+  IF coalesce(p_retiro_nio, 0) > v_contado_nio OR coalesce(p_retiro_usd, 0) > v_contado_usd THEN
+    RAISE EXCEPTION 'No se puede retirar más efectivo del contado (C$ %, US$ %)', v_contado_nio, v_contado_usd;
+  END IF;
+
+  -- Esperado vs contado por método y moneda
   INSERT INTO cierre_caja_detalle (turno_id, metodo_pago_id, moneda, monto_esperado, monto_contado)
   SELECT p_turno,
          coalesce(e.metodo_pago_id, c.metodo_pago_id),
@@ -1313,23 +1415,138 @@ BEGIN
          coalesce(c.monto, 0)
     FROM fn_resumen_turno(p_turno) e
     FULL JOIN (
-      SELECT m.id AS metodo_pago_id, (x->>'moneda')::char(3) AS moneda, sum((x->>'monto')::numeric) AS monto
-        FROM jsonb_array_elements(coalesce(p_contado, '[]'::jsonb)) x
-        JOIN metodo_pago m ON m.codigo = upper(x->>'metodo')
-       GROUP BY m.id, x->>'moneda'
-    ) c ON c.metodo_pago_id = e.metodo_pago_id AND c.moneda = e.moneda;
+      SELECT (SELECT id FROM metodo_pago WHERE es_efectivo) AS metodo_pago_id, 'NIO'::char(3) AS moneda, v_contado_nio AS monto
+      UNION ALL
+      SELECT (SELECT id FROM metodo_pago WHERE es_efectivo), 'USD'::char(3), v_contado_usd
+      UNION ALL
+      SELECT m.id, 'NIO'::char(3), sum((x->>'monto')::numeric)
+        FROM jsonb_array_elements(coalesce(p_no_efectivo, '[]'::jsonb)) x
+        JOIN metodo_pago m ON m.codigo = upper(x->>'metodo') AND NOT m.es_efectivo
+       GROUP BY m.id
+    ) c ON c.metodo_pago_id = e.metodo_pago_id AND c.moneda = e.moneda
+   WHERE coalesce(e.monto_esperado, 0) <> 0 OR coalesce(c.monto, 0) <> 0;
+
+  SELECT coalesce(sum(CASE WHEN moneda = 'USD' THEN diferencia * fn_tipo_cambio_vigente() ELSE diferencia END), 0)
+    INTO v_dif_total FROM cierre_caja_detalle WHERE turno_id = p_turno;
+  v_tol := coalesce(fn_parametro_num('CAJA_TOLERANCIA_DIFERENCIA_NIO'), 0);
+
+  IF abs(v_dif_total) > v_tol THEN
+    IF coalesce(length(trim(p_justificacion)), 0) < 10 THEN
+      RAISE EXCEPTION 'El conteo no cuadra con lo registrado. Revise el conteo o escriba una justificación (mínimo 10 caracteres)'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+    VALUES ('CAJA_DIFERENCIA',
+            format('Cierre con diferencia de C$ %s en %s', round(v_dif_total, 2), (SELECT nombre FROM sucursal WHERE id = v_sucursal)),
+            jsonb_build_object('turno_id', p_turno, 'diferencia_total_nio', round(v_dif_total, 2),
+                               'tolerancia_nio', v_tol, 'cerrado_por', p_usuario, 'justificacion', p_justificacion),
+            v_sucursal);
+  END IF;
 
   UPDATE turno_caja
      SET estado = 'CERRADO', fecha_cierre = now(), usuario_cierre_id = p_usuario,
+         retiro_nio = coalesce(p_retiro_nio, 0), retiro_usd = coalesce(p_retiro_usd, 0),
+         fondo_siguiente_nio = v_contado_nio - coalesce(p_retiro_nio, 0),
+         fondo_siguiente_usd = v_contado_usd - coalesce(p_retiro_usd, 0),
+         justificacion_diferencia = nullif(trim(p_justificacion), ''),
          observaciones = p_observaciones
    WHERE id = p_turno;
 
-  RETURN QUERY
-    SELECT m.nombre::text, d.moneda, d.monto_esperado, d.monto_contado, d.diferencia
-      FROM cierre_caja_detalle d JOIN metodo_pago m ON m.id = d.metodo_pago_id
-     WHERE d.turno_id = p_turno
-     ORDER BY m.id, d.moneda;
+  UPDATE alerta SET atendida_por = p_usuario, atendida_at = now()
+   WHERE tipo = 'CAJA_SIN_CERRAR' AND (detalle->>'turno_id')::bigint = p_turno AND atendida_at IS NULL;
+
+  RETURN fn_ticket_cierre(p_turno);
 END $$;
+
+-- Cierre forzado por el admin (nadie cerró). No hay conteo: se asume lo esperado, y la
+-- diferencia real aparecerá al contar en la próxima apertura.
+CREATE OR REPLACE FUNCTION fn_cierre_forzado(p_admin bigint, p_turno bigint, p_motivo text)
+RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE v_t record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'CAJA_CIERRE_FORZADO');
+  IF coalesce(length(trim(p_motivo)), 0) < 10 THEN RAISE EXCEPTION 'Indique el motivo del cierre forzado'; END IF;
+  SELECT t.* INTO v_t FROM turno_caja t WHERE t.id = p_turno FOR UPDATE;
+  IF v_t.id IS NULL OR v_t.estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El turno % no está abierto', p_turno; END IF;
+
+  INSERT INTO cierre_caja_detalle (turno_id, metodo_pago_id, moneda, monto_esperado, monto_contado)
+  SELECT p_turno, e.metodo_pago_id, e.moneda, e.monto_esperado, e.monto_esperado
+    FROM fn_resumen_turno(p_turno) e
+   WHERE e.monto_esperado <> 0;
+
+  UPDATE turno_caja
+     SET estado = 'CERRADO', fecha_cierre = now(), usuario_cierre_id = p_admin, cierre_forzado = true,
+         retiro_nio = 0, retiro_usd = 0,
+         fondo_siguiente_nio = coalesce((SELECT monto_esperado FROM fn_resumen_turno(p_turno) r
+                                          JOIN metodo_pago m ON m.id = r.metodo_pago_id
+                                         WHERE m.es_efectivo AND r.moneda = 'NIO'), 0),
+         fondo_siguiente_usd = coalesce((SELECT monto_esperado FROM fn_resumen_turno(p_turno) r
+                                          JOIN metodo_pago m ON m.id = r.metodo_pago_id
+                                         WHERE m.es_efectivo AND r.moneda = 'USD'), 0),
+         observaciones = 'Cierre forzado: ' || p_motivo
+   WHERE id = p_turno;
+
+  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+   WHERE tipo = 'CAJA_SIN_CERRAR' AND (detalle->>'turno_id')::bigint = p_turno AND atendida_at IS NULL;
+  RETURN fn_ticket_cierre(p_turno);
+END $$;
+
+-- Para ejecutar periódicamente (tarea programada del backend, p. ej. cada 15 min):
+-- genera una alerta por cada turno abierto después de la hora CAJA_HORA_ALERTA_CIERRE de su día,
+-- o abierto desde un día anterior. Una sola alerta por turno.
+CREATE OR REPLACE FUNCTION fn_alertar_cajas_sin_cerrar(p_ahora timestamptz DEFAULT now())
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE n integer; v_hora time := coalesce(fn_parametro_txt('CAJA_HORA_ALERTA_CIERRE'), '21:30')::time;
+BEGIN
+  INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+  SELECT 'CAJA_SIN_CERRAR',
+         format('%s: la caja sigue abierta (abierta el %s)', s.nombre,
+                to_char(t.fecha_apertura AT TIME ZONE 'America/Managua', 'DD/MM HH24:MI')),
+         jsonb_build_object('turno_id', t.id, 'caja_id', t.caja_id), s.id
+    FROM turno_caja t
+    JOIN caja c ON c.id = t.caja_id
+    JOIN sucursal s ON s.id = c.sucursal_id
+   WHERE t.estado = 'ABIERTO'
+     AND ( (p_ahora AT TIME ZONE 'America/Managua')::date > (t.fecha_apertura AT TIME ZONE 'America/Managua')::date
+        OR (p_ahora AT TIME ZONE 'America/Managua')::time >= v_hora )
+     AND NOT EXISTS (SELECT 1 FROM alerta a WHERE a.tipo = 'CAJA_SIN_CERRAR' AND (a.detalle->>'turno_id')::bigint = t.id);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
+-- Ticket de cierre (se imprime; no muestra montos esperados ni diferencias)
+CREATE OR REPLACE FUNCTION fn_ticket_cierre(p_turno bigint)
+RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+  SELECT jsonb_build_object(
+    'turno_id', t.id,
+    'sucursal', s.nombre,
+    'caja', c.nombre,
+    'abierto_por', ua.nombre_completo,
+    'apertura', t.fecha_apertura,
+    'cerrado_por', uc.nombre_completo,
+    'cierre', t.fecha_cierre,
+    'cierre_forzado', t.cierre_forzado,
+    'ventas', (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA'),
+    'anuladas', (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'ANULADA'),
+    'total_vendido', (SELECT coalesce(sum(total), 0) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA'),
+    'descuentos_promociones', (SELECT coalesce(sum(descuento), 0) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA'),
+    'cobros', (SELECT coalesce(jsonb_agg(jsonb_build_object('metodo', q.metodo, 'moneda', q.moneda, 'monto', q.monto) ORDER BY q.metodo, q.moneda), '[]'::jsonb)
+                 FROM (SELECT m.nombre AS metodo, vp.moneda, sum(vp.monto) AS monto
+                         FROM venta_pago vp JOIN venta v ON v.id = vp.venta_id AND v.estado = 'COMPLETADA'
+                         JOIN metodo_pago m ON m.id = vp.metodo_pago_id
+                        WHERE v.turno_id = t.id GROUP BY m.nombre, vp.moneda) q),
+    'retiro_nio', t.retiro_nio, 'retiro_usd', t.retiro_usd,
+    'fondo_siguiente_nio', t.fondo_siguiente_nio, 'fondo_siguiente_usd', t.fondo_siguiente_usd)
+  FROM turno_caja t
+  JOIN caja c ON c.id = t.caja_id
+  JOIN sucursal s ON s.id = c.sucursal_id
+  JOIN usuario ua ON ua.id = t.usuario_apertura_id
+  LEFT JOIN usuario uc ON uc.id = t.usuario_cierre_id
+  WHERE t.id = p_turno
+$$;
 
 -- ---------------------------------------------------------------------
 -- 9.3 Ventas
@@ -3047,7 +3264,10 @@ SELECT t.id AS turno_id, s.nombre AS sucursal, c.nombre AS caja, t.estado,
        (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'ANULADA')    AS anuladas,
        (SELECT coalesce(sum(total),0) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA') AS total_vendido,
        (SELECT sum(d.diferencia) FILTER (WHERE d.moneda = 'NIO') FROM cierre_caja_detalle d WHERE d.turno_id = t.id) AS diferencia_nio,
-       (SELECT sum(d.diferencia) FILTER (WHERE d.moneda = 'USD') FROM cierre_caja_detalle d WHERE d.turno_id = t.id) AS diferencia_usd
+       (SELECT sum(d.diferencia) FILTER (WHERE d.moneda = 'USD') FROM cierre_caja_detalle d WHERE d.turno_id = t.id) AS diferencia_usd,
+       t.diferencia_apertura_nio, t.diferencia_apertura_usd,
+       t.retiro_nio, t.retiro_usd, t.fondo_siguiente_nio, t.fondo_siguiente_usd,
+       t.justificacion_diferencia, t.cierre_forzado
   FROM turno_caja t
   JOIN caja c      ON c.id = t.caja_id
   JOIN sucursal s  ON s.id = c.sucursal_id

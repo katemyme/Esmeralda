@@ -101,10 +101,14 @@ SELECT metodo, moneda, monto_esperado FROM fn_resumen_turno(:turno);
 -- efectivo NIO: 1000 inicial + 1000 − 50 − 631.22 − 200 egreso = 1118.78 ; USD: 20 inicial + 50 = 70 (V2 anulada)
 SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:turno) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 1118.78, 'efectivo NIO esperado 1118.78');
 SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:turno) WHERE metodo = 'Efectivo' AND moneda = 'USD') = 70, 'efectivo USD esperado 70 (excluye venta anulada)');
-\echo 'Arqueo (Ana cuenta C$1100, US$70, transferencias C$150):'
-SELECT * FROM fn_cerrar_turno(:ana, :turno,
-  '[{"metodo":"EFECTIVO","moneda":"NIO","monto":1100},{"metodo":"EFECTIVO","moneda":"USD","monto":70},{"metodo":"TRANSFERENCIA","moneda":"NIO","monto":150}]',
-  'Faltante en córdobas, revisar');
+\echo 'Arqueo ciego (Ana cuenta C$1100 y US$70 billete por billete, transferencias C$150; retira C$1000 y US$50):'
+SELECT fn_cerrar_turno(:ana, :turno,
+  '[{"moneda":"NIO","valor":1000,"cantidad":1},{"moneda":"NIO","valor":100,"cantidad":1},{"moneda":"USD","valor":50,"cantidad":1},{"moneda":"USD","valor":20,"cantidad":1}]',
+  '[{"metodo":"TRANSFERENCIA","monto":150}]', 1000, 50, NULL, 'Cierre normal') AS ticket1 \gset
+SELECT pg_temp.afirma((SELECT monto_contado = 1100 AND diferencia = -18.78 FROM cierre_caja_detalle d JOIN metodo_pago m ON m.id = d.metodo_pago_id
+                        WHERE d.turno_id = :turno AND m.es_efectivo AND d.moneda = 'NIO'), 'faltante de C$18.78 (dentro de la tolerancia de 100: no pide justificación)');
+SELECT pg_temp.afirma((:'ticket1'::jsonb->>'fondo_siguiente_nio')::numeric = 100 AND (:'ticket1'::jsonb->>'fondo_siguiente_usd')::numeric = 20, 'fondo para mañana: C$100 y US$20');
+SELECT pg_temp.afirma(NOT (:'ticket1'::jsonb ? 'diferencia') AND NOT (:'ticket1'::jsonb::text ILIKE '%esperado%'), 'el ticket de cierre no muestra esperado ni diferencias');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":250}]')$q$, :ana, :turno, :aro), 'no');
 SELECT pg_temp.espera_error(format('SELECT fn_anular_venta(%s, %s, %L)', :maria, :v1, 'error de digitación'), 'turno cerrado');
 SELECT pg_temp.espera_error(format('SELECT fn_cerrar_turno(%s, %s, %L)', :ana, :turno, '[]'), 'ya está cerrado');
@@ -568,5 +572,46 @@ SELECT pg_temp.afirma((SELECT unidades FROM v_piezas_consumidas_paquete WHERE va
 SELECT pg_temp.afirma((SELECT vendidas_30d FROM fn_sugerir_reparto(:aro, 1) WHERE sucursal_id = :lbr) >=
                       (SELECT coalesce(sum(vd.cantidad), 0) FROM venta_detalle vd JOIN venta v ON v.id = vd.venta_id WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = :lbr AND vd.variante_id = :aro) + 2,
                       'la sugerencia de reparto cuenta también las piezas vendidas en paquetes');
+
+\echo '\n=== 16. v1.1 PASO 6: CIERRE DE CAJA (DENOMINACIONES, RETIRO, TOLERANCIA, APERTURA Y ALERTAS)'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT monto_esperado AS lbr_nio FROM fn_resumen_turno(:turno_lbr) r JOIN metodo_pago m ON m.id = r.metodo_pago_id WHERE m.es_efectivo AND r.moneda = 'NIO' \gset
+SELECT coalesce((SELECT monto_esperado FROM fn_resumen_turno(:turno_lbr) WHERE metodo = 'Tarjeta'), 0) AS lbr_tarjeta \gset
+\echo 'Esperado en Las Brisas (lo ve solo el admin/encargado):'
+SELECT metodo, moneda, monto_esperado FROM fn_resumen_turno(:turno_lbr);
+-- Conteo con monedas de C$1 para poder representar cualquier monto; faltan C$500
+SELECT format('[{"moneda":"NIO","valor":1,"cantidad":%s}]', floor(:lbr_nio) - 500) AS conteo_corto \gset
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[{"moneda":"NIO","valor":3,"cantidad":1}]')$q$, :carlos, :turno_lbr), 'Denominación o cantidad inválida');
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 999999)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'más efectivo del contado');
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 0)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'escriba una justificación');
+SELECT pg_temp.afirma((SELECT estado FROM turno_caja WHERE id = :turno_lbr) = 'ABIERTO' AND NOT EXISTS (SELECT 1 FROM cierre_denominacion WHERE turno_id = :turno_lbr), 'sin justificación no se cierra ni se guarda nada');
+SELECT fn_cerrar_turno(:carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)::jsonb,
+                       floor(:lbr_nio) - 800, 0, 'Se pagó al técnico del aire acondicionado sin registrar el egreso') AS ticket2 \gset
+SELECT pg_temp.afirma((:'ticket2'::jsonb->>'fondo_siguiente_nio')::numeric = 300, 'queda C$300 de fondo en Las Brisas');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'CAJA_DIFERENCIA' AND (detalle->>'turno_id')::bigint = :turno_lbr
+                               AND (detalle->>'diferencia_total_nio')::numeric <= -500), 'diferencia mayor a C$100: alerta al admin con la justificación');
+SELECT pg_temp.afirma((SELECT justificacion_diferencia IS NOT NULL AND retiro_nio = floor(:lbr_nio) - 800 FROM turno_caja WHERE id = :turno_lbr), 'justificación y retiro guardados');
+
+-- Apertura siguiente: se sugiere el fondo y se registra cualquier diferencia
+SELECT pg_temp.afirma((SELECT fondo_nio = 300 AND fondo_usd = 0 FROM fn_fondo_sugerido(:caja_lbr)), 'al abrir se sugiere el fondo que dejó el cierre (C$300)');
+SELECT fn_abrir_turno(:carlos, :caja_lbr, 250, 0) AS turno_lbr2 \gset
+SELECT pg_temp.afirma((SELECT diferencia_apertura_nio FROM turno_caja WHERE id = :turno_lbr2) = -50, 'apertura con C$50 menos: queda registrado');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM alerta WHERE tipo = 'CAJA_DIFERENCIA_APERTURA' AND (detalle->>'turno_id')::bigint = :turno_lbr2), 'diferencia de apertura dentro de tolerancia: sin alerta');
+SELECT pg_temp.espera_error(format('SELECT fn_abrir_turno(%s, %s, 250)', :carlos, :caja_lbr), 'ya tiene un turno abierto');
+SELECT fn_cerrar_turno(:carlos, :turno_lbr2, '[{"moneda":"NIO","valor":200,"cantidad":1},{"moneda":"NIO","valor":50,"cantidad":1}]');
+SELECT fn_abrir_turno(:carlos, :caja_lbr, 50, 0) AS turno_lbr3 \gset
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'CAJA_DIFERENCIA_APERTURA' AND (detalle->>'turno_id')::bigint = :turno_lbr3), 'apertura con C$200 menos: alerta al admin');
+
+-- Caja sin cerrar y cierre forzado
+SELECT pg_temp.afirma(fn_alertar_cajas_sin_cerrar(now() + interval '1 day') >= 1, 'al día siguiente se alerta la caja sin cerrar');
+SELECT pg_temp.afirma(fn_alertar_cajas_sin_cerrar(now() + interval '1 day') = 0, 'una sola alerta por turno');
+SELECT pg_temp.espera_error(format('SELECT fn_cierre_forzado(%s, %s, %L)', :maria, :turno_lbr3, 'Nadie cerró anoche'), 'CAJA_CIERRE_FORZADO');
+SELECT fn_cierre_forzado(:admin, :turno_lbr3, 'Nadie cerró anoche la caja');
+SELECT pg_temp.afirma((SELECT cierre_forzado AND fondo_siguiente_nio = 50 FROM turno_caja WHERE id = :turno_lbr3), 'cierre forzado: se asume lo esperado como fondo (C$50)');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'CAJA_SIN_CERRAR' AND (detalle->>'turno_id')::bigint = :turno_lbr3), 'la alerta de caja sin cerrar queda atendida');
+SELECT pg_temp.espera_error(format('DELETE FROM cierre_denominacion WHERE turno_id = %s', :turno_lbr), 'solo inserción');
+
+\echo 'Turnos (vista del admin):'
+SELECT turno_id, sucursal, estado, ventas, total_vendido, diferencia_nio, diferencia_apertura_nio AS dif_apertura, retiro_nio, fondo_siguiente_nio AS fondo, cierre_forzado FROM v_turnos ORDER BY turno_id;
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

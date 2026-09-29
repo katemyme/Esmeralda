@@ -49,6 +49,7 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('CAJA_CERRAR',           'Caja',       'Cerrar turno de caja (arqueo)'),
   ('CAJA_MOVIMIENTOS',      'Caja',       'Registrar ingresos/egresos de efectivo'),
   ('CAJA_VER_DIFERENCIAS',  'Caja',       'Ver montos esperados y diferencias del arqueo'),
+  ('CAJA_CIERRE_FORZADO',   'Caja',       'Cerrar un turno que nadie cerró (sin arqueo)'),
   ('TIPO_CAMBIO_GESTIONAR', 'Caja',       'Registrar el tipo de cambio del día'),
   ('REPORTES_VER',          'Reportes',   'Ver reportes de ventas'),
   ('REPORTES_COSTOS',       'Reportes',   'Ver costos, márgenes e inventario valorizado'),
@@ -89,6 +90,15 @@ INSERT INTO metodo_pago (codigo, nombre, es_efectivo, requiere_referencia) VALUE
   ('EFECTIVO',      'Efectivo',      true,  false),
   ('TARJETA',       'Tarjeta',       false, true),
   ('TRANSFERENCIA', 'Transferencia', false, true);
+
+-- ---------------------------------------------------------------------
+-- Billetes y monedas para el conteo del cierre de caja
+-- ---------------------------------------------------------------------
+INSERT INTO denominacion (moneda, valor, tipo)
+SELECT 'NIO', v, 'BILLETE' FROM unnest(ARRAY[10, 20, 50, 100, 200, 500, 1000]) v
+UNION ALL SELECT 'NIO', v, 'MONEDA' FROM unnest(ARRAY[0.05, 0.10, 0.25, 0.50, 1, 5, 10]) v
+UNION ALL SELECT 'USD', v, 'BILLETE' FROM unnest(ARRAY[1, 2, 5, 10, 20, 50, 100]) v
+UNION ALL SELECT 'USD', v, 'MONEDA' FROM unnest(ARRAY[0.01, 0.05, 0.10, 0.25, 0.50, 1]) v;
 
 -- ---------------------------------------------------------------------
 -- Parámetros
