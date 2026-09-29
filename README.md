@@ -8,7 +8,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 | Parte | Estado |
 |---|---|
 | Diseño funcional | Completo |
-| Base de datos (PostgreSQL 16) | v1.1 en construcción — paso 2 de 6 |
+| Base de datos (PostgreSQL 16) | v1.1 en construcción — paso 3 de 6 |
 | Backend (Node + TypeScript) | Pendiente |
 | Frontend (React + Vite, PWA) | Pendiente |
 

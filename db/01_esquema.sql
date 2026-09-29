@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 2 de 6)  ·  2 sucursales + bodega central
+--  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 3 de 6)  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -449,6 +449,120 @@ CREATE TRIGGER tg_mov_aplicar BEFORE INSERT ON movimiento_inventario
   FOR EACH ROW EXECUTE FUNCTION fn_aplicar_movimiento();
 CREATE TRIGGER tg_mov_inmutable BEFORE UPDATE OR DELETE ON movimiento_inventario
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+
+-- ---------------------------------------------------------------------
+-- 4.1 Compras (solo el admin; siempre entran a la bodega central)
+-- ---------------------------------------------------------------------
+CREATE TABLE proveedor (
+  id               integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre           varchar(120) NOT NULL UNIQUE,
+  pais             varchar(60),
+  moneda_habitual  char(3)      NOT NULL DEFAULT 'USD' CHECK (moneda_habitual IN ('NIO','USD')),
+  contacto         varchar(120),
+  telefono         varchar(30),
+  email            varchar(120),
+  activo           boolean      NOT NULL DEFAULT true,
+  created_at       timestamptz  NOT NULL DEFAULT now()
+);
+
+-- Una compra = una factura de proveedor. Se arma en BORRADOR y al CONFIRMAR entra el stock.
+CREATE TABLE compra (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  proveedor_id        integer       NOT NULL REFERENCES proveedor(id),
+  factura_numero      varchar(40)   NOT NULL,
+  fecha_factura       date          NOT NULL,
+  moneda              char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  tipo_cambio         numeric(10,4) NOT NULL CHECK (tipo_cambio > 0),   -- 1 si es en córdobas
+  sucursal_id         integer       NOT NULL REFERENCES sucursal(id),   -- siempre la bodega
+  estado              varchar(10)   NOT NULL DEFAULT 'BORRADOR' CHECK (estado IN ('BORRADOR','CONFIRMADA','CANCELADA')),
+  notas               varchar(500),
+  created_by          bigint        NOT NULL REFERENCES usuario(id),
+  created_at          timestamptz   NOT NULL DEFAULT now(),
+  confirmada_por      bigint        REFERENCES usuario(id),
+  fecha_confirmacion  timestamptz,
+  CONSTRAINT ux_compra_factura UNIQUE (proveedor_id, factura_numero),
+  CONSTRAINT ck_compra_tc CHECK (moneda = 'USD' OR tipo_cambio = 1),
+  CONSTRAINT ck_compra_confirmada CHECK ((estado = 'CONFIRMADA') = (fecha_confirmacion IS NOT NULL))
+);
+
+CREATE TABLE compra_detalle (
+  id                        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  compra_id                 bigint        NOT NULL REFERENCES compra(id) ON DELETE CASCADE,
+  variante_id               bigint        NOT NULL REFERENCES variante(id),
+  cantidad_facturada        integer       NOT NULL CHECK (cantidad_facturada > 0),
+  cantidad_recibida         integer       NOT NULL CHECK (cantidad_recibida >= 0),
+  costo_unitario_factura    numeric(12,4) NOT NULL CHECK (costo_unitario_factura >= 0),  -- en la moneda de la compra
+  -- Se calculan al confirmar:
+  gasto_asignado_nio        numeric(12,2),
+  costo_unitario_final_nio  numeric(12,4),   -- (valor en C$ + gastos asignados) / cantidad facturada
+  costo_promedio_nuevo      numeric(12,2),
+  CONSTRAINT ux_compra_variante UNIQUE (compra_id, variante_id),
+  CONSTRAINT ck_compra_recibida CHECK (cantidad_recibida <= cantidad_facturada)
+);
+
+CREATE TABLE compra_gasto (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  compra_id    bigint        NOT NULL REFERENCES compra(id) ON DELETE CASCADE,
+  concepto     varchar(10)   NOT NULL CHECK (concepto IN ('COURIER','ADUANA','IMPUESTOS','FLETE','OTRO')),
+  descripcion  varchar(200),
+  moneda       char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  monto        numeric(12,2) NOT NULL CHECK (monto > 0),
+  tipo_cambio  numeric(10,4) NOT NULL CHECK (tipo_cambio > 0),
+  monto_nio    numeric(12,2) GENERATED ALWAYS AS
+                 (round(CASE WHEN moneda = 'USD' THEN monto * tipo_cambio ELSE monto END, 2)) STORED,
+  CONSTRAINT ck_gasto_tc CHECK (moneda = 'USD' OR tipo_cambio = 1)
+);
+
+ALTER TABLE movimiento_inventario ADD COLUMN compra_id bigint REFERENCES compra(id);
+CREATE INDEX ix_mov_compra ON movimiento_inventario (compra_id) WHERE compra_id IS NOT NULL;
+
+-- Una compra confirmada o cancelada ya no se toca; su detalle y gastos tampoco
+CREATE OR REPLACE FUNCTION fn_proteger_compra() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Las compras no se eliminan: una compra en borrador se cancela';
+  END IF;
+  IF OLD.estado <> 'BORRADOR' THEN
+    RAISE EXCEPTION 'La compra % ya está % y no se puede modificar', OLD.id, lower(OLD.estado);
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_compra_proteger BEFORE UPDATE OR DELETE ON compra
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_compra();
+
+CREATE OR REPLACE FUNCTION fn_proteger_hijos_compra() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text;
+BEGIN
+  SELECT estado INTO v_estado FROM compra
+   WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.compra_id ELSE NEW.compra_id END;
+  -- Al confirmar, fn_confirmar_compra escribe los costos calculados: se permite con esta marca
+  IF v_estado <> 'BORRADOR' AND coalesce(current_setting('app.confirmando_compra', true), '') <> 'si' THEN
+    RAISE EXCEPTION 'La compra ya está % y no se puede modificar', lower(v_estado);
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+CREATE TRIGGER tg_compra_detalle_proteger BEFORE INSERT OR UPDATE OR DELETE ON compra_detalle
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_hijos_compra();
+CREATE TRIGGER tg_compra_gasto_proteger BEFORE INSERT OR UPDATE OR DELETE ON compra_gasto
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_hijos_compra();
+
+-- ---------------------------------------------------------------------
+-- 4.2 Alertas para el administrador (margen bajo, diferencias, caja sin cerrar...)
+-- ---------------------------------------------------------------------
+CREATE TABLE alerta (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tipo          varchar(30)  NOT NULL CHECK (tipo ~ '^[A-Z_]+$'),   -- MARGEN_BAJO, ENVIO_DIFERENCIA, CAJA_DIFERENCIA...
+  titulo        varchar(200) NOT NULL,
+  detalle       jsonb        NOT NULL DEFAULT '{}'::jsonb,
+  sucursal_id   integer      REFERENCES sucursal(id),
+  creada_at     timestamptz  NOT NULL DEFAULT now(),
+  atendida_por  bigint       REFERENCES usuario(id),
+  atendida_at   timestamptz,
+  CONSTRAINT ck_alerta_atendida CHECK ((atendida_por IS NULL) = (atendida_at IS NULL))
+);
+CREATE INDEX ix_alerta_pendiente ON alerta (creada_at DESC) WHERE atendida_at IS NULL;
 
 -- =====================================================================
 -- 5. CAJA: métodos de pago, tipo de cambio, turnos, movimientos de efectivo
@@ -942,17 +1056,19 @@ BEGIN
     RAISE EXCEPTION 'Las entradas de mercadería solo se registran en la bodega central; a las sucursales llega por envío';
   END IF;
 
+  -- En una ENTRADA con costo informado se recalcula el costo promedio ponderado
+  -- (con el stock ANTES de la entrada)
+  IF p_tipo = 'ENTRADA' AND p_costo_unitario IS NOT NULL THEN
+    UPDATE variante SET costo = fn_costo_promedio(p_variante, p_cantidad, p_costo_unitario)
+     WHERE id = p_variante;
+  END IF;
+
   INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
                                      costo_unitario, motivo, usuario_id)
   VALUES (p_sucursal, p_variante, p_tipo, v_signo * p_cantidad, 0,
           coalesce(p_costo_unitario, (SELECT costo FROM variante WHERE id = p_variante)),
           p_motivo, p_usuario)
   RETURNING id INTO v_id;
-
-  -- En una ENTRADA con costo informado se actualiza el "último costo" de la variante
-  IF p_tipo = 'ENTRADA' AND p_costo_unitario IS NOT NULL THEN
-    UPDATE variante SET costo = p_costo_unitario WHERE id = p_variante AND costo <> p_costo_unitario;
-  END IF;
 
   RETURN v_id;
 END $$;
@@ -1621,6 +1737,280 @@ SELECT p.id AS perforacion_id, p.codigo, p.nombre AS perforacion, p.piezas_por_p
  CROSS JOIN gama g
   LEFT JOIN precio_perforacion_gama t ON t.perforacion_id = p.id AND t.gama_id = g.id
  WHERE g.modo_precio = 'TABLA' AND g.activa;
+
+-- ---------------------------------------------------------------------
+-- 9.6 Compras, costo promedio y alertas
+-- ---------------------------------------------------------------------
+-- Costo promedio ponderado si entran p_cantidad unidades a p_costo (stock de TODAS las ubicaciones)
+CREATE OR REPLACE FUNCTION fn_costo_promedio(p_variante bigint, p_cantidad integer, p_costo numeric)
+RETURNS numeric
+LANGUAGE sql STABLE AS $$
+  SELECT CASE WHEN st.total + p_cantidad <= 0 THEN round(p_costo, 2)
+              ELSE round((st.total * va.costo + p_cantidad * p_costo) / (st.total + p_cantidad), 2) END
+    FROM variante va,
+         LATERAL (SELECT coalesce(sum(cantidad), 0) AS total FROM stock_sucursal WHERE variante_id = va.id) st
+   WHERE va.id = p_variante
+$$;
+
+CREATE OR REPLACE FUNCTION fn_crear_proveedor(
+  p_admin bigint, p_nombre text, p_pais text DEFAULT NULL, p_moneda text DEFAULT 'USD',
+  p_contacto text DEFAULT NULL, p_telefono text DEFAULT NULL, p_email text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  INSERT INTO proveedor (nombre, pais, moneda_habitual, contacto, telefono, email)
+  VALUES (trim(p_nombre), p_pais, upper(p_moneda), p_contacto, p_telefono, p_email)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Abre una compra en BORRADOR, siempre con destino la bodega central.
+-- En dólares, si no se indica tipo de cambio se usa el vigente a la fecha de la factura.
+CREATE OR REPLACE FUNCTION fn_crear_compra(
+  p_admin bigint, p_proveedor integer, p_factura text, p_fecha date, p_moneda text,
+  p_tipo_cambio numeric DEFAULT NULL, p_notas text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_bodega integer; v_moneda text := upper(p_moneda);
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  SELECT id INTO v_bodega FROM sucursal WHERE tipo = 'BODEGA' AND activa;
+  IF v_bodega IS NULL THEN RAISE EXCEPTION 'No hay una bodega central activa'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM proveedor WHERE id = p_proveedor AND activo) THEN
+    RAISE EXCEPTION 'El proveedor % no existe o está inactivo', p_proveedor;
+  END IF;
+  BEGIN
+    INSERT INTO compra (proveedor_id, factura_numero, fecha_factura, moneda, tipo_cambio, sucursal_id, notas, created_by)
+    VALUES (p_proveedor, trim(p_factura), p_fecha, v_moneda,
+            CASE WHEN v_moneda = 'USD' THEN coalesce(p_tipo_cambio, fn_tipo_cambio_vigente(p_fecha)) ELSE 1 END,
+            v_bodega, p_notas, p_admin)
+    RETURNING id INTO v_id;
+  EXCEPTION WHEN unique_violation THEN
+    RAISE EXCEPTION 'La factura % de este proveedor ya fue registrada', p_factura;
+  END;
+  RETURN v_id;
+END $$;
+
+-- Agrega o actualiza una línea (cantidad recibida por defecto = facturada)
+CREATE OR REPLACE FUNCTION fn_compra_set_linea(
+  p_admin bigint, p_compra bigint, p_variante bigint, p_cantidad_facturada integer,
+  p_costo_unitario numeric, p_cantidad_recibida integer DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  IF (SELECT pr.tipo FROM variante va JOIN producto pr ON pr.id = va.producto_id WHERE va.id = p_variante)
+     IS DISTINCT FROM 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Solo se compran piezas y artículos con stock (variante %)', p_variante;
+  END IF;
+  INSERT INTO compra_detalle (compra_id, variante_id, cantidad_facturada, cantidad_recibida, costo_unitario_factura)
+  VALUES (p_compra, p_variante, p_cantidad_facturada, coalesce(p_cantidad_recibida, p_cantidad_facturada), p_costo_unitario)
+  ON CONFLICT (compra_id, variante_id) DO UPDATE
+    SET cantidad_facturada = EXCLUDED.cantidad_facturada,
+        cantidad_recibida  = EXCLUDED.cantidad_recibida,
+        costo_unitario_factura = EXCLUDED.costo_unitario_factura;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_compra_quitar_linea(p_admin bigint, p_compra bigint, p_variante bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  DELETE FROM compra_detalle WHERE compra_id = p_compra AND variante_id = p_variante;
+END $$;
+
+-- Gastos de importación. En dólares, por defecto se usa el tipo de cambio de la compra.
+CREATE OR REPLACE FUNCTION fn_compra_agregar_gasto(
+  p_admin bigint, p_compra bigint, p_concepto text, p_moneda text, p_monto numeric,
+  p_descripcion text DEFAULT NULL, p_tipo_cambio numeric DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_moneda text := upper(p_moneda);
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  INSERT INTO compra_gasto (compra_id, concepto, descripcion, moneda, monto, tipo_cambio)
+  VALUES (p_compra, upper(p_concepto), p_descripcion, v_moneda, p_monto,
+          CASE WHEN v_moneda = 'USD'
+               THEN coalesce(p_tipo_cambio, (SELECT tipo_cambio FROM compra WHERE id = p_compra)) ELSE 1 END)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_compra_quitar_gasto(p_admin bigint, p_gasto bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  DELETE FROM compra_gasto WHERE id = p_gasto;
+END $$;
+
+-- Vista previa del costeo (lo que el admin revisa antes de confirmar):
+--   · valor en C$ de cada línea = cantidad facturada × costo × tipo de cambio
+--   · gastos repartidos proporcional al valor; el redondeo se ajusta en forma acumulada,
+--     así la suma de lo asignado es exactamente el total de gastos
+--   · costo unitario final = (valor + gasto asignado) / cantidad facturada
+--   · costo promedio nuevo con el stock actual de todas las ubicaciones
+CREATE OR REPLACE FUNCTION fn_compra_calculo(p_compra bigint)
+RETURNS TABLE (detalle_id bigint, variante_id bigint, producto text, cantidad_facturada integer,
+               cantidad_recibida integer, valor_nio numeric, gasto_asignado_nio numeric,
+               costo_unitario_final_nio numeric, costo_actual numeric, stock_actual bigint,
+               costo_promedio_nuevo numeric, precio_venta numeric, margen_nuevo_pct numeric, alerta_margen boolean)
+LANGUAGE sql STABLE AS $$
+  WITH c AS (SELECT * FROM compra WHERE id = p_compra),
+  g AS (SELECT coalesce(sum(monto_nio), 0) AS total FROM compra_gasto WHERE compra_id = p_compra),
+  l AS (
+    SELECT d.id, d.variante_id, d.cantidad_facturada, d.cantidad_recibida,
+           round(d.cantidad_facturada * d.costo_unitario_factura * c.tipo_cambio, 2) AS valor
+      FROM compra_detalle d, c WHERE d.compra_id = p_compra),
+  t AS (SELECT sum(valor) AS total_valor FROM l),
+  a AS (
+    SELECT l.*, sum(valor) OVER (ORDER BY id) AS acum, sum(valor) OVER (ORDER BY id) - valor AS previo FROM l),
+  x AS (
+    SELECT a.*,
+           CASE WHEN t.total_valor = 0 THEN 0
+                ELSE round(g.total * a.acum / t.total_valor, 2) - round(g.total * a.previo / t.total_valor, 2) END AS gasto
+      FROM a, t, g),
+  y AS (
+    SELECT x.*, round((x.valor + x.gasto) / x.cantidad_facturada, 4) AS cu,
+           va.costo, va.precio_venta, pr.nombre || ' — ' || va.nombre AS nombre, st.total AS stock
+      FROM x
+      JOIN variante va ON va.id = x.variante_id
+      JOIN producto pr ON pr.id = va.producto_id,
+      LATERAL (SELECT coalesce(sum(s.cantidad), 0) AS total FROM stock_sucursal s WHERE s.variante_id = x.variante_id) st),
+  z AS (
+    SELECT y.*,
+           CASE WHEN y.cantidad_recibida = 0 THEN y.costo
+                WHEN y.stock + y.cantidad_recibida <= 0 THEN round(y.cu, 2)
+                ELSE round((y.stock * y.costo + y.cantidad_recibida * y.cu) / (y.stock + y.cantidad_recibida), 2) END AS nuevo
+      FROM y)
+  SELECT z.id, z.variante_id, z.nombre, z.cantidad_facturada, z.cantidad_recibida, z.valor, z.gasto, z.cu,
+         z.costo, z.stock, z.nuevo, z.precio_venta,
+         round(100 * (z.precio_venta - z.nuevo) / NULLIF(z.precio_venta, 0), 1),
+         coalesce(100 * (z.precio_venta - z.nuevo) / NULLIF(z.precio_venta, 0)
+                  < fn_parametro_num('MARGEN_MINIMO_ALERTA_PCT'), false)
+    FROM z
+   ORDER BY z.id
+$$;
+
+-- Confirma la compra: guarda el costeo, actualiza el costo promedio, suma el stock a la bodega
+-- (cantidad recibida) y genera alertas de margen bajo.
+CREATE OR REPLACE FUNCTION fn_confirmar_compra(p_admin bigint, p_compra bigint)
+RETURNS TABLE (producto text, cantidad_recibida integer, faltantes integer, costo_unitario_final_nio numeric,
+               costo_promedio_nuevo numeric, margen_nuevo_pct numeric, alerta_margen boolean)
+LANGUAGE plpgsql AS $$
+DECLARE v_c record; r record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  SELECT * INTO v_c FROM compra WHERE id = p_compra FOR UPDATE;
+  IF v_c.id IS NULL THEN RAISE EXCEPTION 'La compra % no existe', p_compra; END IF;
+  IF v_c.estado <> 'BORRADOR' THEN RAISE EXCEPTION 'La compra % ya está %', p_compra, lower(v_c.estado); END IF;
+  IF NOT EXISTS (SELECT 1 FROM compra_detalle WHERE compra_id = p_compra) THEN
+    RAISE EXCEPTION 'La compra % no tiene productos', p_compra;
+  END IF;
+  IF EXISTS (SELECT 1 FROM compra_gasto WHERE compra_id = p_compra)
+     AND (SELECT sum(cantidad_facturada * costo_unitario_factura) FROM compra_detalle WHERE compra_id = p_compra) = 0 THEN
+    RAISE EXCEPTION 'No se pueden repartir gastos en una compra sin valor';
+  END IF;
+
+  PERFORM set_config('app.confirmando_compra', 'si', true);
+  FOR r IN SELECT * FROM fn_compra_calculo(p_compra) LOOP
+    UPDATE compra_detalle
+       SET gasto_asignado_nio = r.gasto_asignado_nio,
+           costo_unitario_final_nio = r.costo_unitario_final_nio,
+           costo_promedio_nuevo = r.costo_promedio_nuevo
+     WHERE id = r.detalle_id;
+
+    IF r.cantidad_recibida > 0 THEN
+      UPDATE variante SET costo = r.costo_promedio_nuevo WHERE id = r.variante_id;
+      INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                         costo_unitario, compra_id, motivo, usuario_id)
+      VALUES (v_c.sucursal_id, r.variante_id, 'ENTRADA', r.cantidad_recibida, 0,
+              round(r.costo_unitario_final_nio, 2), p_compra, 'Compra factura ' || v_c.factura_numero, p_admin);
+    END IF;
+
+    IF r.alerta_margen THEN
+      INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+      VALUES ('MARGEN_BAJO',
+              format('Margen bajo: %s (%s %%)', r.producto, r.margen_nuevo_pct),
+              jsonb_build_object('variante_id', r.variante_id, 'compra_id', p_compra,
+                                 'precio_venta', r.precio_venta, 'costo_nuevo', r.costo_promedio_nuevo,
+                                 'margen_pct', r.margen_nuevo_pct,
+                                 'margen_minimo_pct', fn_parametro_num('MARGEN_MINIMO_ALERTA_PCT')),
+              v_c.sucursal_id);
+    END IF;
+  END LOOP;
+
+  UPDATE compra SET estado = 'CONFIRMADA', confirmada_por = p_admin, fecha_confirmacion = now()
+   WHERE id = p_compra;
+  PERFORM set_config('app.confirmando_compra', '', true);
+
+  RETURN QUERY
+    SELECT pr.nombre || ' — ' || va.nombre, d.cantidad_recibida, d.cantidad_facturada - d.cantidad_recibida,
+           d.costo_unitario_final_nio, d.costo_promedio_nuevo,
+           round(100 * (va.precio_venta - d.costo_promedio_nuevo) / NULLIF(va.precio_venta, 0), 1),
+           EXISTS (SELECT 1 FROM alerta a WHERE a.tipo = 'MARGEN_BAJO'
+                     AND (a.detalle->>'compra_id')::bigint = p_compra
+                     AND (a.detalle->>'variante_id')::bigint = d.variante_id)
+      FROM compra_detalle d
+      JOIN variante va ON va.id = d.variante_id
+      JOIN producto pr ON pr.id = va.producto_id
+     WHERE d.compra_id = p_compra
+     ORDER BY d.id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_cancelar_compra(p_admin bigint, p_compra bigint, p_motivo text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  UPDATE compra SET estado = 'CANCELADA',
+                    notas = left(coalesce(notas || ' · ', '') || 'Cancelada: ' || p_motivo, 500)
+   WHERE id = p_compra;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La compra % no existe', p_compra; END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_atender_alerta(p_admin bigint, p_alerta bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'ALERTAS_VER');
+  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+   WHERE id = p_alerta AND atendida_at IS NULL;
+END $$;
+
+-- Resumen de compras (pantalla y reporte "Compras")
+CREATE OR REPLACE VIEW v_compras AS
+SELECT c.id AS compra_id, c.fecha_factura, pv.nombre AS proveedor, c.factura_numero, c.moneda, c.tipo_cambio, c.estado,
+       count(d.id)                                              AS lineas,
+       coalesce(sum(d.cantidad_facturada), 0)                   AS piezas_facturadas,
+       coalesce(sum(d.cantidad_recibida), 0)                    AS piezas_recibidas,
+       coalesce(sum(d.cantidad_facturada - d.cantidad_recibida), 0) AS faltantes,
+       round(coalesce(sum(d.cantidad_facturada * d.costo_unitario_factura), 0), 2) AS total_factura,
+       round(coalesce(sum(d.cantidad_facturada * d.costo_unitario_factura), 0) * c.tipo_cambio, 2) AS total_factura_nio,
+       (SELECT coalesce(sum(g.monto_nio), 0) FROM compra_gasto g WHERE g.compra_id = c.id) AS gastos_nio,
+       round(coalesce(sum(d.cantidad_facturada * d.costo_unitario_factura), 0) * c.tipo_cambio, 2)
+         + (SELECT coalesce(sum(g.monto_nio), 0) FROM compra_gasto g WHERE g.compra_id = c.id) AS costo_total_nio
+  FROM compra c
+  JOIN proveedor pv ON pv.id = c.proveedor_id
+  LEFT JOIN compra_detalle d ON d.compra_id = c.id
+ GROUP BY c.id, pv.nombre;
+
+CREATE OR REPLACE VIEW v_compras_mensual_proveedor AS
+SELECT date_trunc('month', fecha_factura)::date AS mes, proveedor, moneda,
+       count(*) AS compras, sum(total_factura) AS total_factura, sum(gastos_nio) AS gastos_nio,
+       sum(costo_total_nio) AS costo_total_nio,
+       round(100 * sum(gastos_nio) / NULLIF(sum(total_factura_nio), 0), 1) AS gastos_sobre_factura_pct
+  FROM v_compras
+ WHERE estado = 'CONFIRMADA'
+ GROUP BY 1, proveedor, moneda;
+
+CREATE OR REPLACE VIEW v_alertas_pendientes AS
+SELECT a.id, a.tipo, a.titulo, a.detalle, s.nombre AS ubicacion, a.creada_at
+  FROM alerta a LEFT JOIN sucursal s ON s.id = a.sucursal_id
+ WHERE a.atendida_at IS NULL
+ ORDER BY a.creada_at DESC;
 
 -- ---------------------------------------------------------------------
 -- 9.4 Panel de administración de usuarios

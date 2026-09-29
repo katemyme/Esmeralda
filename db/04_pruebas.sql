@@ -136,8 +136,11 @@ SELECT pg_temp.espera_error(format('SELECT fn_trasladar_stock(%s, %s, %s, %s, 1)
 SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :maria, :bod, :cad, 'ENTRADA', 'Compra'), 'INVENTARIO_ENTRADA');
 SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :admin, :lam, :cad, 'ENTRADA', 'Compra'), 'solo se registran en la bodega');
 SELECT set_config('app.usuario_id', :'admin', false);
+SELECT sum(cantidad) AS cad_stock FROM stock_sucursal WHERE variante_id = :cad \gset
 SELECT fn_movimiento_inventario(:admin, :bod, :cad, 'ENTRADA', 10, 'Compra proveedor', 500);
-SELECT pg_temp.afirma((SELECT precio_nuevo = 1200 AND costo_nuevo = 500 AND usuario_id = :admin FROM historial_precio WHERE variante_id = :cad ORDER BY id DESC LIMIT 1), 'entrada en bodega con costo nuevo → historial de costo con usuario');
+SELECT pg_temp.afirma((SELECT costo_nuevo = round((:cad_stock * 480 + 10 * 500)::numeric / (:cad_stock + 10), 2) AND usuario_id = :admin
+                         FROM historial_precio WHERE variante_id = :cad ORDER BY id DESC LIMIT 1),
+                      'entrada en bodega: costo promedio ponderado ' || :cad_stock || ' × 480 + 10 × 500, con historial y usuario');
 
 \echo '\n=== 8. PANEL DE ADMINISTRACIÓN'
 SELECT set_config('app.usuario_id', :'admin', false);
@@ -313,5 +316,73 @@ UPDATE variante SET precio_venta = 350 WHERE id = (SELECT servicio_variante_id F
 SELECT perforacion, precio_solo_servicio AS servicio, gama, precio_paquete, precios_especiales FROM v_precios_perforacion ORDER BY perforacion_id, orden;
 \echo 'Búsqueda POS "hélix" en LAM:'
 SELECT sku, producto, variante, tipo, precio, stock FROM fn_buscar_variantes('hélix', :lam);
+
+\echo '\n=== 13. v1.1 PASO 3: COMPRAS, GASTOS DE IMPORTACIÓN Y COSTO PROMEDIO'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT id AS prov_usa FROM proveedor WHERE nombre = 'Body Jewelry Supply' \gset
+SELECT id AS prov_loc FROM proveedor WHERE nombre = 'Distribuidora Local' \gset
+SELECT pg_temp.espera_error(format('SELECT fn_crear_compra(%s, %s, %L, current_date, %L)', :maria, :prov_usa, 'X-1', 'USD'), 'INVENTARIO_ENTRADA');
+
+-- Factura en dólares a TC 36.60: 3 líneas + courier US$20 + aduana C$364
+SELECT fn_crear_compra(:admin, :prov_usa, 'INV-1001', current_date, 'USD', 36.60) AS compra1 \gset
+SELECT fn_compra_set_linea(:admin, :compra1, :lab6, 10, 6.00);            -- valor 10 × 6 × 36.60 = 2196.00
+SELECT fn_compra_set_linea(:admin, :compra1, :aro, 20, 1.00, 18);          -- valor 732.00; llegaron 18 de 20
+SELECT fn_compra_set_linea(:admin, :compra1, :nei, 5, 10.00);              -- valor 1830.00
+SELECT fn_compra_agregar_gasto(:admin, :compra1, 'COURIER', 'USD', 20);    -- 732.00
+SELECT fn_compra_agregar_gasto(:admin, :compra1, 'ADUANA', 'NIO', 364);    -- 364.00  → gastos 1096.00
+SELECT pg_temp.espera_error(format('SELECT fn_compra_set_linea(%s, %s, %s, 1, 1)', :admin, :compra1, :lob), 'Solo se compran piezas');
+SELECT pg_temp.espera_error(format('SELECT fn_compra_set_linea(%s, %s, %s, 5, 1, 6)', :admin, :compra1, :lab8), 'ck_compra_recibida');
+
+\echo 'Vista previa del costeo:'
+SELECT producto, cantidad_facturada AS fact, cantidad_recibida AS rec, valor_nio, gasto_asignado_nio AS gasto,
+       costo_unitario_final_nio AS costo_final, costo_actual, costo_promedio_nuevo AS promedio, margen_nuevo_pct AS margen, alerta_margen
+  FROM fn_compra_calculo(:compra1);
+SELECT pg_temp.afirma((SELECT sum(gasto_asignado_nio) FROM fn_compra_calculo(:compra1)) = 1096.00, 'los gastos repartidos suman exactamente C$1096.00');
+SELECT pg_temp.afirma((SELECT abs(gasto_asignado_nio - 1096 * 2196 / 4758.0) < 0.01 FROM fn_compra_calculo(:compra1) WHERE variante_id = :lab6), 'reparto proporcional al valor (labret: 2196 / 4758 del gasto)');
+SELECT pg_temp.afirma((SELECT costo_unitario_final_nio = round((valor_nio + gasto_asignado_nio) / 10, 4) FROM fn_compra_calculo(:compra1) WHERE variante_id = :lab6), 'costo final = (valor + gasto) / cantidad facturada');
+SELECT pg_temp.afirma((SELECT alerta_margen FROM fn_compra_calculo(:compra1) WHERE variante_id = :nei), 'la vista previa avisa margen bajo en NeilMed');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :lab6) = 10, 'en borrador el stock no cambia');
+
+-- Datos antes de confirmar para verificar el promedio
+SELECT sum(cantidad) AS lab6_stock FROM stock_sucursal WHERE variante_id = :lab6 \gset
+SELECT costo AS lab6_costo FROM variante WHERE id = :lab6 \gset
+SELECT costo_unitario_final_nio AS lab6_cf FROM fn_compra_calculo(:compra1) WHERE variante_id = :lab6 \gset
+
+\echo 'Confirmación:'
+SELECT * FROM fn_confirmar_compra(:admin, :compra1);
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :lab6) = 20
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :aro) = 10 + 18, 'stock entra a bodega por la cantidad RECIBIDA (aros: 18 de 20)');
+SELECT pg_temp.afirma((SELECT costo FROM variante WHERE id = :lab6) = round((:lab6_stock * :lab6_costo + 10 * :lab6_cf) / (:lab6_stock + 10), 2), 'costo promedio ponderado del labret actualizado');
+SELECT pg_temp.afirma((SELECT count(*) FROM movimiento_inventario WHERE compra_id = :compra1 AND tipo = 'ENTRADA') = 3, 'kardex: 3 entradas enlazadas a la compra');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'MARGEN_BAJO' AND (detalle->>'variante_id')::bigint = :nei), 'alerta de margen bajo creada para NeilMed');
+SELECT pg_temp.afirma((SELECT faltantes = 2 AND gastos_nio = 1096 AND estado = 'CONFIRMADA' FROM v_compras WHERE compra_id = :compra1), 'resumen de compra: 2 faltantes, gastos 1096, confirmada');
+
+-- Una compra confirmada no se toca
+SELECT pg_temp.espera_error(format('SELECT fn_compra_set_linea(%s, %s, %s, 1, 1)', :admin, :compra1, :lab6), 'ya está confirmada');
+SELECT pg_temp.espera_error(format('SELECT fn_compra_agregar_gasto(%s, %s, %L, %L, 10)', :admin, :compra1, 'OTRO', 'NIO'), 'ya está confirmada');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_confirmar_compra(%s, %s)', :admin, :compra1), 'ya está confirmada');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_compra(%s, %s, %L)', :admin, :compra1, 'error'), 'ya está confirmada');
+SELECT pg_temp.espera_error(format('UPDATE compra_detalle SET cantidad_recibida = 1 WHERE compra_id = %s', :compra1), 'ya está confirmada');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_compra(%s, %s, %L, current_date, %L)', :admin, :prov_usa, 'INV-1001', 'USD'), 'ya fue registrada');
+
+-- Compra en córdobas sin gastos, y dólares con tipo de cambio vigente
+SELECT fn_crear_compra(:admin, :prov_loc, 'F-0001', current_date, 'NIO') AS compra2 \gset
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_confirmar_compra(%s, %s)', :admin, :compra2), 'no tiene productos');
+SELECT fn_compra_set_linea(:admin, :compra2, :pdr, 10, 95);
+SELECT * FROM fn_confirmar_compra(:admin, :compra2);
+SELECT pg_temp.afirma((SELECT gasto_asignado_nio = 0 AND costo_unitario_final_nio = 95 FROM compra_detalle WHERE compra_id = :compra2), 'compra en córdobas sin gastos: costo final = costo de factura');
+SELECT fn_crear_compra(:admin, :prov_usa, 'INV-1002', current_date, 'USD') AS compra3 \gset
+SELECT pg_temp.afirma((SELECT tipo_cambio = fn_tipo_cambio_vigente() FROM compra WHERE id = :compra3), 'sin tipo de cambio se usa el vigente');
+SELECT fn_cancelar_compra(:admin, :compra3, 'Pedido duplicado');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_confirmar_compra(%s, %s)', :admin, :compra3), 'ya está cancelada');
+
+-- Alertas
+SELECT id AS alerta_nei FROM alerta WHERE tipo = 'MARGEN_BAJO' AND (detalle->>'variante_id')::bigint = :nei \gset
+SELECT pg_temp.espera_error(format('SELECT fn_atender_alerta(%s, %s)', :maria, :alerta_nei), 'ALERTAS_VER');
+SELECT fn_atender_alerta(:admin, :alerta_nei);
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE id = :alerta_nei), 'alerta atendida sale de pendientes');
+
+\echo 'Compras del mes por proveedor:'
+SELECT proveedor, moneda, compras, total_factura, gastos_nio, costo_total_nio, gastos_sobre_factura_pct FROM v_compras_mensual_proveedor;
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

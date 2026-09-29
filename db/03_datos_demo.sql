@@ -26,6 +26,10 @@ SELECT fn_crear_usuario(
 INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
 VALUES ((now() AT TIME ZONE 'America/Managua')::date - 60, 36.6243, fn_usuario_actual());
 
+-- Proveedores
+SELECT fn_crear_proveedor((SELECT id FROM usuario WHERE username = 'admin'), 'Body Jewelry Supply', 'Estados Unidos', 'USD');
+SELECT fn_crear_proveedor((SELECT id FROM usuario WHERE username = 'admin'), 'Distribuidora Local', 'Nicaragua', 'NIO');
+
 -- Productos y variantes (piezas y artículos con stock)
 WITH p AS (
   INSERT INTO producto (categoria_id, nombre, tipo) VALUES
