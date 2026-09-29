@@ -85,6 +85,7 @@
     overflow-x: auto;
   }
   .diagram pre.mermaid { margin: 0; background: transparent; min-width: 640px; color: #17221E; }
+  .diagram.wide pre.mermaid { min-width: 1280px; }
 
   code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
   code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
@@ -117,35 +118,41 @@
 <div class="wrap">
   <header>
     <div class="eyebrow">Esmeralda Experience · Sistema de inventario y ventas</div>
-    <h1>Modelo de datos (PostgreSQL 16)</h1>
-    <p class="lede">Esquema para las dos sucursales, con inventario por sucursal y kardex, POS con pagos mixtos en C$ y US$, turnos de caja con arqueo, reportes y un panel de administración de usuarios con roles y permisos.</p>
+    <h1>Modelo de datos v1.1 (PostgreSQL 16)</h1>
+    <p class="lede">Dos sucursales y una bodega central. La mercadería entra solo por la bodega, llega a las sucursales con envíos en dos pasos y sale por ventas de piezas, servicios o paquetes de perforación. Cada peso se sigue hasta el cierre de caja.</p>
     <div class="meta">
-      <span class="chip">25 tablas</span>
-      <span class="chip">11 vistas</span>
+      <span class="chip">45 tablas</span>
+      <span class="chip">22 vistas</span>
+      <span class="chip">221 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
+      <span class="chip">BOD · Bodega central</span>
       <span class="chip">moneda base C$</span>
     </div>
   </header>
 
   <nav class="toc" aria-label="Secciones">
-    <a href="#seguridad">Seguridad y organización</a>
-    <a href="#inventario">Catálogo e inventario</a>
-    <a href="#ventas">Ventas y caja</a>
+    <a href="#organizacion">Organización y seguridad</a>
+    <a href="#catalogo">Catálogo y perforaciones</a>
+    <a href="#inventario">Compras e inventario</a>
+    <a href="#ventas">Ventas y promociones</a>
+    <a href="#caja">Caja</a>
     <a href="#roles">Roles</a>
     <a href="#reglas">Reglas garantizadas</a>
     <a href="#funciones">Funciones para el backend</a>
   </nav>
 
-  <section id="seguridad">
+  <section id="organizacion">
     <div class="section-head">
-      <h2>Seguridad y organización</h2>
-      <p>Base del panel de administración. Los usuarios nunca se eliminan: se desactivan, y al hacerlo se revocan sus sesiones. El permiso <code>SUCURSALES_TODAS</code> sustituye la asignación por sucursal.</p>
+      <h2>Organización y seguridad</h2>
+      <p>La bodega es una ubicación sin caja. Cada equipo (PC de caja, tablet, celular) se registra una vez y queda ligado a su ubicación. Los parámetros del negocio se editan desde el panel y las alertas llegan al administrador.</p>
     </div>
-    <div class="diagram">
+    <div class="diagram wide">
 <pre class="mermaid">
 erDiagram
   SUCURSAL ||--o{ CAJA : tiene
+  SUCURSAL ||--o{ DISPOSITIVO : autoriza
+  CAJA |o--o{ DISPOSITIVO : opera
   SUCURSAL ||--o{ USUARIO_SUCURSAL : asigna
   USUARIO ||--o{ USUARIO_SUCURSAL : opera_en
   ROL ||--o{ USUARIO : define
@@ -154,49 +161,47 @@ erDiagram
   USUARIO ||--o{ SESION : inicia
   USUARIO |o--o{ ACCESO_LOG : intenta
   USUARIO |o--o{ AUDITORIA : modifica
+  SUCURSAL |o--o{ ALERTA : origina
 
   SUCURSAL {
     int id PK
-    varchar codigo UK "LAM, LBR"
-    varchar nombre UK
-    boolean activa
-    int ultimo_numero_venta "correlativo"
+    varchar codigo UK "LAM, LBR, BOD"
+    varchar tipo "SUCURSAL o BODEGA"
+    int ultimo_numero_venta
   }
   CAJA {
     int id PK
     int sucursal_id FK
     varchar nombre
-    boolean activa
+  }
+  DISPOSITIVO {
+    uuid id PK
+    varchar tipo "CAJA, TABLET, MOVIL"
+    int sucursal_id FK
+    int caja_id FK
+    char token_hash UK
+    boolean activo
+  }
+  USUARIO {
+    bigint id PK
+    varchar username UK
+    varchar password_hash
+    int rol_id FK
+    boolean activo
+    boolean debe_cambiar_password
+    timestamptz bloqueado_hasta
   }
   ROL {
     int id PK
-    varchar codigo UK "ADMIN, ENCARGADO, VENDEDOR"
-    varchar nombre
-    boolean es_sistema
+    varchar codigo UK
   }
   PERMISO {
     int id PK
     varchar codigo UK
-    varchar modulo
-    varchar descripcion
   }
   ROL_PERMISO {
     int rol_id PK,FK
     int permiso_id PK,FK
-  }
-  USUARIO {
-    bigint id PK
-    varchar nombre_completo
-    varchar username UK
-    varchar email UK
-    varchar password_hash "argon2id o bcrypt"
-    int rol_id FK
-    boolean activo
-    boolean debe_cambiar_password
-    smallint intentos_fallidos
-    timestamptz bloqueado_hasta
-    timestamptz ultimo_acceso
-    bigint created_by FK
   }
   USUARIO_SUCURSAL {
     bigint usuario_id PK,FK
@@ -205,28 +210,102 @@ erDiagram
   SESION {
     uuid id PK
     bigint usuario_id FK
-    char refresh_token_hash UK "SHA-256"
-    inet ip
-    timestamptz expira_at
+    char refresh_token_hash UK
     timestamptz revocada_at
   }
   ACCESO_LOG {
     bigint id PK
-    bigint usuario_id FK
     varchar username_intentado
     boolean exito
-    inet ip
-    timestamptz fecha
   }
   AUDITORIA {
     bigint id PK
     varchar tabla
-    varchar registro_id
-    varchar accion
     jsonb antes
     jsonb despues
     bigint usuario_id FK
-    timestamptz fecha
+  }
+  PARAMETRO {
+    varchar clave PK
+    varchar valor
+    varchar tipo_valor "NUMERO, HORA, OPCION"
+  }
+  ALERTA {
+    bigint id PK
+    varchar tipo "MARGEN_BAJO, CAJA_DIFERENCIA..."
+    jsonb detalle
+    timestamptz atendida_at
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="catalogo">
+    <div class="section-head">
+      <h2>Catálogo y perforaciones</h2>
+      <p>Lo que se vende es la variante. Cada perforación crea dos variantes: <strong>solo servicio</strong> (su precio es el del servicio) y <strong>con pieza</strong> (tipo PAQUETE, precio calculado). Las piezas tienen gama: acero clásica y de lujo se cobran por tabla; titanio, servicio + pieza.</p>
+    </div>
+    <div class="diagram wide">
+<pre class="mermaid">
+erDiagram
+  CATEGORIA ||--o{ PRODUCTO : agrupa
+  PRODUCTO ||--|{ VARIANTE : tiene
+  GAMA |o--o{ VARIANTE : clasifica
+  PERFORACION ||--|| VARIANTE : solo_servicio
+  PERFORACION ||--|| VARIANTE : con_pieza
+  PERFORACION ||--o{ PERFORACION_PIEZA_PERMITIDA : acepta
+  PERFORACION ||--o{ PRECIO_PERFORACION_GAMA : tabla
+  GAMA ||--o{ PRECIO_PERFORACION_GAMA : precio
+  PERFORACION ||--o{ PRECIO_ESPECIAL_PAQUETE : excepcion
+  VARIANTE ||--o{ HISTORIAL_PRECIO : cambia
+
+  PRODUCTO {
+    bigint id PK
+    int categoria_id FK
+    varchar tipo "PRODUCTO, SERVICIO, PAQUETE"
+  }
+  VARIANTE {
+    bigint id PK
+    varchar sku UK
+    varchar codigo_barras UK
+    numeric precio_venta
+    numeric costo "promedio ponderado"
+    int gama_id FK
+    varchar foto_url
+  }
+  GAMA {
+    int id PK
+    varchar nombre UK
+    varchar modo_precio "TABLA o PIEZA"
+  }
+  PERFORACION {
+    int id PK
+    varchar codigo UK "HLX, LOB..."
+    smallint piezas_por_paquete
+    bigint servicio_variante_id FK
+    bigint paquete_variante_id FK
+  }
+  PERFORACION_PIEZA_PERMITIDA {
+    int id PK
+    int gama_id FK
+    int categoria_id FK
+    bigint variante_id FK
+  }
+  PRECIO_PERFORACION_GAMA {
+    int perforacion_id PK,FK
+    int gama_id PK,FK
+    numeric precio
+  }
+  PRECIO_ESPECIAL_PAQUETE {
+    int id PK
+    bigint variante_id FK
+    int gama_id FK
+    numeric precio
+  }
+  HISTORIAL_PRECIO {
+    bigint id PK
+    numeric precio_nuevo
+    numeric costo_nuevo
   }
 </pre>
     </div>
@@ -234,73 +313,89 @@ erDiagram
 
   <section id="inventario">
     <div class="section-head">
-      <h2>Catálogo e inventario</h2>
-      <p>Lo que se vende es la <strong>variante</strong> (material, calibre, largo). Los servicios de perforación son productos de tipo <code>SERVICIO</code> y no mueven stock. El stock solo cambia a través del kardex (<code>movimiento_inventario</code>), que es de solo inserción.</p>
+      <h2>Compras e inventario</h2>
+      <p>Las compras entran solo a la bodega, con los gastos de importación repartidos por valor y costo promedio ponderado. Los envíos descuentan del origen al enviarse y suman al destino cuando la sucursal escanea lo recibido. Mermas y conteos solo mueven stock cuando el admin los aprueba.</p>
     </div>
-    <div class="diagram">
+    <div class="diagram wide">
 <pre class="mermaid">
 erDiagram
-  CATEGORIA ||--o{ PRODUCTO : agrupa
-  PRODUCTO ||--|{ VARIANTE : tiene
-  VARIANTE ||--o{ STOCK_SUCURSAL : existencia
+  PROVEEDOR ||--o{ COMPRA : factura
+  COMPRA ||--|{ COMPRA_DETALLE : lineas
+  COMPRA ||--o{ COMPRA_GASTO : gastos
   SUCURSAL ||--o{ STOCK_SUCURSAL : guarda
+  VARIANTE ||--o{ STOCK_SUCURSAL : existencia
   VARIANTE ||--o{ MOVIMIENTO_INVENTARIO : kardex
-  SUCURSAL ||--o{ MOVIMIENTO_INVENTARIO : ocurre_en
-  USUARIO ||--o{ MOVIMIENTO_INVENTARIO : registra
-  VENTA |o--o{ MOVIMIENTO_INVENTARIO : origina
-  VARIANTE ||--o{ HISTORIAL_PRECIO : cambia
+  COMPRA |o--o{ MOVIMIENTO_INVENTARIO : entrada
+  ENVIO |o--o{ MOVIMIENTO_INVENTARIO : traslado
+  ENVIO ||--|{ ENVIO_DETALLE : lineas
+  SUCURSAL ||--o{ ENVIO : origen_destino
+  SUCURSAL ||--o{ MERMA : reporta
+  MERMA |o--o| MOVIMIENTO_INVENTARIO : aprobada
+  SUCURSAL ||--o{ CONTEO : cuenta
+  CONTEO ||--o{ CONTEO_DETALLE : escaneos
 
-  CATEGORIA {
-    int id PK
-    varchar nombre UK
-    boolean activa
-  }
-  PRODUCTO {
+  COMPRA {
     bigint id PK
-    int categoria_id FK
-    varchar nombre
-    varchar tipo "PRODUCTO o SERVICIO"
-    boolean activo
+    varchar factura_numero
+    char moneda "NIO o USD"
+    numeric tipo_cambio
+    varchar estado "BORRADOR, CONFIRMADA, CANCELADA"
   }
-  VARIANTE {
+  COMPRA_DETALLE {
     bigint id PK
-    bigint producto_id FK
-    varchar sku UK
-    varchar codigo_barras UK
-    varchar nombre "Titanio 16G 8 mm"
-    jsonb atributos
-    numeric precio_venta
-    numeric costo "ultimo costo"
-    boolean activo
+    int cantidad_facturada
+    int cantidad_recibida
+    numeric costo_unitario_factura
+    numeric gasto_asignado_nio
+    numeric costo_unitario_final_nio
+  }
+  COMPRA_GASTO {
+    bigint id PK
+    varchar concepto "COURIER, ADUANA..."
+    numeric monto_nio
   }
   STOCK_SUCURSAL {
     int sucursal_id PK,FK
     bigint variante_id PK,FK
-    int cantidad "CHECK mayor o igual a 0"
+    int cantidad "nunca negativa"
     int stock_minimo
   }
   MOVIMIENTO_INVENTARIO {
     bigint id PK
-    int sucursal_id FK
-    bigint variante_id FK
-    varchar tipo "ENTRADA, VENTA, MERMA..."
+    varchar tipo "ENTRADA, VENTA, TRASLADO..."
     int cantidad "con signo"
     int stock_resultante
-    numeric costo_unitario
     bigint venta_id FK
-    uuid traslado_ref
-    varchar motivo
-    bigint usuario_id FK
-    timestamptz fecha
+    bigint compra_id FK
+    bigint envio_id FK
   }
-  HISTORIAL_PRECIO {
+  ENVIO {
     bigint id PK
-    bigint variante_id FK
-    numeric precio_anterior
-    numeric precio_nuevo
-    numeric costo_anterior
-    numeric costo_nuevo
-    bigint usuario_id FK
+    varchar numero UK "ENV-000001"
+    int origen_id FK
+    int destino_id FK
+    varchar estado "EN_TRANSITO, RECIBIDO..."
+  }
+  ENVIO_DETALLE {
+    bigint id PK
+    int cantidad_enviada
+    int cantidad_recibida
+  }
+  MERMA {
+    bigint id PK
+    int cantidad
+    varchar motivo
+    varchar estado "PENDIENTE, APROBADA, RECHAZADA"
+  }
+  CONTEO {
+    bigint id PK
+    varchar estado "ABIERTO, ENVIADO, APLICADO"
+  }
+  CONTEO_DETALLE {
+    bigint conteo_id PK,FK
+    bigint variante_id PK,FK
+    int cantidad_contada
+    int stock_sistema
   }
 </pre>
     </div>
@@ -308,84 +403,106 @@ erDiagram
 
   <section id="ventas">
     <div class="section-head">
-      <h2>Ventas y caja</h2>
-      <p>Toda venta pertenece a un turno abierto de una caja. El precio y el costo se copian al detalle en el momento de vender. El vuelto se guarda como pago negativo en efectivo C$, así el arqueo cuadra al centavo aunque el cliente pague en dólares.</p>
+      <h2>Ventas y promociones</h2>
+      <p>Cada línea guarda el precio establecido y el cobrado (nunca menor). Una línea de paquete registra qué piezas salieron del inventario. La única rebaja posible es una promoción creada por el admin, una por venta. La clave de idempotencia evita ventas duplicadas por doble clic.</p>
     </div>
     <div class="diagram">
 <pre class="mermaid">
 erDiagram
-  CAJA ||--o{ TURNO_CAJA : abre
-  USUARIO ||--o{ TURNO_CAJA : responsable
-  TURNO_CAJA ||--o{ VENTA : contiene
-  TURNO_CAJA ||--o{ CAJA_MOVIMIENTO : ingresos_egresos
-  TURNO_CAJA ||--o{ CIERRE_CAJA_DETALLE : arqueo
-  SUCURSAL ||--o{ VENTA : factura
-  USUARIO ||--o{ VENTA : vende
   VENTA ||--|{ VENTA_DETALLE : lineas
-  VARIANTE ||--o{ VENTA_DETALLE : vendida
+  VENTA_DETALLE ||--o{ VENTA_DETALLE_PIEZA : piezas_del_paquete
   VENTA ||--|{ VENTA_PAGO : pagos
   METODO_PAGO ||--o{ VENTA_PAGO : usa
-  METODO_PAGO ||--o{ CIERRE_CAJA_DETALLE : cuadra
+  PROMOCION |o--o{ VENTA : aplica
+  TURNO_CAJA ||--o{ VENTA : contiene
 
-  TURNO_CAJA {
-    bigint id PK
-    int caja_id FK
-    bigint usuario_apertura_id FK
-    numeric monto_inicial_nio
-    numeric monto_inicial_usd
-    varchar estado "ABIERTO o CERRADO"
-    bigint usuario_cierre_id FK
-    timestamptz fecha_cierre
-  }
-  CAJA_MOVIMIENTO {
-    bigint id PK
-    bigint turno_id FK
-    varchar tipo "INGRESO o EGRESO"
-    char moneda
-    numeric monto
-    varchar motivo
-  }
   VENTA {
     bigint id PK
     varchar numero UK "LAM-00000001"
-    int sucursal_id FK
-    bigint turno_id FK
     bigint vendedor_id FK
     numeric subtotal
-    numeric descuento
+    numeric descuento "solo por promoción"
     numeric total
-    numeric tipo_cambio "snapshot"
+    numeric tipo_cambio
     varchar estado "COMPLETADA o ANULADA"
-    bigint anulada_por FK
-    varchar motivo_anulacion
+    int promocion_id FK
+    uuid clave_idempotencia UK
   }
   VENTA_DETALLE {
     bigint id PK
-    bigint venta_id FK
     bigint variante_id FK
     int cantidad
-    numeric precio_lista "establecido, snapshot"
-    numeric precio_unitario "cobrado, mayor o igual a lista"
-    numeric costo_unitario "snapshot"
-    numeric descuento
-    numeric subtotal "calculado"
+    numeric precio_lista "establecido"
+    numeric precio_unitario "cobrado, mayor o igual"
+    numeric costo_unitario
+  }
+  VENTA_DETALLE_PIEZA {
+    bigint venta_detalle_id PK,FK
+    bigint variante_id PK,FK
+    int cantidad
+    numeric costo_unitario
   }
   VENTA_PAGO {
     bigint id PK
-    bigint venta_id FK
-    smallint metodo_pago_id FK
-    char moneda "NIO o USD"
+    char moneda
     numeric monto
-    numeric tipo_cambio
-    numeric monto_nio "calculado"
-    varchar referencia "voucher"
+    numeric monto_nio
+    varchar referencia
     boolean es_vuelto
+  }
+  PROMOCION {
+    int id PK
+    varchar tipo "PORCENTAJE o MONTO"
+    numeric valor
+    numeric compra_minima
+    date vigente_desde
+    date vigente_hasta
+    boolean activa
   }
   METODO_PAGO {
     smallint id PK
     varchar codigo UK
     boolean es_efectivo
-    boolean requiere_referencia
+  }
+  TIPO_CAMBIO {
+    date fecha PK
+    numeric usd_a_nio
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="caja">
+    <div class="section-head">
+      <h2>Caja</h2>
+      <p>Un turno por día y por caja, compartido por los vendedores. Al cerrar se cuenta el efectivo por billete y moneda sin ver lo esperado; se registra lo que se retira y lo que queda es el fondo del día siguiente. Una diferencia mayor a la tolerancia exige justificación y alerta al admin.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+  CAJA ||--o{ TURNO_CAJA : abre
+  TURNO_CAJA ||--o{ CAJA_MOVIMIENTO : ingresos_egresos
+  TURNO_CAJA ||--o{ CIERRE_CAJA_DETALLE : arqueo
+  TURNO_CAJA ||--o{ CIERRE_DENOMINACION : conteo
+  DENOMINACION ||--o{ CIERRE_DENOMINACION : valida
+  METODO_PAGO ||--o{ CIERRE_CAJA_DETALLE : cuadra
+
+  TURNO_CAJA {
+    bigint id PK
+    numeric monto_inicial_nio
+    numeric fondo_esperado_nio
+    numeric diferencia_apertura_nio
+    varchar estado "ABIERTO o CERRADO"
+    numeric retiro_nio
+    numeric fondo_siguiente_nio
+    varchar justificacion_diferencia
+    boolean cierre_forzado
+  }
+  CAJA_MOVIMIENTO {
+    bigint id PK
+    varchar tipo "INGRESO o EGRESO"
+    numeric monto
+    varchar motivo
   }
   CIERRE_CAJA_DETALLE {
     bigint turno_id PK,FK
@@ -393,17 +510,18 @@ erDiagram
     char moneda PK
     numeric monto_esperado
     numeric monto_contado
-    numeric diferencia "calculado"
+    numeric diferencia
   }
-  PARAMETRO {
-    varchar clave PK "VENTA_SOBREPRECIO_MAX_PCT"
-    varchar valor
-    varchar descripcion
+  CIERRE_DENOMINACION {
+    bigint turno_id PK,FK
+    char moneda PK
+    numeric valor PK
+    int cantidad
   }
-  TIPO_CAMBIO {
-    date fecha PK
-    numeric usd_a_nio
-    bigint usuario_id FK
+  DENOMINACION {
+    char moneda PK
+    numeric valor PK
+    varchar tipo PK "BILLETE o MONEDA"
   }
 </pre>
     </div>
@@ -419,27 +537,28 @@ erDiagram
         <span class="chip tag">ADMIN</span>
         <h3>Administrador</h3>
         <ul>
-          <li>Gestiona usuarios, roles y sucursales</li>
-          <li>Ve costos, márgenes y auditoría</li>
-          <li>Opera en ambas sucursales</li>
+          <li>Compras, proveedores, costos y precios</li>
+          <li>Envíos, aprobación de mermas y conteos</li>
+          <li>Promociones, parámetros, usuarios y equipos</li>
+          <li>Alertas y cierre forzado de caja</li>
         </ul>
       </div>
       <div class="role">
         <span class="chip tag">ENCARGADO</span>
         <h3>Encargado de sucursal</h3>
         <ul>
-          <li>Entradas, ajustes, mermas y traslados</li>
-          <li>Descuentos y anulaciones</li>
-          <li>Ve diferencias del arqueo y reportes de venta</li>
+          <li>Ventas, promociones y anulaciones</li>
+          <li>Recibir envíos, reportar mermas, contar</li>
+          <li>Ve diferencias de caja y reportes de venta</li>
         </ul>
       </div>
       <div class="role">
         <span class="chip tag">VENDEDOR</span>
         <h3>Vendedor</h3>
         <ul>
-          <li>Registra ventas en su sucursal, puede cobrar por encima del precio establecido</li>
-          <li>Abre y cierra su turno (arqueo ciego)</li>
-          <li>Consulta stock y sus propias ventas</li>
+          <li>Vende, sube precios y aplica promociones</li>
+          <li>Abre y cierra caja (arqueo ciego)</li>
+          <li>Recibe envíos, reporta mermas, cuenta</li>
         </ul>
       </div>
     </div>
@@ -448,52 +567,48 @@ erDiagram
   <section id="reglas">
     <div class="section-head">
       <h2>Reglas que garantiza la base de datos</h2>
-      <p>Se cumplen aunque el backend tenga un error o alguien inserte datos directamente con el ORM. Cada una tiene una prueba en <code>04_pruebas.sql</code>.</p>
+      <p>Se cumplen aunque el backend tenga un error o alguien inserte datos directamente. Cada una tiene su prueba en <code>db/04_pruebas.sql</code>.</p>
     </div>
     <div class="rules">
-      <div class="rule"><h3>Sin sobreventa</h3><p>El stock no puede quedar negativo. Dos ventas simultáneas del último artículo: una pasa y la otra recibe “Stock insuficiente”.</p></div>
-      <div class="rule"><h3>Numeración sin huecos</h3><p>Correlativo independiente por sucursal (LAM-…, LBR-…). Una venta fallida no consume número.</p></div>
-      <div class="rule"><h3>La venta cuadra</h3><p>Al confirmar, el detalle suma el subtotal y los pagos suman el total. Si no, se rechaza la transacción completa.</p></div>
-      <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran. Solo pasan a ANULADA, con motivo, usuario y devolución automática del stock.</p></div>
-      <div class="rule"><h3>Turno cerrado es definitivo</h3><p>No se vende ni se anula en un turno cerrado. Solo puede haber un turno abierto por caja.</p></div>
-      <div class="rule"><h3>Precio solo hacia arriba</h3><p>En la venta se puede cobrar más que el precio establecido, nunca menos, y como máximo +50 % (parámetro editable). El precio del catálogo no cambia y cada línea guarda ambos precios.</p></div>
-      <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN activo, ni desactivar el propio usuario.</p></div>
-      <div class="rule"><h3>Bloqueo por intentos</h3><p>5 intentos fallidos bloquean 15 minutos. El reset del admin desbloquea y obliga a cambiar la contraseña.</p></div>
-      <div class="rule"><h3>Auditoría con autor</h3><p>Cambios en usuarios, productos, precios y permisos quedan con usuario y fecha, sin guardar nunca el hash de la contraseña.</p></div>
+      <div class="rule"><h3>Sin sobreventa</h3><p>El stock nunca queda negativo, tampoco al descontar las piezas de un paquete.</p></div>
+      <div class="rule"><h3>Todo entra por la bodega</h3><p>Solo el admin registra compras y siempre a la bodega. Una compra confirmada ya no se modifica.</p></div>
+      <div class="rule"><h3>Costo real</h3><p>Gastos de importación repartidos por valor, con suma exacta, y costo promedio ponderado que incluye lo que va en tránsito.</p></div>
+      <div class="rule"><h3>Envíos en dos pasos</h3><p>Sale del origen al enviar; entra al destino lo escaneado. Los faltantes generan una alerta con quién envió y quién recibió.</p></div>
+      <div class="rule"><h3>Mermas y conteos con aprobación</h3><p>La sucursal reporta y cuenta; el stock solo cambia cuando el admin aprueba.</p></div>
+      <div class="rule"><h3>Precio del paquete por la pieza</h3><p>Especial, tabla por gama o servicio + pieza. El vendedor no elige el precio del paquete.</p></div>
+      <div class="rule"><h3>Precio solo hacia arriba</h3><p>Nunca menos que el establecido, como máximo +50 %. La única rebaja es una promoción activa y vigente.</p></div>
+      <div class="rule"><h3>Sin ventas duplicadas</h3><p>La misma clave de venta enviada dos veces devuelve la misma venta. Numeración sin huecos por sucursal.</p></div>
+      <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran; se anulan con el turno abierto y el stock vuelve, piezas de paquete incluidas.</p></div>
+      <div class="rule"><h3>Arqueo con tolerancia</h3><p>Conteo por denominación. Una diferencia mayor a C$100 exige justificación y alerta; el fondo del día siguiente queda registrado.</p></div>
+      <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN. 5 intentos fallidos bloquean 15 minutos.</p></div>
+      <div class="rule"><h3>Auditoría con autor</h3><p>Cambios en usuarios, productos, precios, promociones, equipos y parámetros, sin guardar contraseñas ni tokens.</p></div>
     </div>
   </section>
 
   <section id="funciones">
     <div class="section-head">
       <h2>Funciones para el backend</h2>
-      <p>La API llama a estas funciones dentro de una transacción, después de <code>SET LOCAL app.usuario_id = …</code>. Cada una valida el permiso y la sucursal del usuario.</p>
+      <p>La API llama a estas funciones dentro de una transacción, después de <code>SET LOCAL app.usuario_id = …</code>. Cada una valida el permiso y la ubicación del usuario.</p>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Función</th><th>Qué hace</th><th>Permiso</th></tr></thead>
+        <thead><tr><th>Módulo</th><th>Funciones</th><th>Qué resuelven</th></tr></thead>
         <tbody>
-          <tr><td class="mono">fn_registrar_venta</td><td>Crea la venta con detalle, pagos mixtos y vuelto, y descuenta el stock. Acepta un precio por línea mayor o igual al establecido</td><td class="perm">VENTAS_REGISTRAR (+ VENTAS_MODIFICAR_PRECIO, VENTAS_DESCUENTO)</td></tr>
-          <tr><td class="mono">fn_anular_venta</td><td>Anula una venta del turno abierto y devuelve el stock</td><td class="perm">VENTAS_ANULAR</td></tr>
-          <tr><td class="mono">fn_buscar_variantes</td><td>Búsqueda del POS por nombre, SKU o código de barras, con stock</td><td class="perm">—</td></tr>
-          <tr><td class="mono">fn_abrir_turno</td><td>Abre el turno de una caja con fondo inicial en C$ y US$</td><td class="perm">CAJA_ABRIR</td></tr>
-          <tr><td class="mono">fn_movimiento_caja</td><td>Registra un ingreso o egreso de efectivo con motivo</td><td class="perm">CAJA_MOVIMIENTOS</td></tr>
-          <tr><td class="mono">fn_resumen_turno</td><td>Calcula el monto esperado por método de pago y moneda</td><td class="perm">CAJA_VER_DIFERENCIAS</td></tr>
-          <tr><td class="mono">fn_cerrar_turno</td><td>Arqueo: guarda contado contra esperado y cierra el turno</td><td class="perm">CAJA_CERRAR</td></tr>
-          <tr><td class="mono">fn_movimiento_inventario</td><td>Entradas, ajustes y mermas (el motivo es obligatorio en ajustes)</td><td class="perm">INVENTARIO_ENTRADA / _AJUSTAR</td></tr>
-          <tr><td class="mono">fn_trasladar_stock</td><td>Traslado entre sucursales en una sola operación</td><td class="perm">INVENTARIO_TRASLADAR</td></tr>
-          <tr><td class="mono">fn_crear_usuario</td><td>Alta con rol y sucursales, con contraseña temporal</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
-          <tr><td class="mono">fn_actualizar_usuario</td><td>Cambia datos, rol y sucursales del usuario</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
-          <tr><td class="mono">fn_set_usuario_activo</td><td>Activa o desactiva el usuario (revoca sesiones)</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
-          <tr><td class="mono">fn_resetear_password</td><td>Contraseña temporal, desbloqueo y cambio obligatorio</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
-          <tr><td class="mono">fn_revocar_sesiones</td><td>Cierra todas las sesiones activas de un usuario</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
-          <tr><td class="mono">fn_registrar_login</td><td>Bitácora de acceso, contador de intentos y bloqueo</td><td class="perm">(auth)</td></tr>
-          <tr><td class="mono">fn_reporte_ventas</td><td>Ventas, costo, margen y ticket promedio por día, semana o mes</td><td class="perm">REPORTES_VER / _COSTOS</td></tr>
-          <tr><td class="mono">fn_top_productos</td><td>Ranking de productos por venta neta en un rango</td><td class="perm">REPORTES_VER</td></tr>
+          <tr><td>Ventas</td><td class="mono">fn_registrar_venta · fn_anular_venta · fn_buscar_variantes · fn_promociones_disponibles</td><td>Venta con piezas, servicios y paquetes, pagos mixtos, vuelto, promoción e idempotencia</td></tr>
+          <tr><td>Precios</td><td class="mono">fn_precio_paquete · fn_crear_perforacion · fn_set_precio_gama · fn_set_precio_especial · fn_set_pieza_permitida</td><td>Precio de paquetes y pantalla de precios de perforación</td></tr>
+          <tr><td>Promociones</td><td class="mono">fn_guardar_promocion · fn_set_promocion_activa</td><td>Apartado de promociones del admin</td></tr>
+          <tr><td>Compras</td><td class="mono">fn_crear_proveedor · fn_crear_compra · fn_compra_set_linea · fn_compra_agregar_gasto · fn_compra_calculo · fn_confirmar_compra · fn_cancelar_compra</td><td>Recepción de mercadería con costeo y vista previa</td></tr>
+          <tr><td>Envíos</td><td class="mono">fn_crear_envio · fn_envio_set_linea · fn_enviar · fn_recibir_envio · fn_cancelar_envio · fn_sugerir_reparto</td><td>Reparto de bodega a sucursales y entre sucursales</td></tr>
+          <tr><td>Inventario</td><td class="mono">fn_consultar_stock · fn_movimiento_inventario · fn_reportar_merma · fn_resolver_merma</td><td>Consultas de stock, ajustes y mermas</td></tr>
+          <tr><td>Conteos</td><td class="mono">fn_iniciar_conteo · fn_conteo_registrar · fn_enviar_conteo · fn_conteo_diferencias · fn_aplicar_conteo · fn_cancelar_conteo</td><td>Conteo físico con la tablet</td></tr>
+          <tr><td>Caja</td><td class="mono">fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar</td><td>Apertura, arqueo ciego, retiro, fondo y alertas</td></tr>
+          <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_revocar_sesiones · fn_registrar_login · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo · fn_atender_alerta</td><td>Panel de usuarios, equipos y alertas</td></tr>
+          <tr><td>Reportes</td><td class="mono">fn_reporte_ventas · fn_top_productos</td><td>Ventas por día, semana o mes y ranking</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_sobreprecio</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_turnos</code>, <code>v_usuarios_admin</code>.</p>
+    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_ventas_perforacion</code>, <code>v_ventas_gama</code>, <code>v_ventas_promocion</code>, <code>v_ventas_sobreprecio</code>, <code>v_piezas_consumidas_paquete</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_compras</code>, <code>v_compras_mensual_proveedor</code>, <code>v_envios</code>, <code>v_envios_por_recibir</code>, <code>v_mermas</code>, <code>v_precios_perforacion</code>, <code>v_turnos</code>, <code>v_alertas_pendientes</code>, <code>v_usuarios_admin</code>.</p>
   </section>
 
-  <footer>Esquema v1.0. Archivos: 01_esquema.sql · 02_seed.sql · 03_datos_demo.sql · 04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
+  <footer>Esquema v1.1. Archivos: db/01_esquema.sql · db/02_seed.sql · db/03_datos_demo.sql · db/04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
 </div>
