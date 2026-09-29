@@ -109,6 +109,16 @@ BEGIN
   END LOOP;
 END $$;
 
+-- Promociones de ejemplo
+SELECT fn_set_promocion_activa((SELECT id FROM usuario WHERE username = 'admin'),
+         fn_guardar_promocion((SELECT id FROM usuario WHERE username = 'admin'), NULL, 'Promo 10 %', 'PORCENTAJE', 10), true);
+SELECT fn_set_promocion_activa((SELECT id FROM usuario WHERE username = 'admin'),
+         fn_guardar_promocion((SELECT id FROM usuario WHERE username = 'admin'), NULL, 'Aniversario C$100', 'MONTO', 100, 1000,
+                              ((now() AT TIME ZONE 'America/Managua')::date + 30),
+                              ((now() AT TIME ZONE 'America/Managua')::date + 37),
+                              'C$100 menos en compras desde C$1,000, la semana del aniversario'), true);
+SELECT fn_guardar_promocion((SELECT id FROM usuario WHERE username = 'admin'), NULL, 'Black Friday 20 %', 'PORCENTAJE', 20);
+
 UPDATE stock_sucursal SET stock_minimo = 5
  WHERE sucursal_id IN (SELECT id FROM sucursal WHERE tipo = 'SUCURSAL');
 

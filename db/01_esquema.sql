@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 4 de 6)  ·  2 sucursales + bodega central
+--  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 5 de 6)  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -787,6 +787,25 @@ CREATE INDEX ix_caja_mov_turno ON caja_movimiento (turno_id);
 -- =====================================================================
 -- 6. VENTAS
 -- =====================================================================
+-- Promociones: la única forma de cobrar menos. Las crea y activa el admin; el vendedor elige una al cobrar.
+-- Se aplican a toda la venta, una por venta.
+CREATE TABLE promocion (
+  id             integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre         varchar(80)   NOT NULL UNIQUE,
+  descripcion    varchar(300),
+  tipo           varchar(10)   NOT NULL CHECK (tipo IN ('PORCENTAJE','MONTO')),
+  valor          numeric(12,2) NOT NULL CHECK (valor > 0),          -- % o córdobas
+  compra_minima  numeric(12,2) NOT NULL DEFAULT 0 CHECK (compra_minima >= 0),
+  vigente_desde  date,                                             -- NULL = sin límite
+  vigente_hasta  date,
+  activa         boolean       NOT NULL DEFAULT false,
+  created_by     bigint        REFERENCES usuario(id),
+  created_at     timestamptz   NOT NULL DEFAULT now(),
+  updated_at     timestamptz   NOT NULL DEFAULT now(),
+  CONSTRAINT ck_promo_pct CHECK (tipo <> 'PORCENTAJE' OR valor <= 100),
+  CONSTRAINT ck_promo_fechas CHECK (vigente_desde IS NULL OR vigente_hasta IS NULL OR vigente_desde <= vigente_hasta)
+);
+
 CREATE TABLE venta (
   id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   numero            varchar(20)   NOT NULL UNIQUE,              -- LAM-00000001
@@ -805,7 +824,10 @@ CREATE TABLE venta (
   fecha_anulacion   timestamptz,
   motivo_anulacion  varchar(200),
   notas             varchar(500),
+  promocion_id      integer       REFERENCES promocion(id),
+  clave_idempotencia uuid         UNIQUE,                         -- la envía el POS: evita ventas duplicadas
   CONSTRAINT ck_venta_total CHECK (descuento <= subtotal AND total = subtotal - descuento),
+  CONSTRAINT ck_venta_descuento_promo CHECK (descuento = 0 OR promocion_id IS NOT NULL),
   CONSTRAINT ck_venta_anulacion CHECK (
     (estado = 'COMPLETADA' AND anulada_por IS NULL AND fecha_anulacion IS NULL AND motivo_anulacion IS NULL) OR
     (estado = 'ANULADA' AND anulada_por IS NOT NULL AND fecha_anulacion IS NOT NULL AND length(trim(motivo_anulacion)) >= 5))
@@ -824,11 +846,18 @@ CREATE TABLE venta_detalle (
   cantidad         integer       NOT NULL CHECK (cantidad > 0),
   precio_lista     numeric(12,2) NOT NULL CHECK (precio_lista >= 0),      -- precio establecido (snapshot)
   precio_unitario  numeric(12,2) NOT NULL,                                -- precio cobrado (≥ lista)
-  costo_unitario   numeric(12,2) NOT NULL CHECK (costo_unitario >= 0),    -- snapshot
-  descuento        numeric(12,2) NOT NULL DEFAULT 0 CHECK (descuento >= 0),
-  subtotal         numeric(12,2) GENERATED ALWAYS AS (cantidad * precio_unitario - descuento) STORED,
-  CONSTRAINT ck_detalle_precio_no_menor CHECK (precio_unitario >= precio_lista),
-  CONSTRAINT ck_detalle_descuento CHECK (descuento <= cantidad * precio_unitario)
+  costo_unitario   numeric(12,2) NOT NULL CHECK (costo_unitario >= 0),    -- snapshot (paquete: servicio + piezas)
+  subtotal         numeric(12,2) GENERATED ALWAYS AS (cantidad * precio_unitario) STORED,
+  CONSTRAINT ck_detalle_precio_no_menor CHECK (precio_unitario >= precio_lista)
+);
+
+-- Piezas que salieron del inventario en cada línea de paquete
+CREATE TABLE venta_detalle_pieza (
+  venta_detalle_id  bigint        NOT NULL REFERENCES venta_detalle(id),
+  variante_id       bigint        NOT NULL REFERENCES variante(id),
+  cantidad          integer       NOT NULL CHECK (cantidad > 0),
+  costo_unitario    numeric(12,2) NOT NULL,
+  PRIMARY KEY (venta_detalle_id, variante_id)
 );
 CREATE INDEX ix_venta_detalle_venta ON venta_detalle (venta_id);
 CREATE INDEX ix_venta_detalle_variante ON venta_detalle (variante_id);
@@ -917,6 +946,8 @@ CREATE TRIGGER tg_venta_proteger BEFORE UPDATE OR DELETE ON venta
   FOR EACH ROW EXECUTE FUNCTION fn_proteger_venta();
 CREATE TRIGGER tg_detalle_inmutable BEFORE UPDATE OR DELETE ON venta_detalle
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+CREATE TRIGGER tg_detalle_pieza_inmutable BEFORE UPDATE OR DELETE ON venta_detalle_pieza
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
 CREATE TRIGGER tg_pago_inmutable BEFORE UPDATE OR DELETE ON venta_pago
   FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
 CREATE TRIGGER tg_cierre_inmutable BEFORE UPDATE OR DELETE ON cierre_caja_detalle
@@ -977,12 +1008,12 @@ END $$;
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['sucursal','usuario','producto','variante','parametro'] LOOP
+  FOREACH t IN ARRAY ARRAY['sucursal','usuario','producto','variante','parametro','promocion'] LOOP
     EXECUTE format('CREATE TRIGGER tg_%1$s_updated BEFORE UPDATE ON %1$I
                     FOR EACH ROW EXECUTE FUNCTION fn_set_updated_at()', t);
   END LOOP;
   FOREACH t IN ARRAY ARRAY['sucursal','caja','rol','rol_permiso','usuario','usuario_sucursal',
-                           'categoria','producto','variante','metodo_pago','tipo_cambio','parametro','dispositivo'] LOOP
+                           'categoria','producto','variante','metodo_pago','tipo_cambio','parametro','dispositivo','promocion'] LOOP
     EXECUTE format('CREATE TRIGGER tg_%1$s_auditoria AFTER INSERT OR UPDATE OR DELETE ON %1$I
                     FOR EACH ROW EXECUTE FUNCTION fn_auditar()', t);
   END LOOP;
@@ -1303,45 +1334,63 @@ END $$;
 -- ---------------------------------------------------------------------
 -- 9.3 Ventas
 -- ---------------------------------------------------------------------
--- p_items:  [{"variante_id": 12, "cantidad": 1, "precio": 700, "descuento": 0}, ...]
+-- p_items:  [{"variante_id": 12, "cantidad": 1},                       ← pieza o servicio
+--            {"variante_id": 12, "cantidad": 1, "precio": 700},        ← precio subido (nunca menor)
+--            {"variante_id": 40, "cantidad": 1, "piezas": [21]}]       ← paquete: perforación + pieza(s) escaneadas
 -- p_pagos:  [{"metodo":"EFECTIVO","moneda":"USD","monto":20},
 --            {"metodo":"TARJETA","moneda":"NIO","monto":350,"referencia":"784512"}]
--- · "precio" es opcional. Si se omite se cobra el precio establecido (variante.precio_venta).
---   Si se envía, puede ser IGUAL o MAYOR al establecido, nunca menor, y como máximo
---   el % del parámetro VENTA_SOBREPRECIO_MAX_PCT. El precio del catálogo NO cambia.
--- · El costo siempre se toma de la BD.
+-- p_promocion:    id de una promoción activa y vigente (opcional). Es la única forma de cobrar menos.
+-- p_idempotencia: UUID que genera el POS por cada venta. Si llega dos veces (doble clic, reintento de red)
+--                 se devuelve la misma venta en lugar de crear otra.
+-- Reglas:
+-- · El precio de lista lo pone la BD: precio_venta de la variante, o fn_precio_paquete para un paquete.
+--   "precio" es opcional: igual o mayor a la lista, nunca menor, y como máximo +VENTA_SOBREPRECIO_MAX_PCT.
+-- · Un paquete va con cantidad 1 y descuenta del inventario cada pieza escaneada.
+-- · El costo sale de la BD (paquete = costo del servicio + costo de las piezas).
 -- · Si lo pagado supera el total y hay efectivo, el exceso se registra como vuelto en C$.
 CREATE OR REPLACE FUNCTION fn_registrar_venta(
   p_usuario           bigint,
   p_turno             bigint,
   p_items             jsonb,
   p_pagos             jsonb,
-  p_descuento         numeric DEFAULT 0,
+  p_promocion         integer DEFAULT NULL,
   p_cliente_nombre    text    DEFAULT NULL,
   p_cliente_telefono  text    DEFAULT NULL,
-  p_notas             text    DEFAULT NULL
+  p_notas             text    DEFAULT NULL,
+  p_idempotencia      uuid    DEFAULT NULL
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
-  v_sucursal   integer;
-  v_estado     text;
-  v_tc         numeric;
-  v_numero     text;
-  v_venta_id   bigint;
-  v_subtotal   numeric;
-  v_total      numeric;
-  v_pagado     numeric;
-  v_efectivo   numeric;
-  v_exceso     numeric;
-  v_hay_desc   boolean;
+  v_sucursal    integer;
+  v_estado      text;
+  v_tc          numeric;
+  v_numero      text;
+  v_venta_id    bigint;
+  v_det_id      bigint;
+  v_subtotal    numeric;
+  v_descuento   numeric := 0;
+  v_total       numeric;
+  v_pagado      numeric;
+  v_efectivo    numeric;
+  v_exceso      numeric;
   v_efectivo_id smallint;
-  v_faltantes  text;
-  v_max_pct    numeric;
-  r            record;
+  v_lista       text;
+  v_max_pct     numeric;
+  v_precio_paq  numeric;
+  v_costo_paq   numeric;
+  v_promo       record;
+  v_hoy         date := (now() AT TIME ZONE 'America/Managua')::date;
+  r             record;
+  pz            record;
 BEGIN
+  -- Venta ya registrada con esta clave → se devuelve la misma
+  IF p_idempotencia IS NOT NULL THEN
+    SELECT id INTO v_venta_id FROM venta WHERE clave_idempotencia = p_idempotencia;
+    IF FOUND THEN RETURN v_venta_id; END IF;
+  END IF;
+
   PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_REGISTRAR');
 
-  -- Turno y sucursal
   SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
     FROM turno_caja t JOIN caja c ON c.id = t.caja_id WHERE t.id = p_turno;
   IF v_estado IS DISTINCT FROM 'ABIERTO' THEN
@@ -1349,7 +1398,6 @@ BEGIN
   END IF;
   PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
 
-  -- Validaciones de entrada
   IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
     RAISE EXCEPTION 'La venta debe tener al menos un producto';
   END IF;
@@ -1357,115 +1405,153 @@ BEGIN
     RAISE EXCEPTION 'La venta debe tener al menos un pago';
   END IF;
 
-  SELECT string_agg(coalesce(x->>'variante_id', '(vacío)'), ', ') INTO v_faltantes
-    FROM jsonb_array_elements(p_items) x
-    LEFT JOIN variante va ON va.id = (x->>'variante_id')::bigint
-   WHERE va.id IS NULL;
-  IF v_faltantes IS NOT NULL THEN
-    RAISE EXCEPTION 'Variante(s) inexistente(s): %', v_faltantes;
+  -- 1. Líneas normalizadas
+  IF to_regclass('pg_temp.tmp_linea') IS NULL THEN
+  CREATE TEMP TABLE tmp_linea (
+    n               integer PRIMARY KEY,
+    variante_id     bigint,
+    cantidad        integer,
+    precio_enviado  numeric,
+    piezas          bigint[],
+    tipo            text,
+    nombre          text,
+    activo          boolean,
+    perforacion_id  integer,
+    precio_lista    numeric,
+    precio_cobrado  numeric,
+    costo           numeric
+  ) ON COMMIT DROP;
   END IF;
+  TRUNCATE tmp_linea;
 
-  -- Precio modificado: solo hacia arriba, con permiso y dentro del tope
-  SELECT string_agg(format('"%s — %s" C$ %s (establecido C$ %s)', p.nombre, va.nombre,
-                           round((x->>'precio')::numeric, 2), va.precio_venta), '; ')
-    INTO v_faltantes
-    FROM jsonb_array_elements(p_items) x
-    JOIN variante va ON va.id = (x->>'variante_id')::bigint
-    JOIN producto p  ON p.id = va.producto_id
-   WHERE round((x->>'precio')::numeric, 2) < va.precio_venta;
-  IF v_faltantes IS NOT NULL THEN
-    RAISE EXCEPTION 'El precio de venta no puede ser menor al establecido: %', v_faltantes
+  INSERT INTO tmp_linea (n, variante_id, cantidad, precio_enviado, piezas)
+  SELECT t.ord, (t.x->>'variante_id')::bigint, (t.x->>'cantidad')::integer,
+         round((t.x->>'precio')::numeric, 2),
+         CASE WHEN jsonb_typeof(t.x->'piezas') = 'array'
+              THEN ARRAY(SELECT jsonb_array_elements_text(t.x->'piezas')::bigint) END
+    FROM jsonb_array_elements(p_items) WITH ORDINALITY AS t(x, ord);
+
+  UPDATE tmp_linea l
+     SET tipo = pr.tipo, nombre = pr.nombre || ' — ' || va.nombre, activo = va.activo AND pr.activo,
+         perforacion_id = pf.id, precio_lista = va.precio_venta, costo = va.costo
+    FROM variante va
+    JOIN producto pr ON pr.id = va.producto_id
+    LEFT JOIN perforacion pf ON pf.paquete_variante_id = va.id
+   WHERE va.id = l.variante_id;
+
+  -- 2. Validación por línea y precio de lista de los paquetes
+  FOR r IN SELECT * FROM tmp_linea ORDER BY n LOOP
+    IF r.tipo IS NULL THEN RAISE EXCEPTION 'Variante inexistente: %', coalesce(r.variante_id::text, '(vacía)'); END IF;
+    IF NOT r.activo THEN RAISE EXCEPTION 'El producto "%" está inactivo', r.nombre; END IF;
+    IF r.cantidad IS NULL OR r.cantidad <= 0 THEN RAISE EXCEPTION 'Cantidad inválida para "%"', r.nombre; END IF;
+
+    IF r.tipo = 'PAQUETE' THEN
+      IF r.cantidad <> 1 THEN
+        RAISE EXCEPTION 'Cada paquete "%" se registra como una línea con cantidad 1', r.nombre;
+      END IF;
+      IF r.piezas IS NULL OR cardinality(r.piezas) = 0 THEN
+        RAISE EXCEPTION 'El paquete "%" requiere escanear la(s) pieza(s)', r.nombre;
+      END IF;
+      SELECT pp.precio INTO v_precio_paq FROM fn_precio_paquete(r.perforacion_id, r.piezas) pp;
+      SELECT sv.costo + (SELECT sum(va.costo) FROM unnest(r.piezas) AS u(id) JOIN variante va ON va.id = u.id)
+        INTO v_costo_paq
+        FROM perforacion pf JOIN variante sv ON sv.id = pf.servicio_variante_id
+       WHERE pf.id = r.perforacion_id;
+      UPDATE tmp_linea SET precio_lista = v_precio_paq, costo = v_costo_paq WHERE n = r.n;
+    ELSIF r.piezas IS NOT NULL THEN
+      RAISE EXCEPTION 'Solo los paquetes llevan piezas ("%")', r.nombre;
+    END IF;
+  END LOOP;
+
+  UPDATE tmp_linea SET precio_cobrado = coalesce(precio_enviado, precio_lista);
+
+  -- 3. El precio solo sube: nunca menor que la lista; mayor requiere permiso y respeta el tope
+  SELECT string_agg(format('"%s" C$ %s (establecido C$ %s)', nombre, precio_cobrado, precio_lista), '; ' ORDER BY n)
+    INTO v_lista FROM tmp_linea WHERE precio_cobrado < precio_lista;
+  IF v_lista IS NOT NULL THEN
+    RAISE EXCEPTION 'El precio de venta no puede ser menor al establecido: %', v_lista
           USING ERRCODE = 'check_violation';
   END IF;
-
-  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_items) x
-               JOIN variante va ON va.id = (x->>'variante_id')::bigint
-              WHERE round((x->>'precio')::numeric, 2) > va.precio_venta) THEN
+  IF EXISTS (SELECT 1 FROM tmp_linea WHERE precio_cobrado > precio_lista) THEN
     PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_MODIFICAR_PRECIO');
     v_max_pct := fn_parametro_num('VENTA_SOBREPRECIO_MAX_PCT');
     IF v_max_pct IS NOT NULL THEN
-      SELECT string_agg(format('"%s — %s" C$ %s (máximo C$ %s)', p.nombre, va.nombre,
-                               round((x->>'precio')::numeric, 2),
-                               round(va.precio_venta * (1 + v_max_pct / 100), 2)), '; ')
-        INTO v_faltantes
-        FROM jsonb_array_elements(p_items) x
-        JOIN variante va ON va.id = (x->>'variante_id')::bigint
-        JOIN producto p  ON p.id = va.producto_id
-       WHERE round((x->>'precio')::numeric, 2) > round(va.precio_venta * (1 + v_max_pct / 100), 2);
-      IF v_faltantes IS NOT NULL THEN
-        RAISE EXCEPTION 'El precio supera el aumento máximo permitido (+% %%): %', v_max_pct, v_faltantes;
+      SELECT string_agg(format('"%s" C$ %s (máximo C$ %s)', nombre, precio_cobrado,
+                               round(precio_lista * (1 + v_max_pct / 100), 2)), '; ' ORDER BY n)
+        INTO v_lista FROM tmp_linea
+       WHERE precio_cobrado > round(precio_lista * (1 + v_max_pct / 100), 2);
+      IF v_lista IS NOT NULL THEN
+        RAISE EXCEPTION 'El precio supera el aumento máximo permitido (+% %%): %', v_max_pct, v_lista;
       END IF;
     END IF;
   END IF;
 
-  SELECT bool_or(coalesce((x->>'descuento')::numeric, 0) > 0) INTO v_hay_desc
-    FROM jsonb_array_elements(p_items) x;
-  IF coalesce(p_descuento, 0) > 0 OR v_hay_desc THEN
-    PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_DESCUENTO');
-  END IF;
+  SELECT sum(cantidad * precio_cobrado) INTO v_subtotal FROM tmp_linea;
 
-  -- Correlativo por sucursal (bloquea la fila: numeración sin huecos ni duplicados)
+  -- 4. Promoción (una por venta, sobre toda la venta)
+  IF p_promocion IS NOT NULL THEN
+    PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_PROMOCION');
+    SELECT * INTO v_promo FROM promocion WHERE id = p_promocion;
+    IF v_promo.id IS NULL THEN RAISE EXCEPTION 'La promoción % no existe', p_promocion; END IF;
+    IF NOT v_promo.activa THEN RAISE EXCEPTION 'La promoción "%" no está activa', v_promo.nombre; END IF;
+    IF (v_promo.vigente_desde IS NOT NULL AND v_hoy < v_promo.vigente_desde)
+       OR (v_promo.vigente_hasta IS NOT NULL AND v_hoy > v_promo.vigente_hasta) THEN
+      RAISE EXCEPTION 'La promoción "%" no está vigente hoy', v_promo.nombre;
+    END IF;
+    IF v_subtotal < v_promo.compra_minima THEN
+      RAISE EXCEPTION 'La promoción "%" requiere una compra mínima de C$ % (la venta suma C$ %)',
+            v_promo.nombre, v_promo.compra_minima, v_subtotal;
+    END IF;
+    v_descuento := CASE v_promo.tipo WHEN 'PORCENTAJE' THEN round(v_subtotal * v_promo.valor / 100, 2)
+                                     ELSE least(v_promo.valor, v_subtotal) END;
+  END IF;
+  v_total := v_subtotal - v_descuento;
+
+  -- 5. Correlativo por sucursal. El bloqueo de la fila serializa las ventas de la sucursal;
+  --    con él tomado se vuelve a revisar la clave (otra petición igual pudo terminar mientras tanto).
+  PERFORM 1 FROM sucursal WHERE id = v_sucursal FOR UPDATE;
+  IF p_idempotencia IS NOT NULL THEN
+    SELECT id INTO v_venta_id FROM venta WHERE clave_idempotencia = p_idempotencia;
+    IF FOUND THEN RETURN v_venta_id; END IF;
+  END IF;
   UPDATE sucursal SET ultimo_numero_venta = ultimo_numero_venta + 1
    WHERE id = v_sucursal
   RETURNING codigo || '-' || lpad(ultimo_numero_venta::text, 8, '0') INTO v_numero;
 
   v_tc := fn_tipo_cambio_vigente();
 
-  -- Subtotal con el precio cobrado (el enviado o, si no viene, el establecido)
-  SELECT sum(i.cantidad * round(coalesce(i.precio, va.precio_venta), 2) - coalesce(i.descuento, 0))
-    INTO v_subtotal
-    FROM jsonb_to_recordset(p_items) AS i(variante_id bigint, cantidad int, precio numeric, descuento numeric)
-    JOIN variante va ON va.id = i.variante_id;
-
-  IF coalesce(p_descuento, 0) < 0 OR coalesce(p_descuento, 0) > v_subtotal THEN
-    RAISE EXCEPTION 'Descuento global inválido (C$ %) para un subtotal de C$ %', p_descuento, v_subtotal;
-  END IF;
-  v_total := v_subtotal - coalesce(p_descuento, 0);
-
   INSERT INTO venta (numero, sucursal_id, turno_id, vendedor_id, cliente_nombre, cliente_telefono,
-                     subtotal, descuento, total, tipo_cambio, notas)
+                     subtotal, descuento, total, tipo_cambio, notas, promocion_id, clave_idempotencia)
   VALUES (v_numero, v_sucursal, p_turno, p_usuario, p_cliente_nombre, p_cliente_telefono,
-          v_subtotal, coalesce(p_descuento, 0), v_total, v_tc, p_notas)
+          v_subtotal, v_descuento, v_total, v_tc, p_notas, p_promocion, p_idempotencia)
   RETURNING id INTO v_venta_id;
 
-  -- Detalle + descuento de stock (ordenado por variante para evitar deadlocks)
-  FOR r IN
-    SELECT i.variante_id, i.cantidad, coalesce(i.descuento, 0) AS descuento,
-           va.precio_venta, round(coalesce(i.precio, va.precio_venta), 2) AS precio_cobrado,
-           va.costo, va.activo AND p.activo AS activo, p.tipo,
-           p.nombre || ' — ' || va.nombre AS nombre
-      FROM jsonb_to_recordset(p_items) AS i(variante_id bigint, cantidad int, precio numeric, descuento numeric)
-      LEFT JOIN variante va ON va.id = i.variante_id
-      LEFT JOIN producto p  ON p.id  = va.producto_id
-     ORDER BY i.variante_id
-  LOOP
-    IF r.precio_venta IS NULL THEN
-      RAISE EXCEPTION 'La variante % no existe', r.variante_id;
-    END IF;
-    IF NOT r.activo THEN
-      RAISE EXCEPTION 'El producto "%" está inactivo', r.nombre;
-    END IF;
-    IF r.tipo = 'PAQUETE' THEN
-      -- TODO paso 5: venta de paquetes con pieza escaneada y precio calculado
-      RAISE EXCEPTION 'Los paquetes todavía no se pueden vender por esta vía ("%")', r.nombre;
-    END IF;
-    IF r.cantidad IS NULL OR r.cantidad <= 0 THEN
-      RAISE EXCEPTION 'Cantidad inválida para "%"', r.nombre;
-    END IF;
-
-    INSERT INTO venta_detalle (venta_id, variante_id, cantidad, precio_lista, precio_unitario,
-                               costo_unitario, descuento)
-    VALUES (v_venta_id, r.variante_id, r.cantidad, r.precio_venta, r.precio_cobrado,
-            r.costo, r.descuento);
+  -- 6. Detalle y salida de inventario (piezas sueltas y piezas de paquetes)
+  FOR r IN SELECT * FROM tmp_linea ORDER BY variante_id, n LOOP
+    INSERT INTO venta_detalle (venta_id, variante_id, cantidad, precio_lista, precio_unitario, costo_unitario)
+    VALUES (v_venta_id, r.variante_id, r.cantidad, r.precio_lista, r.precio_cobrado, r.costo)
+    RETURNING id INTO v_det_id;
 
     IF r.tipo = 'PRODUCTO' THEN
       INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
                                          costo_unitario, venta_id, usuario_id)
       VALUES (v_sucursal, r.variante_id, 'VENTA', -r.cantidad, 0, r.costo, v_venta_id, p_usuario);
+    ELSIF r.tipo = 'PAQUETE' THEN
+      FOR pz IN SELECT u.id, count(*)::integer AS cant, va.costo
+                  FROM unnest(r.piezas) AS u(id) JOIN variante va ON va.id = u.id
+                 GROUP BY u.id, va.costo ORDER BY u.id
+      LOOP
+        INSERT INTO venta_detalle_pieza (venta_detalle_id, variante_id, cantidad, costo_unitario)
+        VALUES (v_det_id, pz.id, pz.cant, pz.costo);
+        INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                           costo_unitario, venta_id, motivo, usuario_id)
+        VALUES (v_sucursal, pz.id, 'VENTA', -pz.cant, 0, pz.costo, v_venta_id,
+                left('Pieza de paquete: ' || r.nombre, 200), p_usuario);
+      END LOOP;
     END IF;
   END LOOP;
 
-  -- Pagos
+  -- 7. Pagos
   FOR r IN
     SELECT m.id AS metodo_id, m.codigo, m.requiere_referencia, m.es_efectivo, m.activo,
            upper(coalesce(x->>'moneda', 'NIO'))::char(3) AS moneda,
@@ -1489,7 +1575,7 @@ BEGIN
             CASE WHEN r.moneda = 'USD' THEN v_tc ELSE 1 END, r.referencia);
   END LOOP;
 
-  -- Cuadre y vuelto
+  -- 8. Cuadre y vuelto
   SELECT sum(vp.monto_nio), sum(vp.monto_nio) FILTER (WHERE m.es_efectivo)
     INTO v_pagado, v_efectivo
     FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id
@@ -1511,6 +1597,57 @@ BEGIN
 
   RETURN v_venta_id;
 END $$;
+
+-- Promociones (panel del admin)
+CREATE OR REPLACE FUNCTION fn_guardar_promocion(
+  p_admin bigint, p_id integer, p_nombre text, p_tipo text, p_valor numeric,
+  p_compra_minima numeric DEFAULT 0, p_desde date DEFAULT NULL, p_hasta date DEFAULT NULL,
+  p_descripcion text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PROMOCIONES_GESTIONAR');
+  IF p_id IS NULL THEN
+    INSERT INTO promocion (nombre, descripcion, tipo, valor, compra_minima, vigente_desde, vigente_hasta, created_by)
+    VALUES (trim(p_nombre), p_descripcion, upper(p_tipo), p_valor, coalesce(p_compra_minima, 0), p_desde, p_hasta, p_admin)
+    RETURNING id INTO v_id;
+  ELSE
+    UPDATE promocion
+       SET nombre = trim(p_nombre), descripcion = p_descripcion, tipo = upper(p_tipo), valor = p_valor,
+           compra_minima = coalesce(p_compra_minima, 0), vigente_desde = p_desde, vigente_hasta = p_hasta
+     WHERE id = p_id
+    RETURNING id INTO v_id;
+    IF v_id IS NULL THEN RAISE EXCEPTION 'La promoción % no existe', p_id; END IF;
+  END IF;
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_set_promocion_activa(p_admin bigint, p_id integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PROMOCIONES_GESTIONAR');
+  UPDATE promocion SET activa = p_activa WHERE id = p_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La promoción % no existe', p_id; END IF;
+END $$;
+
+-- Lista para el botón "Promoción" del POS: activas y vigentes hoy, con cuánto descontarían
+CREATE OR REPLACE FUNCTION fn_promociones_disponibles(p_subtotal numeric DEFAULT NULL)
+RETURNS TABLE (promocion_id integer, nombre text, tipo text, valor numeric, compra_minima numeric,
+               aplica boolean, descuento numeric)
+LANGUAGE sql STABLE AS $$
+  SELECT p.id, p.nombre::text, p.tipo::text, p.valor, p.compra_minima,
+         p_subtotal IS NULL OR p_subtotal >= p.compra_minima,
+         CASE WHEN p_subtotal IS NULL THEN NULL
+              WHEN p.tipo = 'PORCENTAJE' THEN round(p_subtotal * p.valor / 100, 2)
+              ELSE least(p.valor, p_subtotal) END
+    FROM promocion p
+   WHERE p.activa
+     AND (p.vigente_desde IS NULL OR p.vigente_desde <= (now() AT TIME ZONE 'America/Managua')::date)
+     AND (p.vigente_hasta IS NULL OR p.vigente_hasta >= (now() AT TIME ZONE 'America/Managua')::date)
+   ORDER BY p.nombre
+$$;
 
 -- Anulación: solo con el turno aún abierto (después del cierre → devolución, fase 2)
 CREATE OR REPLACE FUNCTION fn_anular_venta(p_usuario bigint, p_venta bigint, p_motivo text)
@@ -2199,7 +2336,9 @@ BEGIN
   END IF;
   PERFORM fn_exigir_sucursal(p_usuario, v_e.destino_id);
 
-  CREATE TEMP TABLE IF NOT EXISTS tmp_recibido (variante_id bigint PRIMARY KEY, cantidad integer) ON COMMIT DROP;
+  IF to_regclass('pg_temp.tmp_recibido') IS NULL THEN
+    CREATE TEMP TABLE tmp_recibido (variante_id bigint PRIMARY KEY, cantidad integer) ON COMMIT DROP;
+  END IF;
   TRUNCATE tmp_recibido;
   INSERT INTO tmp_recibido
   SELECT (x->>'variante_id')::bigint, sum((x->>'cantidad')::integer)
@@ -2299,9 +2438,15 @@ BEGIN
              coalesce(ss.cantidad, 0) AS st, coalesce(ss.stock_minimo, 0) AS mn,
              (SELECT coalesce(sum(d.cantidad_enviada), 0)::int FROM envio_detalle d JOIN envio e ON e.id = d.envio_id
                WHERE e.estado = 'EN_TRANSITO' AND e.destino_id = s.id AND d.variante_id = p_variante) AS tr,
-             (SELECT coalesce(sum(vd.cantidad), 0)::int FROM venta_detalle vd JOIN venta v ON v.id = vd.venta_id
-               WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = s.id AND vd.variante_id = p_variante
-                 AND v.fecha >= now() - interval '30 days') AS ve
+             (SELECT coalesce(sum(u.cant), 0)::int
+                FROM (SELECT vd.cantidad AS cant FROM venta_detalle vd JOIN venta v ON v.id = vd.venta_id
+                       WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = s.id AND vd.variante_id = p_variante
+                         AND v.fecha >= now() - interval '30 days'
+                      UNION ALL
+                      SELECT vp.cantidad FROM venta_detalle_pieza vp
+                        JOIN venta_detalle vd ON vd.id = vp.venta_detalle_id JOIN venta v ON v.id = vd.venta_id
+                       WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = s.id AND vp.variante_id = p_variante
+                         AND v.fecha >= now() - interval '30 days') u) AS ve
         FROM sucursal s
         LEFT JOIN stock_sucursal ss ON ss.sucursal_id = s.id AND ss.variante_id = p_variante
        WHERE s.tipo = 'SUCURSAL' AND s.activa) q;
@@ -2695,6 +2840,7 @@ END $$;
 CREATE OR REPLACE VIEW v_ventas_linea AS
 SELECT
   v.id                                         AS venta_id,
+  d.id                                         AS detalle_id,
   v.numero,
   v.fecha,
   (v.fecha AT TIME ZONE 'America/Managua')     AS fecha_local,
@@ -2778,6 +2924,52 @@ SELECT dia, sucursal_id, sucursal,
        round(sum(margen), 2)      AS margen
   FROM v_ventas_linea
  GROUP BY dia, sucursal_id, sucursal;
+
+-- Perforaciones: con pieza (paquete) contra solo servicio
+CREATE OR REPLACE VIEW v_ventas_perforacion AS
+SELECT l.dia, l.sucursal_id, l.sucursal, pf.id AS perforacion_id, pf.nombre AS perforacion,
+       CASE WHEN l.variante_id = pf.paquete_variante_id THEN 'CON_PIEZA' ELSE 'SOLO_SERVICIO' END AS modalidad,
+       sum(l.cantidad) AS cantidad, round(sum(l.venta_neta), 2) AS venta_neta, round(sum(l.margen), 2) AS margen
+  FROM v_ventas_linea l
+  JOIN perforacion pf ON l.variante_id IN (pf.servicio_variante_id, pf.paquete_variante_id)
+ GROUP BY l.dia, l.sucursal_id, l.sucursal, pf.id, pf.nombre, 6;
+
+-- Paquetes vendidos por gama de la pieza
+CREATE OR REPLACE VIEW v_ventas_gama AS
+SELECT l.dia, l.sucursal_id, l.sucursal, g.id AS gama_id, g.nombre AS gama,
+       count(*) AS paquetes, round(sum(l.venta_neta), 2) AS venta_neta, round(sum(l.margen), 2) AS margen
+  FROM v_ventas_linea l
+  JOIN LATERAL (SELECT min(va.gama_id) AS gama_id
+                  FROM venta_detalle_pieza vp JOIN variante va ON va.id = vp.variante_id
+                 WHERE vp.venta_detalle_id = l.detalle_id) x ON true
+  JOIN gama g ON g.id = x.gama_id
+ WHERE l.tipo = 'PAQUETE'
+ GROUP BY l.dia, l.sucursal_id, l.sucursal, g.id, g.nombre;
+
+-- Piezas que salieron del inventario dentro de paquetes (para reponer)
+CREATE OR REPLACE VIEW v_piezas_consumidas_paquete AS
+SELECT (v.fecha AT TIME ZONE 'America/Managua')::date AS dia, v.sucursal_id, s.nombre AS sucursal,
+       va.id AS variante_id, va.sku, pr.nombre || ' — ' || va.nombre AS pieza, g.nombre AS gama,
+       sum(vp.cantidad) AS unidades, sum(vp.cantidad * vp.costo_unitario) AS costo
+  FROM venta_detalle_pieza vp
+  JOIN venta_detalle d ON d.id = vp.venta_detalle_id
+  JOIN venta v ON v.id = d.venta_id AND v.estado = 'COMPLETADA'
+  JOIN sucursal s ON s.id = v.sucursal_id
+  JOIN variante va ON va.id = vp.variante_id
+  JOIN producto pr ON pr.id = va.producto_id
+  LEFT JOIN gama g ON g.id = va.gama_id
+ GROUP BY 1, v.sucursal_id, s.nombre, va.id, va.sku, pr.nombre, va.nombre, g.nombre;
+
+-- Promociones: cuánto se vendió y cuánto se descontó con cada una
+CREATE OR REPLACE VIEW v_ventas_promocion AS
+SELECT (v.fecha AT TIME ZONE 'America/Managua')::date AS dia, v.sucursal_id, s.nombre AS sucursal,
+       p.id AS promocion_id, p.nombre AS promocion,
+       count(*) AS ventas, sum(v.subtotal) AS subtotal, sum(v.descuento) AS descuento, sum(v.total) AS total
+  FROM venta v
+  JOIN promocion p ON p.id = v.promocion_id
+  JOIN sucursal s ON s.id = v.sucursal_id
+ WHERE v.estado = 'COMPLETADA'
+ GROUP BY 1, v.sucursal_id, s.nombre, p.id, p.nombre;
 
 -- Ventas cobradas por encima del precio establecido (control del administrador)
 CREATE OR REPLACE VIEW v_ventas_sobreprecio AS

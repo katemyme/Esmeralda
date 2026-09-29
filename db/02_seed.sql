@@ -40,7 +40,8 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('VENTAS_REGISTRAR',      'Ventas',     'Registrar ventas en el POS'),
   ('VENTAS_VER_PROPIAS',    'Ventas',     'Ver sus propias ventas'),
   ('VENTAS_VER_TODAS',      'Ventas',     'Ver ventas de todos los vendedores'),
-  ('VENTAS_DESCUENTO',      'Ventas',     'Aplicar descuentos'),
+  ('VENTAS_PROMOCION',      'Ventas',     'Aplicar a una venta una promoción activa y vigente'),
+  ('PROMOCIONES_GESTIONAR', 'Ventas',     'Crear, editar, activar y desactivar promociones'),
   ('VENTAS_MODIFICAR_PRECIO','Ventas',    'Cobrar por encima del precio establecido (nunca por debajo)'),
   ('PARAMETROS_GESTIONAR',  'Sistema',    'Editar parámetros generales del sistema'),
   ('VENTAS_ANULAR',         'Ventas',     'Anular ventas del turno abierto'),
@@ -68,7 +69,7 @@ SELECT r.id, p.id FROM rol r CROSS JOIN permiso p WHERE r.codigo = 'ADMIN';
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
   'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
-  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_DESCUENTO','VENTAS_ANULAR',
+  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_PROMOCION','VENTAS_ANULAR',
   'VENTAS_MODIFICAR_PRECIO',
   'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','TIPO_CAMBIO_GESTIONAR',
   'REPORTES_VER')
@@ -77,7 +78,7 @@ WHERE r.codigo = 'ENCARGADO';
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
   'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
-  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO',
+  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO','VENTAS_PROMOCION',
   'CAJA_ABRIR','CAJA_CERRAR')
 WHERE r.codigo = 'VENDEDOR';
 

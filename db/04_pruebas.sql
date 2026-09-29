@@ -67,11 +67,12 @@ SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM venta_pago WHERE venta_id = :v2 
 
 -- V3: paga USD 50 por cadena C$1200 → vuelto en córdobas
 SELECT fn_registrar_venta(:ana, :turno, format('[{"variante_id":%s,"cantidad":1}]', :cad)::jsonb,
-  '[{"metodo":"EFECTIVO","moneda":"USD","monto":50}]', 0, 'Cliente frecuente') AS v3 \gset
+  '[{"metodo":"EFECTIVO","moneda":"USD","monto":50}]', NULL, 'Cliente frecuente') AS v3 \gset
 SELECT pg_temp.afirma((SELECT monto FROM venta_pago WHERE venta_id = :v3 AND es_vuelto) = -631.22, 'V3 vuelto C$631.22');
 
 \echo '\n=== 3. VENTAS rechazadas'
-SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":1200}]', 100)$q$, :ana, :turno, :cad), 'VENTAS_DESCUENTO');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":1200}]', 999999)$q$, :ana, :turno, :cad), 'promoción 999999 no existe');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":0}]', '[{"metodo":"EFECTIVO","monto":1200}]')$q$, :ana, :turno, :cad), 'Cantidad inválida');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":10}]', '[{"metodo":"EFECTIVO","monto":12000}]')$q$, :ana, :turno, :cad), 'Stock insuficiente');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":100}]')$q$, :carlos, :turno, :aro), 'no está asignado');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"TARJETA","monto":250}]')$q$, :ana, :turno, :aro), 'requiere número de referencia');
@@ -80,10 +81,12 @@ SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"vari
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":999999,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":100}]')$q$, :ana, :turno), 'inexistente');
 SELECT pg_temp.afirma((SELECT ultimo_numero_venta FROM sucursal WHERE id = :lam) = 3, 'las ventas fallidas no consumen correlativo (sin huecos)');
 
--- Encargada sí puede dar descuento
-SELECT fn_registrar_venta(:maria, :turno, format('[{"variante_id":%s,"cantidad":1,"descuento":50}]', :aro)::jsonb,
-  '[{"metodo":"TRANSFERENCIA","monto":150,"referencia":"BAC-9981"}]', 50) AS v4 \gset
-SELECT pg_temp.afirma((SELECT subtotal = 200 AND total = 150 FROM venta WHERE id = :v4), 'V4 descuento línea C$50 + global C$50 (encargada)');
+-- Promoción creada y activada por el admin; la encargada la aplica
+SELECT fn_guardar_promocion(:admin, NULL, 'Prueba 40 %', 'PORCENTAJE', 40) AS promo40 \gset
+SELECT fn_set_promocion_activa(:admin, :promo40, true);
+SELECT fn_registrar_venta(:maria, :turno, format('[{"variante_id":%s,"cantidad":1}]', :aro)::jsonb,
+  '[{"metodo":"TRANSFERENCIA","monto":150,"referencia":"BAC-9981"}]', :promo40) AS v4 \gset
+SELECT pg_temp.afirma((SELECT subtotal = 250 AND descuento = 100 AND total = 150 AND promocion_id = :promo40 FROM venta WHERE id = :v4), 'V4 con promoción 40 %: 250 − 100 = C$150');
 
 \echo '\n=== 4. ANULACIÓN'
 SELECT pg_temp.espera_error(format('SELECT fn_anular_venta(%s, %s, %L)', :ana, :v2, 'cliente se arrepintió'), 'VENTAS_ANULAR');
@@ -307,7 +310,7 @@ SELECT pg_temp.espera_error(format('UPDATE variante SET gama_id = %s WHERE id = 
 SELECT pg_temp.espera_error(format('SELECT fn_set_precio_gama(%s, %s, %s, 999)', :admin, :p_hlx, :g_tit), 'precio por pieza');
 SELECT pg_temp.espera_error(format('SELECT fn_set_precio_gama(%s, %s, %s, 999)', :ana, :p_hlx, :g_cla), 'PRECIOS_EDITAR');
 SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, (SELECT paquete_variante_id FROM perforacion WHERE id = %s), %L, 1)', :admin, :bod, :p_hlx, 'ENTRADA'), 'no manejan inventario');
-SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, format('[{"variante_id":%%s,"cantidad":1}]', (SELECT paquete_variante_id FROM perforacion WHERE id = %s))::jsonb, '[{"metodo":"EFECTIVO","monto":500}]')$q$, :carlos, :turno_lbr, :p_hlx), 'paquetes todavía no');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, format('[{"variante_id":%%s,"cantidad":1}]', (SELECT paquete_variante_id FROM perforacion WHERE id = %s))::jsonb, '[{"metodo":"EFECTIVO","monto":500}]')$q$, :carlos, :turno_lbr, :p_hlx), 'requiere escanear');
 SELECT pg_temp.espera_error(format('SELECT fn_crear_perforacion(%s, %L, %L, 300)', :admin, 'HLX', 'Hélix 2'), 'duplicate key');
 -- Solo servicio: el precio vive en la variante de servicio (historial de precios incluido)
 UPDATE variante SET precio_venta = 380 WHERE id = (SELECT servicio_variante_id FROM perforacion WHERE id = :p_hlx);
@@ -480,5 +483,90 @@ SELECT pg_temp.afirma(fn_aplicar_conteo(:admin, :conteo2) = 1, 'el admin aplica 
 SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6) = :lam_lab6 - 1
                   AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab8) = :lam_lab8, 'stock igual al conteo');
 SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM movimiento_inventario WHERE motivo = 'Conteo físico #' || :conteo2 AND tipo = 'AJUSTE_NEGATIVO'), 'ajuste en el kardex con referencia al conteo');
+
+\echo '\n=== 15. v1.1 PASO 5: VENTA DE PAQUETES, PROMOCIONES E IDEMPOTENCIA'
+SELECT paquete_variante_id AS paq_hlx FROM perforacion WHERE codigo = 'HLX' \gset
+SELECT paquete_variante_id AS paq_par FROM perforacion WHERE codigo = 'LOBP' \gset
+SELECT servicio_variante_id AS srv_hlx FROM perforacion WHERE codigo = 'HLX' \gset
+SELECT cantidad AS lbr_aro FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro \gset
+SELECT cantidad AS lbr_lab6 FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab6 \gset
+SELECT costo AS aro_costo FROM variante WHERE id = :aro \gset
+
+-- Hélix con pieza de acero clásica: precio de tabla y la pieza sale del inventario
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1,"piezas":[%s]}]', :paq_hlx, :aro)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":500}]') AS vp1 \gset
+SELECT pg_temp.afirma((SELECT precio_lista = 450 AND precio_unitario = 450 FROM venta_detalle WHERE venta_id = :vp1), 'hélix + aro clásico se cobra C$450 (tabla)');
+SELECT pg_temp.afirma((SELECT costo_unitario FROM venta_detalle WHERE venta_id = :vp1) = :aro_costo, 'costo del paquete = costo de la pieza (servicio sin costo)');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro) = :lbr_aro - 1, 'la pieza del paquete se descuenta del inventario');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM venta_detalle_pieza vp JOIN venta_detalle d ON d.id = vp.venta_detalle_id WHERE d.venta_id = :vp1 AND vp.variante_id = :aro), 'queda registrada qué pieza se usó');
+SELECT pg_temp.afirma((SELECT monto FROM venta_pago WHERE venta_id = :vp1 AND es_vuelto) = -50, 'vuelto de C$50');
+
+-- Titanio: servicio + pieza, y el vendedor puede subirlo pero no bajarlo
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":1100}]', :paq_hlx, :lab6)::jsonb,
+  '[{"metodo":"TARJETA","monto":1100,"referencia":"55123"}]') AS vp2 \gset
+SELECT pg_temp.afirma((SELECT precio_lista = 1000 AND precio_unitario = 1100 FROM venta_detalle WHERE venta_id = :vp2), 'hélix + titanio: lista 350 + 650 = 1000, cobrado 1100');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":900}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :lab6), 'no puede ser menor al establecido');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":1600}]', '[{"metodo":"EFECTIVO","monto":1600}]')$q$, :carlos, :turno_lbr, :paq_hlx, :lab6), 'aumento máximo');
+-- Errores de paquete
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":2,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :aro), 'cantidad 1');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :aro, :aro), 'Solo los paquetes llevan piezas');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :pdr), 'Stock insuficiente');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :nei), 'no es una pieza de perforación');
+-- Lóbulos (par) con 2 aros: 2 piezas del mismo producto
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1,"piezas":[%s,%s]}]', :paq_par, :aro, :aro)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]') AS vp3 \gset
+SELECT pg_temp.afirma((SELECT precio_unitario = 600 AND costo_unitario = 2 * :aro_costo FROM venta_detalle WHERE venta_id = :vp3), 'lóbulos par: C$600, costo de 2 aros');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro) = :lbr_aro - 3, 'salen 2 aros más');
+-- Anular un paquete devuelve la pieza
+SELECT fn_anular_venta(:admin, :vp3, 'Cliente cambió de opinión');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro) = :lbr_aro - 1, 'anular el paquete devuelve las 2 piezas');
+-- Paquete + solo servicio + pieza suelta en una misma venta
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1,"piezas":[%s]},{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1}]', :paq_hlx, :aro, :srv_hlx, :nei)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":1320}]') AS vp4 \gset
+SELECT pg_temp.afirma((SELECT total FROM venta WHERE id = :vp4) = 450 + 350 + 520, 'venta mixta: paquete 450 + servicio 350 + NeilMed 520');
+
+-- Promociones
+SELECT fn_guardar_promocion(:admin, NULL, 'Diez por ciento', 'PORCENTAJE', 10) AS promo10 \gset
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":650}]', %s)$q$, :carlos, :turno_lbr, :lab6, :promo10), 'no está activa');
+SELECT pg_temp.espera_error(format('SELECT fn_set_promocion_activa(%s, %s, true)', :maria, :promo10), 'PROMOCIONES_GESTIONAR');
+SELECT fn_set_promocion_activa(:admin, :promo10, true);
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :lab6)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":585}]', :promo10) AS vp5 \gset
+SELECT pg_temp.afirma((SELECT subtotal = 650 AND descuento = 65 AND total = 585 FROM venta WHERE id = :vp5), 'el vendedor aplica 10 %: 650 − 65 = 585');
+SELECT fn_guardar_promocion(:admin, NULL, 'Mínimo mil', 'MONTO', 100, 1000) AS promo_min \gset
+SELECT fn_set_promocion_activa(:admin, :promo_min, true);
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":650}]', %s)$q$, :carlos, :turno_lbr, :lab6, :promo_min), 'compra mínima');
+SELECT fn_guardar_promocion(:admin, :promo_min, 'Mínimo mil', 'MONTO', 100, 1000, current_date + 10, current_date + 20);
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":2}]', '[{"metodo":"EFECTIVO","monto":1300}]', %s)$q$, :carlos, :turno_lbr, :lab6, :promo_min), 'no está vigente');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_promocion(%s, NULL, %L, %L, 150)', :admin, 'Imposible', 'PORCENTAJE'), 'ck_promo_pct');
+SELECT pg_temp.espera_error(format('INSERT INTO venta (numero, sucursal_id, turno_id, vendedor_id, subtotal, descuento, total, tipo_cambio) VALUES (%L, %s, %s, %s, 100, 10, 90, 36)', 'LBR-X', :lbr, :turno_lbr, :carlos), 'ck_venta_descuento_promo');
+\echo 'Promociones disponibles en el POS para una venta de C$800:'
+SELECT nombre, tipo, valor, compra_minima, aplica, descuento FROM fn_promociones_disponibles(800);
+
+-- Idempotencia: la misma clave dos veces → una sola venta
+SELECT count(*) AS ventas_antes FROM venta \gset
+SELECT cantidad AS lbr_nei FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :nei \gset
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :nei)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":520}]', NULL, NULL, NULL, NULL, 'a1b2c3d4-0000-4000-8000-000000000001') AS vi1 \gset
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :nei)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":520}]', NULL, NULL, NULL, NULL, 'a1b2c3d4-0000-4000-8000-000000000001') AS vi2 \gset
+SELECT pg_temp.afirma(:vi1 = :vi2, 'el doble clic devuelve la misma venta');
+SELECT pg_temp.afirma((SELECT count(*) FROM venta) = :ventas_antes + 1, 'solo se creó una venta');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :nei) = :lbr_nei - 1, 'el stock bajó una sola vez');
+
+-- Reportes nuevos
+\echo 'Perforaciones: con pieza vs solo servicio'
+SELECT sucursal, perforacion, modalidad, cantidad, venta_neta, margen FROM v_ventas_perforacion ORDER BY perforacion, modalidad;
+\echo 'Paquetes por gama'
+SELECT sucursal, gama, paquetes, venta_neta, margen FROM v_ventas_gama ORDER BY gama;
+\echo 'Piezas consumidas en paquetes'
+SELECT sucursal, pieza, gama, unidades, costo FROM v_piezas_consumidas_paquete;
+\echo 'Promociones'
+SELECT sucursal, promocion, ventas, subtotal, descuento, total FROM v_ventas_promocion ORDER BY promocion;
+SELECT pg_temp.afirma((SELECT sum(cantidad) FROM v_ventas_perforacion WHERE perforacion = 'Hélix' AND modalidad = 'CON_PIEZA') = 3, 'reporte: 3 hélix con pieza');
+SELECT pg_temp.afirma((SELECT unidades FROM v_piezas_consumidas_paquete WHERE variante_id = :aro AND sucursal_id = :lbr) = 2, 'reporte: 2 aros consumidos en paquetes (la anulada no cuenta)');
+SELECT pg_temp.afirma((SELECT vendidas_30d FROM fn_sugerir_reparto(:aro, 1) WHERE sucursal_id = :lbr) >=
+                      (SELECT coalesce(sum(vd.cantidad), 0) FROM venta_detalle vd JOIN venta v ON v.id = vd.venta_id WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = :lbr AND vd.variante_id = :aro) + 2,
+                      'la sugerencia de reparto cuenta también las piezas vendidas en paquetes');
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'
