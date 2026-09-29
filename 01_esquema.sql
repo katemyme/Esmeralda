@@ -1,0 +1,1459 @@
+-- =====================================================================
+--  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
+--  PostgreSQL 16  ·  Esquema v1.0  ·  Multi-sucursal
+--
+--  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
+--
+--  Convenciones
+--   · Moneda base: córdobas (NIO). Los pagos pueden ser en NIO o USD.
+--   · Fechas en timestamptz; los reportes convierten a America/Managua.
+--   · El backend debe ejecutar, dentro de cada transacción:
+--        SET LOCAL app.usuario_id = '<id del usuario autenticado>';
+--     para que la auditoría sepa quién hizo cada cambio.
+--   · Las operaciones críticas (venta, anulación, ajustes, cierre) se hacen
+--     SIEMPRE mediante las funciones fn_* — validan permisos y reglas.
+-- =====================================================================
+
+BEGIN;
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;   -- gen_random_uuid(), crypt() para el seed
+CREATE EXTENSION IF NOT EXISTS pg_trgm;    -- búsqueda rápida de productos en el POS
+
+-- ---------------------------------------------------------------------
+-- 0. Utilidades
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_usuario_actual() RETURNS bigint
+LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(current_setting('app.usuario_id', true), '')::bigint
+$$;
+
+CREATE OR REPLACE FUNCTION fn_set_updated_at() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_bloquear_modificacion() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'La tabla % es de solo inserción: no se permite % (use los movimientos o la anulación)',
+        TG_TABLE_NAME, TG_OP
+        USING ERRCODE = 'restrict_violation';
+END $$;
+
+-- =====================================================================
+-- 1. ORGANIZACIÓN: sucursales y cajas
+-- =====================================================================
+CREATE TABLE sucursal (
+  id                   integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  codigo               varchar(5)   NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z]{2,5}$'),  -- prefijo de facturas
+  nombre               varchar(80)  NOT NULL UNIQUE,
+  direccion            varchar(200),
+  telefono             varchar(20),
+  activa               boolean      NOT NULL DEFAULT true,
+  ultimo_numero_venta  integer      NOT NULL DEFAULT 0,   -- correlativo sin huecos por sucursal
+  created_at           timestamptz  NOT NULL DEFAULT now(),
+  updated_at           timestamptz  NOT NULL DEFAULT now()
+);
+
+CREATE TABLE caja (
+  id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  sucursal_id  integer     NOT NULL REFERENCES sucursal(id),
+  nombre       varchar(40) NOT NULL,
+  activa       boolean     NOT NULL DEFAULT true,
+  UNIQUE (sucursal_id, nombre)
+);
+
+-- =====================================================================
+-- 2. SEGURIDAD: roles, permisos, usuarios, sesiones (panel de administración)
+-- =====================================================================
+CREATE TABLE rol (
+  id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  codigo       varchar(20)  NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z_]+$'),
+  nombre       varchar(60)  NOT NULL,
+  descripcion  varchar(200),
+  es_sistema   boolean      NOT NULL DEFAULT false   -- los roles de sistema no se pueden eliminar
+);
+
+CREATE TABLE permiso (
+  id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  codigo       varchar(40)  NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z_]+$'),
+  modulo       varchar(30)  NOT NULL,
+  descripcion  varchar(200) NOT NULL
+);
+
+CREATE TABLE rol_permiso (
+  rol_id      integer NOT NULL REFERENCES rol(id) ON DELETE CASCADE,
+  permiso_id  integer NOT NULL REFERENCES permiso(id) ON DELETE CASCADE,
+  PRIMARY KEY (rol_id, permiso_id)
+);
+
+CREATE TABLE usuario (
+  id                       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre_completo          varchar(120) NOT NULL,
+  username                 varchar(40)  NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9._]{3,40}$'),
+  email                    varchar(120),
+  telefono                 varchar(20),
+  password_hash            varchar(255) NOT NULL,          -- argon2id / bcrypt, NUNCA texto plano
+  rol_id                   integer      NOT NULL REFERENCES rol(id),
+  activo                   boolean      NOT NULL DEFAULT true,
+  debe_cambiar_password    boolean      NOT NULL DEFAULT true,
+  intentos_fallidos        smallint     NOT NULL DEFAULT 0,
+  bloqueado_hasta          timestamptz,
+  ultimo_acceso            timestamptz,
+  password_actualizado_at  timestamptz  NOT NULL DEFAULT now(),
+  created_by               bigint       REFERENCES usuario(id),
+  created_at               timestamptz  NOT NULL DEFAULT now(),
+  updated_at               timestamptz  NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX ux_usuario_email ON usuario (lower(email)) WHERE email IS NOT NULL;
+
+-- Sucursales en las que un usuario puede operar (el permiso SUCURSALES_TODAS las cubre todas)
+CREATE TABLE usuario_sucursal (
+  usuario_id   bigint  NOT NULL REFERENCES usuario(id) ON DELETE CASCADE,
+  sucursal_id  integer NOT NULL REFERENCES sucursal(id),
+  PRIMARY KEY (usuario_id, sucursal_id)
+);
+
+-- Sesiones (refresh tokens). Permite al admin "cerrar sesión" a un usuario.
+CREATE TABLE sesion (
+  id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  usuario_id          bigint      NOT NULL REFERENCES usuario(id),
+  refresh_token_hash  char(64)    NOT NULL UNIQUE,     -- SHA-256 del token, nunca el token
+  ip                  inet,
+  user_agent          varchar(300),
+  creada_at           timestamptz NOT NULL DEFAULT now(),
+  expira_at           timestamptz NOT NULL,
+  revocada_at         timestamptz
+);
+CREATE INDEX ix_sesion_usuario_activa ON sesion (usuario_id) WHERE revocada_at IS NULL;
+
+-- Bitácora de inicios de sesión (exitosos y fallidos)
+CREATE TABLE acceso_log (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  usuario_id          bigint REFERENCES usuario(id),
+  username_intentado  varchar(40) NOT NULL,
+  exito               boolean     NOT NULL,
+  motivo              varchar(60),
+  ip                  inet,
+  user_agent          varchar(300),
+  fecha               timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_acceso_log_usuario_fecha ON acceso_log (usuario_id, fecha DESC);
+
+-- Auditoría genérica de cambios en datos maestros
+CREATE TABLE auditoria (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tabla        varchar(40) NOT NULL,
+  registro_id  varchar(40),
+  accion       varchar(6)  NOT NULL CHECK (accion IN ('INSERT','UPDATE','DELETE')),
+  antes        jsonb,
+  despues      jsonb,
+  usuario_id   bigint REFERENCES usuario(id),
+  fecha        timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_auditoria_tabla_registro ON auditoria (tabla, registro_id);
+CREATE INDEX ix_auditoria_fecha ON auditoria (fecha DESC);
+
+-- =====================================================================
+-- 3. CATÁLOGO: categorías, productos (y servicios), variantes
+-- =====================================================================
+CREATE TABLE categoria (
+  id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre       varchar(60)  NOT NULL UNIQUE,
+  descripcion  varchar(200),
+  activa       boolean      NOT NULL DEFAULT true,
+  created_at   timestamptz  NOT NULL DEFAULT now()
+);
+
+CREATE TABLE producto (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  categoria_id  integer      NOT NULL REFERENCES categoria(id),
+  nombre        varchar(120) NOT NULL,
+  descripcion   varchar(500),
+  tipo          varchar(10)  NOT NULL DEFAULT 'PRODUCTO' CHECK (tipo IN ('PRODUCTO','SERVICIO')),
+  activo        boolean      NOT NULL DEFAULT true,
+  created_at    timestamptz  NOT NULL DEFAULT now(),
+  updated_at    timestamptz  NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_producto_categoria ON producto (categoria_id);
+CREATE INDEX ix_producto_nombre_trgm ON producto USING gin (lower(nombre) gin_trgm_ops);
+
+-- Lo que realmente se vende: material / calibre / largo / color.
+-- Un producto sin variantes reales tiene UNA variante ("Única").
+CREATE TABLE variante (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  producto_id    bigint        NOT NULL REFERENCES producto(id),
+  sku            varchar(40)   NOT NULL UNIQUE,
+  codigo_barras  varchar(40)   UNIQUE,
+  nombre         varchar(120)  NOT NULL DEFAULT 'Única',   -- ej. "Titanio F-136 · 16G · 8 mm"
+  atributos      jsonb         NOT NULL DEFAULT '{}'::jsonb, -- {"material":"titanio","calibre":"16G","largo_mm":8}
+  precio_venta   numeric(12,2) NOT NULL CHECK (precio_venta >= 0),
+  costo          numeric(12,2) NOT NULL DEFAULT 0 CHECK (costo >= 0),
+  activo         boolean       NOT NULL DEFAULT true,
+  created_at     timestamptz   NOT NULL DEFAULT now(),
+  updated_at     timestamptz   NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_variante_producto ON variante (producto_id);
+CREATE INDEX ix_variante_nombre_trgm ON variante USING gin (lower(nombre) gin_trgm_ops);
+
+CREATE TABLE historial_precio (
+  id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  variante_id      bigint        NOT NULL REFERENCES variante(id),
+  precio_anterior  numeric(12,2) NOT NULL,
+  precio_nuevo     numeric(12,2) NOT NULL,
+  costo_anterior   numeric(12,2) NOT NULL,
+  costo_nuevo      numeric(12,2) NOT NULL,
+  usuario_id       bigint REFERENCES usuario(id),
+  fecha            timestamptz   NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_historial_precio_variante ON historial_precio (variante_id, fecha DESC);
+
+-- =====================================================================
+-- 4. INVENTARIO: stock por sucursal + kardex (movimientos)
+-- =====================================================================
+CREATE TABLE stock_sucursal (
+  sucursal_id   integer     NOT NULL REFERENCES sucursal(id),
+  variante_id   bigint      NOT NULL REFERENCES variante(id),
+  cantidad      integer     NOT NULL DEFAULT 0 CHECK (cantidad >= 0),   -- nunca negativo
+  stock_minimo  integer     NOT NULL DEFAULT 0 CHECK (stock_minimo >= 0),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (sucursal_id, variante_id)
+);
+
+CREATE TABLE movimiento_inventario (
+  id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  sucursal_id       integer      NOT NULL REFERENCES sucursal(id),
+  variante_id       bigint       NOT NULL REFERENCES variante(id),
+  tipo              varchar(20)  NOT NULL CHECK (tipo IN (
+                       'ENTRADA','AJUSTE_POSITIVO','ANULACION_VENTA','TRASLADO_ENTRADA',
+                       'VENTA','AJUSTE_NEGATIVO','MERMA','TRASLADO_SALIDA')),
+  cantidad          integer      NOT NULL CHECK (cantidad <> 0),   -- con signo
+  stock_resultante  integer      NOT NULL,                         -- lo llena el trigger
+  costo_unitario    numeric(12,2),
+  venta_id          bigint,                                        -- FK agregada tras crear venta
+  traslado_ref      uuid,                                          -- une salida y entrada de un traslado
+  motivo            varchar(200),
+  usuario_id        bigint       NOT NULL REFERENCES usuario(id),
+  fecha             timestamptz  NOT NULL DEFAULT now(),
+  CONSTRAINT ck_mov_signo CHECK (
+       (tipo IN ('ENTRADA','AJUSTE_POSITIVO','ANULACION_VENTA','TRASLADO_ENTRADA') AND cantidad > 0)
+    OR (tipo IN ('VENTA','AJUSTE_NEGATIVO','MERMA','TRASLADO_SALIDA')              AND cantidad < 0)),
+  CONSTRAINT ck_mov_motivo CHECK (
+       tipo NOT IN ('AJUSTE_POSITIVO','AJUSTE_NEGATIVO','MERMA') OR length(trim(motivo)) >= 5),
+  CONSTRAINT ck_mov_venta CHECK ((tipo IN ('VENTA','ANULACION_VENTA')) = (venta_id IS NOT NULL))
+);
+CREATE INDEX ix_mov_variante_fecha ON movimiento_inventario (variante_id, fecha DESC);
+CREATE INDEX ix_mov_sucursal_fecha ON movimiento_inventario (sucursal_id, fecha DESC);
+CREATE INDEX ix_mov_venta ON movimiento_inventario (venta_id) WHERE venta_id IS NOT NULL;
+
+-- Cada movimiento actualiza el stock atómicamente. Si quedara negativo → error.
+CREATE OR REPLACE FUNCTION fn_aplicar_movimiento() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_tipo_producto varchar(10);
+  v_nombre        text;
+BEGIN
+  SELECT p.tipo, p.nombre || ' — ' || v.nombre
+    INTO v_tipo_producto, v_nombre
+    FROM variante v JOIN producto p ON p.id = v.producto_id
+   WHERE v.id = NEW.variante_id;
+
+  IF v_tipo_producto = 'SERVICIO' THEN
+    RAISE EXCEPTION 'Los servicios no manejan inventario (%)', v_nombre;
+  END IF;
+
+  -- UPDATE atómico (bloquea la fila); el CHECK cantidad >= 0 impide la sobreventa
+  BEGIN
+    UPDATE stock_sucursal
+       SET cantidad = cantidad + NEW.cantidad, updated_at = now()
+     WHERE sucursal_id = NEW.sucursal_id AND variante_id = NEW.variante_id
+    RETURNING cantidad INTO NEW.stock_resultante;
+  EXCEPTION WHEN check_violation THEN
+    RAISE EXCEPTION 'Stock insuficiente de "%" en la sucursal % (se intentó mover %)',
+          v_nombre, NEW.sucursal_id, NEW.cantidad
+          USING ERRCODE = 'check_violation';
+  END;
+
+  IF NOT FOUND THEN                        -- primera vez que la variante entra a esta sucursal
+    IF NEW.cantidad < 0 THEN
+      RAISE EXCEPTION 'Stock insuficiente de "%" en la sucursal % (sin existencias)',
+            v_nombre, NEW.sucursal_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    INSERT INTO stock_sucursal AS s (sucursal_id, variante_id, cantidad)
+    VALUES (NEW.sucursal_id, NEW.variante_id, NEW.cantidad)
+    ON CONFLICT (sucursal_id, variante_id)              -- carrera con otra transacción
+    DO UPDATE SET cantidad = s.cantidad + EXCLUDED.cantidad, updated_at = now()
+    RETURNING cantidad INTO NEW.stock_resultante;
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER tg_mov_aplicar BEFORE INSERT ON movimiento_inventario
+  FOR EACH ROW EXECUTE FUNCTION fn_aplicar_movimiento();
+CREATE TRIGGER tg_mov_inmutable BEFORE UPDATE OR DELETE ON movimiento_inventario
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+
+-- =====================================================================
+-- 5. CAJA: métodos de pago, tipo de cambio, turnos, movimientos de efectivo
+-- =====================================================================
+CREATE TABLE metodo_pago (
+  id                   smallint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  codigo               varchar(20) NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z_]+$'),
+  nombre               varchar(40) NOT NULL,
+  es_efectivo          boolean     NOT NULL DEFAULT false,   -- permite vuelto y cuadra con monto inicial
+  requiere_referencia  boolean     NOT NULL DEFAULT false,   -- nº de voucher / transferencia
+  activo               boolean     NOT NULL DEFAULT true
+);
+CREATE UNIQUE INDEX ux_metodo_pago_un_efectivo ON metodo_pago (es_efectivo) WHERE es_efectivo;
+
+-- Parámetros generales editables por el administrador
+CREATE TABLE parametro (
+  clave        varchar(40)  PRIMARY KEY CHECK (clave ~ '^[A-Z0-9_]+$'),
+  valor        varchar(200),                 -- NULL / vacío = sin valor
+  descripcion  varchar(300) NOT NULL,
+  updated_at   timestamptz  NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION fn_parametro_num(p_clave text) RETURNS numeric
+LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(trim(valor), '')::numeric FROM parametro WHERE clave = p_clave
+$$;
+
+CREATE TABLE tipo_cambio (
+  fecha       date          PRIMARY KEY,
+  usd_a_nio   numeric(10,4) NOT NULL CHECK (usd_a_nio > 0),
+  usuario_id  bigint REFERENCES usuario(id),
+  created_at  timestamptz   NOT NULL DEFAULT now()
+);
+
+CREATE TABLE turno_caja (
+  id                     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  caja_id                integer       NOT NULL REFERENCES caja(id),
+  usuario_apertura_id    bigint        NOT NULL REFERENCES usuario(id),
+  fecha_apertura         timestamptz   NOT NULL DEFAULT now(),
+  monto_inicial_nio      numeric(12,2) NOT NULL DEFAULT 0 CHECK (monto_inicial_nio >= 0),
+  monto_inicial_usd      numeric(12,2) NOT NULL DEFAULT 0 CHECK (monto_inicial_usd >= 0),
+  estado                 varchar(10)   NOT NULL DEFAULT 'ABIERTO' CHECK (estado IN ('ABIERTO','CERRADO')),
+  usuario_cierre_id      bigint        REFERENCES usuario(id),
+  fecha_cierre           timestamptz,
+  observaciones          varchar(500),
+  CONSTRAINT ck_turno_cierre CHECK (
+    (estado = 'ABIERTO' AND fecha_cierre IS NULL AND usuario_cierre_id IS NULL) OR
+    (estado = 'CERRADO' AND fecha_cierre IS NOT NULL AND usuario_cierre_id IS NOT NULL))
+);
+-- Solo un turno abierto por caja
+CREATE UNIQUE INDEX ux_turno_abierto_por_caja ON turno_caja (caja_id) WHERE estado = 'ABIERTO';
+
+-- Retiros / ingresos de efectivo durante el turno (pago a proveedor, cambio de billetes…)
+CREATE TABLE caja_movimiento (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  turno_id    bigint        NOT NULL REFERENCES turno_caja(id),
+  tipo        varchar(7)    NOT NULL CHECK (tipo IN ('INGRESO','EGRESO')),
+  moneda      char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  monto       numeric(12,2) NOT NULL CHECK (monto > 0),
+  motivo      varchar(200)  NOT NULL CHECK (length(trim(motivo)) >= 5),
+  usuario_id  bigint        NOT NULL REFERENCES usuario(id),
+  fecha       timestamptz   NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_caja_mov_turno ON caja_movimiento (turno_id);
+
+-- =====================================================================
+-- 6. VENTAS
+-- =====================================================================
+CREATE TABLE venta (
+  id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  numero            varchar(20)   NOT NULL UNIQUE,              -- LAM-00000001
+  sucursal_id       integer       NOT NULL REFERENCES sucursal(id),
+  turno_id          bigint        NOT NULL REFERENCES turno_caja(id),
+  vendedor_id       bigint        NOT NULL REFERENCES usuario(id),
+  cliente_nombre    varchar(120),
+  cliente_telefono  varchar(20),
+  fecha             timestamptz   NOT NULL DEFAULT now(),
+  subtotal          numeric(12,2) NOT NULL CHECK (subtotal >= 0),
+  descuento         numeric(12,2) NOT NULL DEFAULT 0 CHECK (descuento >= 0),
+  total             numeric(12,2) NOT NULL,
+  tipo_cambio       numeric(10,4) NOT NULL CHECK (tipo_cambio > 0),   -- snapshot del día
+  estado            varchar(10)   NOT NULL DEFAULT 'COMPLETADA' CHECK (estado IN ('COMPLETADA','ANULADA')),
+  anulada_por       bigint        REFERENCES usuario(id),
+  fecha_anulacion   timestamptz,
+  motivo_anulacion  varchar(200),
+  notas             varchar(500),
+  CONSTRAINT ck_venta_total CHECK (descuento <= subtotal AND total = subtotal - descuento),
+  CONSTRAINT ck_venta_anulacion CHECK (
+    (estado = 'COMPLETADA' AND anulada_por IS NULL AND fecha_anulacion IS NULL AND motivo_anulacion IS NULL) OR
+    (estado = 'ANULADA' AND anulada_por IS NOT NULL AND fecha_anulacion IS NOT NULL AND length(trim(motivo_anulacion)) >= 5))
+);
+CREATE INDEX ix_venta_sucursal_fecha ON venta (sucursal_id, fecha DESC);
+CREATE INDEX ix_venta_turno ON venta (turno_id);
+CREATE INDEX ix_venta_vendedor_fecha ON venta (vendedor_id, fecha DESC);
+
+ALTER TABLE movimiento_inventario
+  ADD CONSTRAINT fk_mov_venta FOREIGN KEY (venta_id) REFERENCES venta(id);
+
+CREATE TABLE venta_detalle (
+  id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  venta_id         bigint        NOT NULL REFERENCES venta(id),
+  variante_id      bigint        NOT NULL REFERENCES variante(id),
+  cantidad         integer       NOT NULL CHECK (cantidad > 0),
+  precio_lista     numeric(12,2) NOT NULL CHECK (precio_lista >= 0),      -- precio establecido (snapshot)
+  precio_unitario  numeric(12,2) NOT NULL,                                -- precio cobrado (≥ lista)
+  costo_unitario   numeric(12,2) NOT NULL CHECK (costo_unitario >= 0),    -- snapshot
+  descuento        numeric(12,2) NOT NULL DEFAULT 0 CHECK (descuento >= 0),
+  subtotal         numeric(12,2) GENERATED ALWAYS AS (cantidad * precio_unitario - descuento) STORED,
+  CONSTRAINT ck_detalle_precio_no_menor CHECK (precio_unitario >= precio_lista),
+  CONSTRAINT ck_detalle_descuento CHECK (descuento <= cantidad * precio_unitario)
+);
+CREATE INDEX ix_venta_detalle_venta ON venta_detalle (venta_id);
+CREATE INDEX ix_venta_detalle_variante ON venta_detalle (variante_id);
+
+-- Pagos: una venta puede tener varios (mixto). El vuelto se guarda como
+-- pago negativo en efectivo NIO, así el cierre de caja cuadra exacto.
+CREATE TABLE venta_pago (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  venta_id        bigint        NOT NULL REFERENCES venta(id),
+  metodo_pago_id  smallint      NOT NULL REFERENCES metodo_pago(id),
+  moneda          char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  monto           numeric(12,2) NOT NULL CHECK (monto <> 0),
+  tipo_cambio     numeric(10,4) NOT NULL CHECK (tipo_cambio > 0),
+  monto_nio       numeric(12,2) GENERATED ALWAYS AS
+                    (round(CASE WHEN moneda = 'USD' THEN monto * tipo_cambio ELSE monto END, 2)) STORED,
+  referencia      varchar(60),
+  es_vuelto       boolean       NOT NULL DEFAULT false,
+  CONSTRAINT ck_pago_vuelto CHECK (es_vuelto = (monto < 0)),
+  CONSTRAINT ck_pago_tc_nio CHECK (moneda = 'USD' OR tipo_cambio = 1)
+);
+CREATE INDEX ix_venta_pago_venta ON venta_pago (venta_id);
+
+CREATE TABLE cierre_caja_detalle (
+  turno_id        bigint        NOT NULL REFERENCES turno_caja(id),
+  metodo_pago_id  smallint      NOT NULL REFERENCES metodo_pago(id),
+  moneda          char(3)       NOT NULL CHECK (moneda IN ('NIO','USD')),
+  monto_esperado  numeric(12,2) NOT NULL,
+  monto_contado   numeric(12,2) NOT NULL,
+  diferencia      numeric(12,2) GENERATED ALWAYS AS (monto_contado - monto_esperado) STORED,
+  PRIMARY KEY (turno_id, metodo_pago_id, moneda)
+);
+
+-- ---------------------------------------------------------------------
+-- 6.1 Reglas de integridad de ventas (defensa aunque el backend use el ORM)
+-- ---------------------------------------------------------------------
+-- a) Solo se vende en un turno ABIERTO de una caja de la misma sucursal
+CREATE OR REPLACE FUNCTION fn_validar_turno_venta() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text; v_sucursal integer;
+BEGIN
+  SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
+    FROM turno_caja t JOIN caja c ON c.id = t.caja_id
+   WHERE t.id = NEW.turno_id;
+  IF v_estado IS DISTINCT FROM 'ABIERTO' THEN
+    RAISE EXCEPTION 'El turno % no está abierto', NEW.turno_id;
+  END IF;
+  IF v_sucursal <> NEW.sucursal_id THEN
+    RAISE EXCEPTION 'El turno % pertenece a otra sucursal', NEW.turno_id;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_venta_turno BEFORE INSERT ON venta
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_turno_venta();
+
+CREATE OR REPLACE FUNCTION fn_validar_turno_caja_mov() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (SELECT estado FROM turno_caja WHERE id = NEW.turno_id) <> 'ABIERTO' THEN
+    RAISE EXCEPTION 'El turno % no está abierto', NEW.turno_id;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_caja_mov_turno BEFORE INSERT ON caja_movimiento
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_turno_caja_mov();
+
+-- b) Una venta solo puede pasar de COMPLETADA a ANULADA; nada más cambia
+CREATE OR REPLACE FUNCTION fn_proteger_venta() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Las ventas no se eliminan: se anulan';
+  END IF;
+  IF OLD.estado = 'ANULADA' THEN
+    RAISE EXCEPTION 'La venta % ya está anulada', OLD.numero;
+  END IF;
+  IF (NEW.numero, NEW.sucursal_id, NEW.turno_id, NEW.vendedor_id, NEW.fecha,
+      NEW.subtotal, NEW.descuento, NEW.total, NEW.tipo_cambio)
+     IS DISTINCT FROM
+     (OLD.numero, OLD.sucursal_id, OLD.turno_id, OLD.vendedor_id, OLD.fecha,
+      OLD.subtotal, OLD.descuento, OLD.total, OLD.tipo_cambio) THEN
+    RAISE EXCEPTION 'Los datos de una venta registrada no se modifican (venta %)', OLD.numero;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_venta_proteger BEFORE UPDATE OR DELETE ON venta
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_venta();
+CREATE TRIGGER tg_detalle_inmutable BEFORE UPDATE OR DELETE ON venta_detalle
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+CREATE TRIGGER tg_pago_inmutable BEFORE UPDATE OR DELETE ON venta_pago
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+CREATE TRIGGER tg_cierre_inmutable BEFORE UPDATE OR DELETE ON cierre_caja_detalle
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+
+-- c) Al hacer COMMIT: detalle cuadra con subtotal y pagos cuadran con total
+CREATE OR REPLACE FUNCTION fn_validar_cuadre_venta() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_detalle numeric; v_pagos numeric; v_lineas int;
+BEGIN
+  SELECT count(*), coalesce(sum(subtotal),0) INTO v_lineas, v_detalle
+    FROM venta_detalle WHERE venta_id = NEW.id;
+  SELECT coalesce(sum(monto_nio),0) INTO v_pagos
+    FROM venta_pago WHERE venta_id = NEW.id;
+  IF v_lineas = 0 THEN
+    RAISE EXCEPTION 'La venta % no tiene productos', NEW.numero;
+  END IF;
+  IF v_detalle <> NEW.subtotal THEN
+    RAISE EXCEPTION 'Venta %: el detalle (%) no cuadra con el subtotal (%)', NEW.numero, v_detalle, NEW.subtotal;
+  END IF;
+  IF v_pagos <> NEW.total THEN
+    RAISE EXCEPTION 'Venta %: los pagos (%) no cuadran con el total (%)', NEW.numero, v_pagos, NEW.total;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER tg_venta_cuadre AFTER INSERT ON venta
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_cuadre_venta();
+
+-- =====================================================================
+-- 7. AUDITORÍA Y REGLAS DE USUARIOS
+-- =====================================================================
+CREATE OR REPLACE FUNCTION fn_auditar() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_antes   jsonb;
+  v_despues jsonb;
+BEGIN
+  IF TG_OP IN ('UPDATE','DELETE') THEN v_antes   := to_jsonb(OLD) - 'password_hash' - 'updated_at'; END IF;
+  IF TG_OP IN ('INSERT','UPDATE') THEN v_despues := to_jsonb(NEW) - 'password_hash' - 'updated_at'; END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF to_jsonb(OLD)->>'password_hash' IS DISTINCT FROM to_jsonb(NEW)->>'password_hash' THEN
+      v_despues := v_despues || '{"password":"(cambiada)"}'::jsonb;
+    ELSIF v_antes = v_despues THEN
+      RETURN NULL;                       -- nada relevante cambió
+    END IF;
+  END IF;
+
+  INSERT INTO auditoria (tabla, registro_id, accion, antes, despues, usuario_id)
+  VALUES (TG_TABLE_NAME,
+          coalesce(v_despues->>'id', v_antes->>'id', v_despues->>'clave', v_antes->>'clave'),
+          TG_OP, v_antes, v_despues, fn_usuario_actual());
+  RETURN NULL;
+END $$;
+
+-- updated_at + auditoría en tablas maestras
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['sucursal','usuario','producto','variante','parametro'] LOOP
+    EXECUTE format('CREATE TRIGGER tg_%1$s_updated BEFORE UPDATE ON %1$I
+                    FOR EACH ROW EXECUTE FUNCTION fn_set_updated_at()', t);
+  END LOOP;
+  FOREACH t IN ARRAY ARRAY['sucursal','caja','rol','rol_permiso','usuario','usuario_sucursal',
+                           'categoria','producto','variante','metodo_pago','tipo_cambio','parametro'] LOOP
+    EXECUTE format('CREATE TRIGGER tg_%1$s_auditoria AFTER INSERT OR UPDATE OR DELETE ON %1$I
+                    FOR EACH ROW EXECUTE FUNCTION fn_auditar()', t);
+  END LOOP;
+END $$;
+
+-- Historial de precios/costos
+CREATE OR REPLACE FUNCTION fn_historial_precio() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.precio_venta, NEW.costo) IS DISTINCT FROM (OLD.precio_venta, OLD.costo) THEN
+    INSERT INTO historial_precio (variante_id, precio_anterior, precio_nuevo, costo_anterior, costo_nuevo, usuario_id)
+    VALUES (NEW.id, OLD.precio_venta, NEW.precio_venta, OLD.costo, NEW.costo, fn_usuario_actual());
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER tg_variante_historial AFTER UPDATE ON variante
+  FOR EACH ROW EXECUTE FUNCTION fn_historial_precio();
+
+-- Los usuarios no se eliminan (tienen ventas asociadas): se desactivan
+CREATE OR REPLACE FUNCTION fn_no_eliminar_usuario() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Los usuarios no se eliminan: desactívelos (activo = false)';
+END $$;
+CREATE TRIGGER tg_usuario_no_delete BEFORE DELETE ON usuario
+  FOR EACH ROW EXECUTE FUNCTION fn_no_eliminar_usuario();
+
+-- Siempre debe existir al menos un ADMIN activo
+CREATE OR REPLACE FUNCTION fn_validar_ultimo_admin() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+                  WHERE r.codigo = 'ADMIN' AND u.activo) THEN
+    RAISE EXCEPTION 'Operación rechazada: debe quedar al menos un administrador activo';
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE CONSTRAINT TRIGGER tg_usuario_ultimo_admin AFTER UPDATE OF activo, rol_id ON usuario
+  DEFERRABLE INITIALLY IMMEDIATE
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_ultimo_admin();
+
+-- Al desactivar, cambiar contraseña o cambiar rol → se revocan sus sesiones
+CREATE OR REPLACE FUNCTION fn_revocar_sesiones_usuario() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (OLD.activo AND NOT NEW.activo)
+     OR NEW.password_hash IS DISTINCT FROM OLD.password_hash
+     OR NEW.rol_id <> OLD.rol_id THEN
+    UPDATE sesion SET revocada_at = now()
+     WHERE usuario_id = NEW.id AND revocada_at IS NULL;
+  END IF;
+  IF NEW.password_hash IS DISTINCT FROM OLD.password_hash THEN
+    NEW.password_actualizado_at := now();
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_usuario_revocar BEFORE UPDATE ON usuario
+  FOR EACH ROW EXECUTE FUNCTION fn_revocar_sesiones_usuario();
+
+-- Los roles de sistema no se eliminan
+CREATE OR REPLACE FUNCTION fn_proteger_rol() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.es_sistema THEN
+    RAISE EXCEPTION 'El rol % es de sistema y no se puede eliminar', OLD.codigo;
+  END IF;
+  RETURN OLD;
+END $$;
+CREATE TRIGGER tg_rol_proteger BEFORE DELETE ON rol
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_rol();
+
+-- =====================================================================
+-- 8. FUNCIONES DE SEGURIDAD
+-- =====================================================================
+CREATE OR REPLACE FUNCTION fn_tiene_permiso(p_usuario bigint, p_permiso text) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM usuario u
+      JOIN rol r ON r.id = u.rol_id
+     WHERE u.id = p_usuario
+       AND u.activo
+       AND ( r.codigo = 'ADMIN'                           -- el admin tiene todo
+             OR EXISTS (SELECT 1 FROM rol_permiso rp JOIN permiso p ON p.id = rp.permiso_id
+                         WHERE rp.rol_id = r.id AND p.codigo = p_permiso)))
+$$;
+
+CREATE OR REPLACE FUNCTION fn_exigir_permiso(p_usuario bigint, p_permiso text) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+  IF NOT fn_tiene_permiso(p_usuario, p_permiso) THEN
+    RAISE EXCEPTION 'Permiso denegado: se requiere %', p_permiso
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_puede_operar_sucursal(p_usuario bigint, p_sucursal integer) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT fn_tiene_permiso(p_usuario, 'SUCURSALES_TODAS')
+      OR EXISTS (SELECT 1 FROM usuario_sucursal us JOIN usuario u ON u.id = us.usuario_id
+                  WHERE us.usuario_id = p_usuario AND us.sucursal_id = p_sucursal AND u.activo)
+$$;
+
+CREATE OR REPLACE FUNCTION fn_exigir_sucursal(p_usuario bigint, p_sucursal integer) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+  IF NOT fn_puede_operar_sucursal(p_usuario, p_sucursal) THEN
+    RAISE EXCEPTION 'El usuario % no está asignado a la sucursal %', p_usuario, p_sucursal
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END $$;
+
+-- Registro de intento de login (el backend verifica el hash y llama a esta función).
+-- 5 intentos fallidos → bloqueo de 15 minutos.
+CREATE OR REPLACE FUNCTION fn_registrar_login(
+  p_username text, p_exito boolean, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint;
+BEGIN
+  SELECT id INTO v_id FROM usuario WHERE username = lower(p_username);
+
+  INSERT INTO acceso_log (usuario_id, username_intentado, exito, motivo, ip, user_agent)
+  VALUES (v_id, lower(p_username), p_exito,
+          CASE WHEN v_id IS NULL THEN 'usuario inexistente'
+               WHEN NOT p_exito THEN 'contraseña incorrecta' END,
+          p_ip, left(p_user_agent, 300));
+
+  IF v_id IS NULL THEN RETURN; END IF;
+
+  IF p_exito THEN
+    UPDATE usuario SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = now()
+     WHERE id = v_id;
+  ELSE
+    UPDATE usuario
+       SET intentos_fallidos = intentos_fallidos + 1,
+           bloqueado_hasta = CASE WHEN intentos_fallidos + 1 >= 5
+                                  THEN now() + interval '15 minutes' END
+     WHERE id = v_id;
+  END IF;
+END $$;
+
+-- =====================================================================
+-- 9. FUNCIONES DE NEGOCIO
+-- =====================================================================
+
+-- Tipo de cambio vigente (el último registrado hasta esa fecha)
+CREATE OR REPLACE FUNCTION fn_tipo_cambio_vigente(p_fecha date DEFAULT (now() AT TIME ZONE 'America/Managua')::date)
+RETURNS numeric
+LANGUAGE plpgsql STABLE AS $$
+DECLARE v numeric;
+BEGIN
+  SELECT usd_a_nio INTO v FROM tipo_cambio WHERE fecha <= p_fecha ORDER BY fecha DESC LIMIT 1;
+  IF v IS NULL THEN
+    RAISE EXCEPTION 'No hay tipo de cambio registrado a la fecha %', p_fecha;
+  END IF;
+  RETURN v;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.1 Inventario
+-- ---------------------------------------------------------------------
+-- Entradas, ajustes y mermas. p_cantidad siempre positiva; el signo lo da el tipo.
+CREATE OR REPLACE FUNCTION fn_movimiento_inventario(
+  p_usuario bigint, p_sucursal integer, p_variante bigint, p_tipo text,
+  p_cantidad integer, p_motivo text DEFAULT NULL, p_costo_unitario numeric DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_signo int;
+BEGIN
+  IF p_cantidad IS NULL OR p_cantidad <= 0 THEN
+    RAISE EXCEPTION 'La cantidad debe ser mayor que cero';
+  END IF;
+
+  CASE p_tipo
+    WHEN 'ENTRADA'         THEN PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_ENTRADA'); v_signo := 1;
+    WHEN 'AJUSTE_POSITIVO' THEN PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_AJUSTAR'); v_signo := 1;
+    WHEN 'AJUSTE_NEGATIVO' THEN PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_AJUSTAR'); v_signo := -1;
+    WHEN 'MERMA'           THEN PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_AJUSTAR'); v_signo := -1;
+    ELSE RAISE EXCEPTION 'Tipo de movimiento no permitido aquí: % (ventas y traslados tienen su función)', p_tipo;
+  END CASE;
+  PERFORM fn_exigir_sucursal(p_usuario, p_sucursal);
+
+  INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                     costo_unitario, motivo, usuario_id)
+  VALUES (p_sucursal, p_variante, p_tipo, v_signo * p_cantidad, 0,
+          coalesce(p_costo_unitario, (SELECT costo FROM variante WHERE id = p_variante)),
+          p_motivo, p_usuario)
+  RETURNING id INTO v_id;
+
+  -- En una ENTRADA con costo informado se actualiza el "último costo" de la variante
+  IF p_tipo = 'ENTRADA' AND p_costo_unitario IS NOT NULL THEN
+    UPDATE variante SET costo = p_costo_unitario WHERE id = p_variante AND costo <> p_costo_unitario;
+  END IF;
+
+  RETURN v_id;
+END $$;
+
+-- Traslado entre sucursales (salida + entrada en la misma transacción)
+CREATE OR REPLACE FUNCTION fn_trasladar_stock(
+  p_usuario bigint, p_origen integer, p_destino integer, p_variante bigint,
+  p_cantidad integer, p_motivo text DEFAULT NULL
+) RETURNS uuid
+LANGUAGE plpgsql AS $$
+DECLARE v_ref uuid := gen_random_uuid(); v_costo numeric;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_TRASLADAR');
+  PERFORM fn_exigir_sucursal(p_usuario, p_origen);
+  IF p_origen = p_destino THEN RAISE EXCEPTION 'Origen y destino son la misma sucursal'; END IF;
+  IF p_cantidad IS NULL OR p_cantidad <= 0 THEN RAISE EXCEPTION 'La cantidad debe ser mayor que cero'; END IF;
+
+  SELECT costo INTO v_costo FROM variante WHERE id = p_variante;
+
+  INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                     costo_unitario, traslado_ref, motivo, usuario_id)
+  VALUES (p_origen,  p_variante, 'TRASLADO_SALIDA',  -p_cantidad, 0, v_costo, v_ref, p_motivo, p_usuario),
+         (p_destino, p_variante, 'TRASLADO_ENTRADA',  p_cantidad, 0, v_costo, v_ref, p_motivo, p_usuario);
+  RETURN v_ref;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.2 Caja
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_abrir_turno(
+  p_usuario bigint, p_caja integer, p_inicial_nio numeric DEFAULT 0, p_inicial_usd numeric DEFAULT 0
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_sucursal integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'CAJA_ABRIR');
+  SELECT sucursal_id INTO v_sucursal FROM caja WHERE id = p_caja AND activa;
+  IF v_sucursal IS NULL THEN RAISE EXCEPTION 'La caja % no existe o está inactiva', p_caja; END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
+
+  BEGIN
+    INSERT INTO turno_caja (caja_id, usuario_apertura_id, monto_inicial_nio, monto_inicial_usd)
+    VALUES (p_caja, p_usuario, p_inicial_nio, p_inicial_usd)
+    RETURNING id INTO v_id;
+  EXCEPTION WHEN unique_violation THEN
+    RAISE EXCEPTION 'La caja % ya tiene un turno abierto', p_caja;
+  END;
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_movimiento_caja(
+  p_usuario bigint, p_turno bigint, p_tipo text, p_moneda text, p_monto numeric, p_motivo text
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_sucursal integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'CAJA_MOVIMIENTOS');
+  SELECT c.sucursal_id INTO v_sucursal FROM turno_caja t JOIN caja c ON c.id = t.caja_id WHERE t.id = p_turno;
+  PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
+  INSERT INTO caja_movimiento (turno_id, tipo, moneda, monto, motivo, usuario_id)
+  VALUES (p_turno, p_tipo, p_moneda, p_monto, p_motivo, p_usuario)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Monto esperado por método de pago y moneda para un turno
+CREATE OR REPLACE FUNCTION fn_resumen_turno(p_turno bigint)
+RETURNS TABLE (metodo_pago_id smallint, metodo text, moneda char(3), monto_esperado numeric)
+LANGUAGE sql STABLE AS $$
+  WITH efectivo AS (SELECT id FROM metodo_pago WHERE es_efectivo),
+  partidas AS (
+    SELECT (SELECT id FROM efectivo) AS mp, 'NIO'::char(3) AS mon, t.monto_inicial_nio AS monto
+      FROM turno_caja t WHERE t.id = p_turno
+    UNION ALL
+    SELECT (SELECT id FROM efectivo), 'USD', t.monto_inicial_usd
+      FROM turno_caja t WHERE t.id = p_turno
+    UNION ALL
+    SELECT vp.metodo_pago_id, vp.moneda, vp.monto
+      FROM venta_pago vp JOIN venta v ON v.id = vp.venta_id
+     WHERE v.turno_id = p_turno AND v.estado = 'COMPLETADA'
+    UNION ALL
+    SELECT (SELECT id FROM efectivo), cm.moneda,
+           CASE cm.tipo WHEN 'INGRESO' THEN cm.monto ELSE -cm.monto END
+      FROM caja_movimiento cm WHERE cm.turno_id = p_turno
+  )
+  SELECT p.mp, m.nombre::text, p.mon, sum(p.monto)
+    FROM partidas p JOIN metodo_pago m ON m.id = p.mp
+   GROUP BY p.mp, m.nombre, p.mon
+   ORDER BY p.mp, p.mon
+$$;
+
+-- Cierre de turno ("arqueo"). p_contado:
+--   [{"metodo":"EFECTIVO","moneda":"NIO","monto":5230.50},
+--    {"metodo":"EFECTIVO","moneda":"USD","monto":40},
+--    {"metodo":"TARJETA","moneda":"NIO","monto":3100}]
+-- Lo no informado se toma como 0 contado.
+CREATE OR REPLACE FUNCTION fn_cerrar_turno(
+  p_usuario bigint, p_turno bigint, p_contado jsonb, p_observaciones text DEFAULT NULL
+) RETURNS TABLE (metodo text, moneda char(3), esperado numeric, contado numeric, diferencia numeric)
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text; v_sucursal integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'CAJA_CERRAR');
+
+  SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
+    FROM turno_caja t JOIN caja c ON c.id = t.caja_id
+   WHERE t.id = p_turno
+   FOR UPDATE OF t;                                 -- nadie más cierra/vende a la vez
+  IF v_estado IS NULL THEN RAISE EXCEPTION 'El turno % no existe', p_turno; END IF;
+  IF v_estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El turno % ya está cerrado', p_turno; END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
+
+  INSERT INTO cierre_caja_detalle (turno_id, metodo_pago_id, moneda, monto_esperado, monto_contado)
+  SELECT p_turno,
+         coalesce(e.metodo_pago_id, c.metodo_pago_id),
+         coalesce(e.moneda, c.moneda),
+         coalesce(e.monto_esperado, 0),
+         coalesce(c.monto, 0)
+    FROM fn_resumen_turno(p_turno) e
+    FULL JOIN (
+      SELECT m.id AS metodo_pago_id, (x->>'moneda')::char(3) AS moneda, sum((x->>'monto')::numeric) AS monto
+        FROM jsonb_array_elements(coalesce(p_contado, '[]'::jsonb)) x
+        JOIN metodo_pago m ON m.codigo = upper(x->>'metodo')
+       GROUP BY m.id, x->>'moneda'
+    ) c ON c.metodo_pago_id = e.metodo_pago_id AND c.moneda = e.moneda;
+
+  UPDATE turno_caja
+     SET estado = 'CERRADO', fecha_cierre = now(), usuario_cierre_id = p_usuario,
+         observaciones = p_observaciones
+   WHERE id = p_turno;
+
+  RETURN QUERY
+    SELECT m.nombre::text, d.moneda, d.monto_esperado, d.monto_contado, d.diferencia
+      FROM cierre_caja_detalle d JOIN metodo_pago m ON m.id = d.metodo_pago_id
+     WHERE d.turno_id = p_turno
+     ORDER BY m.id, d.moneda;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.3 Ventas
+-- ---------------------------------------------------------------------
+-- p_items:  [{"variante_id": 12, "cantidad": 1, "precio": 700, "descuento": 0}, ...]
+-- p_pagos:  [{"metodo":"EFECTIVO","moneda":"USD","monto":20},
+--            {"metodo":"TARJETA","moneda":"NIO","monto":350,"referencia":"784512"}]
+-- · "precio" es opcional. Si se omite se cobra el precio establecido (variante.precio_venta).
+--   Si se envía, puede ser IGUAL o MAYOR al establecido, nunca menor, y como máximo
+--   el % del parámetro VENTA_SOBREPRECIO_MAX_PCT. El precio del catálogo NO cambia.
+-- · El costo siempre se toma de la BD.
+-- · Si lo pagado supera el total y hay efectivo, el exceso se registra como vuelto en C$.
+CREATE OR REPLACE FUNCTION fn_registrar_venta(
+  p_usuario           bigint,
+  p_turno             bigint,
+  p_items             jsonb,
+  p_pagos             jsonb,
+  p_descuento         numeric DEFAULT 0,
+  p_cliente_nombre    text    DEFAULT NULL,
+  p_cliente_telefono  text    DEFAULT NULL,
+  p_notas             text    DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_sucursal   integer;
+  v_estado     text;
+  v_tc         numeric;
+  v_numero     text;
+  v_venta_id   bigint;
+  v_subtotal   numeric;
+  v_total      numeric;
+  v_pagado     numeric;
+  v_efectivo   numeric;
+  v_exceso     numeric;
+  v_hay_desc   boolean;
+  v_efectivo_id smallint;
+  v_faltantes  text;
+  v_max_pct    numeric;
+  r            record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_REGISTRAR');
+
+  -- Turno y sucursal
+  SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
+    FROM turno_caja t JOIN caja c ON c.id = t.caja_id WHERE t.id = p_turno;
+  IF v_estado IS DISTINCT FROM 'ABIERTO' THEN
+    RAISE EXCEPTION 'No hay un turno abierto con id %', p_turno;
+  END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
+
+  -- Validaciones de entrada
+  IF p_items IS NULL OR jsonb_typeof(p_items) <> 'array' OR jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'La venta debe tener al menos un producto';
+  END IF;
+  IF p_pagos IS NULL OR jsonb_typeof(p_pagos) <> 'array' OR jsonb_array_length(p_pagos) = 0 THEN
+    RAISE EXCEPTION 'La venta debe tener al menos un pago';
+  END IF;
+
+  SELECT string_agg(coalesce(x->>'variante_id', '(vacío)'), ', ') INTO v_faltantes
+    FROM jsonb_array_elements(p_items) x
+    LEFT JOIN variante va ON va.id = (x->>'variante_id')::bigint
+   WHERE va.id IS NULL;
+  IF v_faltantes IS NOT NULL THEN
+    RAISE EXCEPTION 'Variante(s) inexistente(s): %', v_faltantes;
+  END IF;
+
+  -- Precio modificado: solo hacia arriba, con permiso y dentro del tope
+  SELECT string_agg(format('"%s — %s" C$ %s (establecido C$ %s)', p.nombre, va.nombre,
+                           round((x->>'precio')::numeric, 2), va.precio_venta), '; ')
+    INTO v_faltantes
+    FROM jsonb_array_elements(p_items) x
+    JOIN variante va ON va.id = (x->>'variante_id')::bigint
+    JOIN producto p  ON p.id = va.producto_id
+   WHERE round((x->>'precio')::numeric, 2) < va.precio_venta;
+  IF v_faltantes IS NOT NULL THEN
+    RAISE EXCEPTION 'El precio de venta no puede ser menor al establecido: %', v_faltantes
+          USING ERRCODE = 'check_violation';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_items) x
+               JOIN variante va ON va.id = (x->>'variante_id')::bigint
+              WHERE round((x->>'precio')::numeric, 2) > va.precio_venta) THEN
+    PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_MODIFICAR_PRECIO');
+    v_max_pct := fn_parametro_num('VENTA_SOBREPRECIO_MAX_PCT');
+    IF v_max_pct IS NOT NULL THEN
+      SELECT string_agg(format('"%s — %s" C$ %s (máximo C$ %s)', p.nombre, va.nombre,
+                               round((x->>'precio')::numeric, 2),
+                               round(va.precio_venta * (1 + v_max_pct / 100), 2)), '; ')
+        INTO v_faltantes
+        FROM jsonb_array_elements(p_items) x
+        JOIN variante va ON va.id = (x->>'variante_id')::bigint
+        JOIN producto p  ON p.id = va.producto_id
+       WHERE round((x->>'precio')::numeric, 2) > round(va.precio_venta * (1 + v_max_pct / 100), 2);
+      IF v_faltantes IS NOT NULL THEN
+        RAISE EXCEPTION 'El precio supera el aumento máximo permitido (+% %%): %', v_max_pct, v_faltantes;
+      END IF;
+    END IF;
+  END IF;
+
+  SELECT bool_or(coalesce((x->>'descuento')::numeric, 0) > 0) INTO v_hay_desc
+    FROM jsonb_array_elements(p_items) x;
+  IF coalesce(p_descuento, 0) > 0 OR v_hay_desc THEN
+    PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_DESCUENTO');
+  END IF;
+
+  -- Correlativo por sucursal (bloquea la fila: numeración sin huecos ni duplicados)
+  UPDATE sucursal SET ultimo_numero_venta = ultimo_numero_venta + 1
+   WHERE id = v_sucursal
+  RETURNING codigo || '-' || lpad(ultimo_numero_venta::text, 8, '0') INTO v_numero;
+
+  v_tc := fn_tipo_cambio_vigente();
+
+  -- Subtotal con el precio cobrado (el enviado o, si no viene, el establecido)
+  SELECT sum(i.cantidad * round(coalesce(i.precio, va.precio_venta), 2) - coalesce(i.descuento, 0))
+    INTO v_subtotal
+    FROM jsonb_to_recordset(p_items) AS i(variante_id bigint, cantidad int, precio numeric, descuento numeric)
+    JOIN variante va ON va.id = i.variante_id;
+
+  IF coalesce(p_descuento, 0) < 0 OR coalesce(p_descuento, 0) > v_subtotal THEN
+    RAISE EXCEPTION 'Descuento global inválido (C$ %) para un subtotal de C$ %', p_descuento, v_subtotal;
+  END IF;
+  v_total := v_subtotal - coalesce(p_descuento, 0);
+
+  INSERT INTO venta (numero, sucursal_id, turno_id, vendedor_id, cliente_nombre, cliente_telefono,
+                     subtotal, descuento, total, tipo_cambio, notas)
+  VALUES (v_numero, v_sucursal, p_turno, p_usuario, p_cliente_nombre, p_cliente_telefono,
+          v_subtotal, coalesce(p_descuento, 0), v_total, v_tc, p_notas)
+  RETURNING id INTO v_venta_id;
+
+  -- Detalle + descuento de stock (ordenado por variante para evitar deadlocks)
+  FOR r IN
+    SELECT i.variante_id, i.cantidad, coalesce(i.descuento, 0) AS descuento,
+           va.precio_venta, round(coalesce(i.precio, va.precio_venta), 2) AS precio_cobrado,
+           va.costo, va.activo AND p.activo AS activo, p.tipo,
+           p.nombre || ' — ' || va.nombre AS nombre
+      FROM jsonb_to_recordset(p_items) AS i(variante_id bigint, cantidad int, precio numeric, descuento numeric)
+      LEFT JOIN variante va ON va.id = i.variante_id
+      LEFT JOIN producto p  ON p.id  = va.producto_id
+     ORDER BY i.variante_id
+  LOOP
+    IF r.precio_venta IS NULL THEN
+      RAISE EXCEPTION 'La variante % no existe', r.variante_id;
+    END IF;
+    IF NOT r.activo THEN
+      RAISE EXCEPTION 'El producto "%" está inactivo', r.nombre;
+    END IF;
+    IF r.cantidad IS NULL OR r.cantidad <= 0 THEN
+      RAISE EXCEPTION 'Cantidad inválida para "%"', r.nombre;
+    END IF;
+
+    INSERT INTO venta_detalle (venta_id, variante_id, cantidad, precio_lista, precio_unitario,
+                               costo_unitario, descuento)
+    VALUES (v_venta_id, r.variante_id, r.cantidad, r.precio_venta, r.precio_cobrado,
+            r.costo, r.descuento);
+
+    IF r.tipo = 'PRODUCTO' THEN
+      INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                         costo_unitario, venta_id, usuario_id)
+      VALUES (v_sucursal, r.variante_id, 'VENTA', -r.cantidad, 0, r.costo, v_venta_id, p_usuario);
+    END IF;
+  END LOOP;
+
+  -- Pagos
+  FOR r IN
+    SELECT m.id AS metodo_id, m.codigo, m.requiere_referencia, m.es_efectivo, m.activo,
+           upper(coalesce(x->>'moneda', 'NIO'))::char(3) AS moneda,
+           (x->>'monto')::numeric AS monto,
+           nullif(trim(x->>'referencia'), '') AS referencia,
+           x->>'metodo' AS metodo_txt
+      FROM jsonb_array_elements(p_pagos) x
+      LEFT JOIN metodo_pago m ON m.codigo = upper(x->>'metodo')
+  LOOP
+    IF r.metodo_id IS NULL OR NOT r.activo THEN
+      RAISE EXCEPTION 'Método de pago inválido: %', r.metodo_txt;
+    END IF;
+    IF r.monto IS NULL OR r.monto <= 0 THEN
+      RAISE EXCEPTION 'El monto de cada pago debe ser mayor que cero';
+    END IF;
+    IF r.requiere_referencia AND r.referencia IS NULL THEN
+      RAISE EXCEPTION 'El pago con % requiere número de referencia', r.codigo;
+    END IF;
+    INSERT INTO venta_pago (venta_id, metodo_pago_id, moneda, monto, tipo_cambio, referencia)
+    VALUES (v_venta_id, r.metodo_id, r.moneda, r.monto,
+            CASE WHEN r.moneda = 'USD' THEN v_tc ELSE 1 END, r.referencia);
+  END LOOP;
+
+  -- Cuadre y vuelto
+  SELECT sum(vp.monto_nio), sum(vp.monto_nio) FILTER (WHERE m.es_efectivo)
+    INTO v_pagado, v_efectivo
+    FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id
+   WHERE vp.venta_id = v_venta_id;
+
+  IF v_pagado < v_total THEN
+    RAISE EXCEPTION 'Pago insuficiente: total C$ %, pagado C$ %', v_total, v_pagado;
+  END IF;
+
+  v_exceso := v_pagado - v_total;
+  IF v_exceso > 0 THEN
+    IF coalesce(v_efectivo, 0) < v_exceso THEN
+      RAISE EXCEPTION 'Los pagos con tarjeta/transferencia exceden el total (exceso C$ %)', v_exceso;
+    END IF;
+    SELECT id INTO v_efectivo_id FROM metodo_pago WHERE es_efectivo;
+    INSERT INTO venta_pago (venta_id, metodo_pago_id, moneda, monto, tipo_cambio, es_vuelto)
+    VALUES (v_venta_id, v_efectivo_id, 'NIO', -v_exceso, 1, true);
+  END IF;
+
+  RETURN v_venta_id;
+END $$;
+
+-- Anulación: solo con el turno aún abierto (después del cierre → devolución, fase 2)
+CREATE OR REPLACE FUNCTION fn_anular_venta(p_usuario bigint, p_venta bigint, p_motivo text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_ANULAR');
+
+  SELECT ve.*, t.estado AS estado_turno INTO v
+    FROM venta ve JOIN turno_caja t ON t.id = ve.turno_id
+   WHERE ve.id = p_venta
+   FOR UPDATE OF ve;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La venta % no existe', p_venta; END IF;
+  IF v.estado = 'ANULADA' THEN RAISE EXCEPTION 'La venta % ya está anulada', v.numero; END IF;
+  IF v.estado_turno <> 'ABIERTO' THEN
+    RAISE EXCEPTION 'La venta % pertenece a un turno cerrado; registre una devolución', v.numero;
+  END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v.sucursal_id);
+
+  UPDATE venta
+     SET estado = 'ANULADA', anulada_por = p_usuario, fecha_anulacion = now(), motivo_anulacion = p_motivo
+   WHERE id = p_venta;
+
+  -- Devolver el stock (misma cantidad y costo con que salió)
+  INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                     costo_unitario, venta_id, motivo, usuario_id)
+  SELECT m.sucursal_id, m.variante_id, 'ANULACION_VENTA', -m.cantidad, 0, m.costo_unitario,
+         m.venta_id, 'Anulación ' || v.numero, p_usuario
+    FROM movimiento_inventario m
+   WHERE m.venta_id = p_venta AND m.tipo = 'VENTA'
+   ORDER BY m.variante_id;
+END $$;
+
+-- Búsqueda para el POS: por nombre, SKU o código de barras, con stock de la sucursal
+CREATE OR REPLACE FUNCTION fn_buscar_variantes(p_texto text, p_sucursal integer, p_limite int DEFAULT 20)
+RETURNS TABLE (variante_id bigint, sku text, codigo_barras text, producto text, variante text,
+               categoria text, tipo text, precio numeric, stock integer)
+LANGUAGE sql STABLE AS $$
+  SELECT va.id, va.sku::text, va.codigo_barras::text, p.nombre::text, va.nombre::text,
+         c.nombre::text, p.tipo::text, va.precio_venta,
+         CASE WHEN p.tipo = 'SERVICIO' THEN NULL ELSE coalesce(s.cantidad, 0) END
+    FROM variante va
+    JOIN producto p  ON p.id = va.producto_id
+    JOIN categoria c ON c.id = p.categoria_id
+    LEFT JOIN stock_sucursal s ON s.variante_id = va.id AND s.sucursal_id = p_sucursal
+   WHERE va.activo AND p.activo
+     AND ( va.codigo_barras = p_texto
+        OR upper(va.sku) = upper(p_texto)
+        OR lower(p.nombre || ' ' || va.nombre) LIKE '%' || lower(p_texto) || '%')
+   ORDER BY (va.codigo_barras = p_texto OR upper(va.sku) = upper(p_texto)) DESC NULLS LAST,
+            p.nombre, va.nombre
+   LIMIT p_limite
+$$;
+
+-- ---------------------------------------------------------------------
+-- 9.4 Panel de administración de usuarios
+--     El hash de contraseña SIEMPRE se genera en el backend (argon2id/bcrypt).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_validar_asignacion_rol(p_admin bigint, p_rol_codigo text) RETURNS integer
+LANGUAGE plpgsql STABLE AS $$
+DECLARE v_rol integer;
+BEGIN
+  SELECT id INTO v_rol FROM rol WHERE codigo = upper(p_rol_codigo);
+  IF v_rol IS NULL THEN RAISE EXCEPTION 'Rol inexistente: %', p_rol_codigo; END IF;
+  -- Solo un ADMIN puede crear o promover administradores
+  IF upper(p_rol_codigo) = 'ADMIN' AND NOT EXISTS (
+       SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+        WHERE u.id = p_admin AND r.codigo = 'ADMIN' AND u.activo) THEN
+    RAISE EXCEPTION 'Solo un administrador puede asignar el rol ADMIN'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN v_rol;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_crear_usuario(
+  p_admin bigint, p_nombre text, p_username text, p_password_hash text,
+  p_rol_codigo text, p_sucursales integer[] DEFAULT '{}',
+  p_email text DEFAULT NULL, p_telefono text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_rol integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  v_rol := fn_validar_asignacion_rol(p_admin, p_rol_codigo);
+
+  INSERT INTO usuario (nombre_completo, username, email, telefono, password_hash, rol_id,
+                       debe_cambiar_password, created_by)
+  VALUES (trim(p_nombre), lower(trim(p_username)), nullif(trim(p_email), ''), p_telefono,
+          p_password_hash, v_rol, true, p_admin)
+  RETURNING id INTO v_id;
+
+  INSERT INTO usuario_sucursal (usuario_id, sucursal_id)
+  SELECT v_id, unnest(p_sucursales);
+
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_actualizar_usuario(
+  p_admin bigint, p_usuario bigint, p_nombre text, p_rol_codigo text,
+  p_sucursales integer[], p_email text DEFAULT NULL, p_telefono text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_rol integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  v_rol := fn_validar_asignacion_rol(p_admin, p_rol_codigo);
+
+  -- Un no-admin no puede editar a un admin
+  IF EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+              WHERE u.id = p_usuario AND r.codigo = 'ADMIN')
+     AND NOT EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+                      WHERE u.id = p_admin AND r.codigo = 'ADMIN') THEN
+    RAISE EXCEPTION 'Solo un administrador puede modificar a otro administrador'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  UPDATE usuario
+     SET nombre_completo = trim(p_nombre), rol_id = v_rol,
+         email = nullif(trim(p_email), ''), telefono = p_telefono
+   WHERE id = p_usuario;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
+
+  -- Sincronizar sucursales (solo borra/agrega las diferencias → auditoría limpia)
+  DELETE FROM usuario_sucursal
+   WHERE usuario_id = p_usuario AND sucursal_id <> ALL (coalesce(p_sucursales, '{}'));
+  INSERT INTO usuario_sucursal (usuario_id, sucursal_id)
+  SELECT p_usuario, s FROM unnest(coalesce(p_sucursales, '{}')) s
+  ON CONFLICT DO NOTHING;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_set_usuario_activo(p_admin bigint, p_usuario bigint, p_activo boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  IF p_admin = p_usuario AND NOT p_activo THEN
+    RAISE EXCEPTION 'No puede desactivar su propio usuario';
+  END IF;
+  UPDATE usuario SET activo = p_activo WHERE id = p_usuario;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
+END $$;
+
+-- Reset por el admin: nueva contraseña temporal, obliga a cambiarla y desbloquea
+CREATE OR REPLACE FUNCTION fn_resetear_password(p_admin bigint, p_usuario bigint, p_nuevo_hash text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  UPDATE usuario
+     SET password_hash = p_nuevo_hash, debe_cambiar_password = true,
+         intentos_fallidos = 0, bloqueado_hasta = NULL
+   WHERE id = p_usuario;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_revocar_sesiones(p_admin bigint, p_usuario bigint)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE n integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  UPDATE sesion SET revocada_at = now() WHERE usuario_id = p_usuario AND revocada_at IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
+-- =====================================================================
+-- 10. VISTAS DE REPORTES Y PANEL
+-- =====================================================================
+
+-- Línea de venta con descuento global prorrateado (base de todos los reportes)
+CREATE OR REPLACE VIEW v_ventas_linea AS
+SELECT
+  v.id                                         AS venta_id,
+  v.numero,
+  v.fecha,
+  (v.fecha AT TIME ZONE 'America/Managua')     AS fecha_local,
+  (v.fecha AT TIME ZONE 'America/Managua')::date AS dia,
+  v.sucursal_id,
+  s.nombre                                     AS sucursal,
+  v.vendedor_id,
+  u.nombre_completo                            AS vendedor,
+  c.id                                         AS categoria_id,
+  c.nombre                                     AS categoria,
+  p.id                                         AS producto_id,
+  p.nombre                                     AS producto,
+  p.tipo,
+  va.id                                        AS variante_id,
+  va.sku,
+  va.nombre                                    AS variante,
+  d.cantidad,
+  d.precio_lista,
+  d.precio_unitario,
+  d.cantidad * (d.precio_unitario - d.precio_lista) AS sobreprecio,   -- extra cobrado sobre el establecido
+  d.subtotal                                   AS subtotal_linea,
+  d.subtotal * CASE WHEN v.subtotal = 0 THEN 0 ELSE v.total / v.subtotal END AS venta_neta,
+  d.cantidad * d.costo_unitario                AS costo,
+  d.subtotal * CASE WHEN v.subtotal = 0 THEN 0 ELSE v.total / v.subtotal END
+    - d.cantidad * d.costo_unitario            AS margen
+FROM venta v
+JOIN venta_detalle d ON d.venta_id = v.id
+JOIN variante va     ON va.id = d.variante_id
+JOIN producto p      ON p.id = va.producto_id
+JOIN categoria c     ON c.id = p.categoria_id
+JOIN sucursal s      ON s.id = v.sucursal_id
+JOIN usuario u       ON u.id = v.vendedor_id
+WHERE v.estado = 'COMPLETADA';
+
+-- Resumen por periodo: 'day' | 'week' (lunes) | 'month'. p_sucursal NULL = ambas sucursales juntas.
+CREATE OR REPLACE FUNCTION fn_reporte_ventas(
+  p_desde date, p_hasta date, p_agrupacion text DEFAULT 'day', p_sucursal integer DEFAULT NULL
+) RETURNS TABLE (periodo date, num_ventas bigint, unidades bigint, venta_neta numeric, sobreprecio numeric,
+                 costo numeric, margen numeric, margen_pct numeric, ticket_promedio numeric)
+LANGUAGE sql STABLE AS $$
+  SELECT date_trunc(p_agrupacion, l.dia)::date,
+         count(DISTINCT l.venta_id),
+         sum(l.cantidad),
+         round(sum(l.venta_neta), 2),
+         round(sum(l.sobreprecio), 2),
+         round(sum(l.costo), 2),
+         round(sum(l.margen), 2),
+         round(100 * sum(l.margen) / NULLIF(sum(l.venta_neta), 0), 1),
+         round(sum(l.venta_neta) / NULLIF(count(DISTINCT l.venta_id), 0), 2)
+    FROM v_ventas_linea l
+   WHERE l.dia BETWEEN p_desde AND p_hasta
+     AND (p_sucursal IS NULL OR l.sucursal_id = p_sucursal)
+     AND p_agrupacion IN ('day','week','month')
+   GROUP BY 1
+   ORDER BY 1
+$$;
+
+-- Ranking de productos / categorías en un rango
+CREATE OR REPLACE FUNCTION fn_top_productos(
+  p_desde date, p_hasta date, p_sucursal integer DEFAULT NULL, p_limite int DEFAULT 10
+) RETURNS TABLE (producto text, variante text, categoria text, unidades bigint,
+                 venta_neta numeric, margen numeric)
+LANGUAGE sql STABLE AS $$
+  SELECT l.producto::text, l.variante::text, l.categoria::text, sum(l.cantidad),
+         round(sum(l.venta_neta), 2), round(sum(l.margen), 2)
+    FROM v_ventas_linea l
+   WHERE l.dia BETWEEN p_desde AND p_hasta
+     AND (p_sucursal IS NULL OR l.sucursal_id = p_sucursal)
+   GROUP BY l.producto, l.variante, l.categoria
+   ORDER BY 5 DESC
+   LIMIT p_limite
+$$;
+
+CREATE OR REPLACE VIEW v_ventas_diarias AS
+SELECT dia, sucursal_id, sucursal,
+       count(DISTINCT venta_id)   AS num_ventas,
+       sum(cantidad)              AS unidades,
+       round(sum(venta_neta), 2)  AS venta_neta,
+       round(sum(sobreprecio), 2) AS sobreprecio,
+       round(sum(costo), 2)       AS costo,
+       round(sum(margen), 2)      AS margen
+  FROM v_ventas_linea
+ GROUP BY dia, sucursal_id, sucursal;
+
+-- Ventas cobradas por encima del precio establecido (control del administrador)
+CREATE OR REPLACE VIEW v_ventas_sobreprecio AS
+SELECT venta_id, numero, fecha_local, sucursal, vendedor, producto, variante, cantidad,
+       precio_lista, precio_unitario,
+       round(100 * (precio_unitario - precio_lista) / NULLIF(precio_lista, 0), 1) AS aumento_pct,
+       sobreprecio
+  FROM v_ventas_linea
+ WHERE precio_unitario > precio_lista;
+
+CREATE OR REPLACE VIEW v_ventas_semanales AS
+SELECT date_trunc('week', dia)::date AS semana_inicio, sucursal_id, sucursal,
+       count(DISTINCT venta_id) AS num_ventas, sum(cantidad) AS unidades,
+       round(sum(venta_neta), 2) AS venta_neta, round(sum(margen), 2) AS margen
+  FROM v_ventas_linea
+ GROUP BY 1, sucursal_id, sucursal;
+
+CREATE OR REPLACE VIEW v_ventas_mensuales AS
+SELECT date_trunc('month', dia)::date AS mes, sucursal_id, sucursal,
+       count(DISTINCT venta_id) AS num_ventas, sum(cantidad) AS unidades,
+       round(sum(venta_neta), 2) AS venta_neta, round(sum(margen), 2) AS margen
+  FROM v_ventas_linea
+ GROUP BY 1, sucursal_id, sucursal;
+
+CREATE OR REPLACE VIEW v_ventas_categoria_mensual AS
+SELECT date_trunc('month', dia)::date AS mes, sucursal_id, sucursal, categoria_id, categoria,
+       sum(cantidad) AS unidades, round(sum(venta_neta), 2) AS venta_neta, round(sum(margen), 2) AS margen
+  FROM v_ventas_linea
+ GROUP BY 1, sucursal_id, sucursal, categoria_id, categoria;
+
+-- Cobros netos por método de pago (el vuelto resta del efectivo)
+CREATE OR REPLACE VIEW v_cobros_metodo_diario AS
+SELECT (v.fecha AT TIME ZONE 'America/Managua')::date AS dia,
+       v.sucursal_id, s.nombre AS sucursal, m.nombre AS metodo, vp.moneda,
+       sum(vp.monto) AS monto, sum(vp.monto_nio) AS monto_nio
+  FROM venta_pago vp
+  JOIN venta v       ON v.id = vp.venta_id AND v.estado = 'COMPLETADA'
+  JOIN metodo_pago m ON m.id = vp.metodo_pago_id
+  JOIN sucursal s    ON s.id = v.sucursal_id
+ GROUP BY 1, v.sucursal_id, s.nombre, m.nombre, vp.moneda;
+
+-- Stock actual de TODO el catálogo físico en cada sucursal (incluye los que están en 0)
+CREATE OR REPLACE VIEW v_stock_actual AS
+SELECT s.id AS sucursal_id, s.nombre AS sucursal,
+       c.nombre AS categoria, p.id AS producto_id, p.nombre AS producto,
+       va.id AS variante_id, va.sku, va.nombre AS variante,
+       coalesce(ss.cantidad, 0)     AS cantidad,
+       coalesce(ss.stock_minimo, 0) AS stock_minimo,
+       coalesce(ss.cantidad, 0) <= coalesce(ss.stock_minimo, 0) AS alerta_stock_bajo,
+       va.costo, va.precio_venta,
+       coalesce(ss.cantidad, 0) * va.costo AS valor_costo
+  FROM sucursal s
+ CROSS JOIN variante va
+  JOIN producto p  ON p.id = va.producto_id AND p.tipo = 'PRODUCTO'
+  JOIN categoria c ON c.id = p.categoria_id
+  LEFT JOIN stock_sucursal ss ON ss.sucursal_id = s.id AND ss.variante_id = va.id
+ WHERE s.activa AND va.activo AND p.activo;
+
+CREATE OR REPLACE VIEW v_inventario_valorizado AS
+SELECT sucursal_id, sucursal, categoria,
+       sum(cantidad) AS unidades,
+       round(sum(valor_costo), 2) AS valor_costo,
+       round(sum(cantidad * precio_venta), 2) AS valor_venta
+  FROM v_stock_actual
+ GROUP BY sucursal_id, sucursal, categoria;
+
+-- Historial de turnos con su resultado
+CREATE OR REPLACE VIEW v_turnos AS
+SELECT t.id AS turno_id, s.nombre AS sucursal, c.nombre AS caja, t.estado,
+       ua.nombre_completo AS abierto_por, t.fecha_apertura,
+       uc.nombre_completo AS cerrado_por, t.fecha_cierre,
+       (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA') AS ventas,
+       (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'ANULADA')    AS anuladas,
+       (SELECT coalesce(sum(total),0) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA') AS total_vendido,
+       (SELECT sum(d.diferencia) FILTER (WHERE d.moneda = 'NIO') FROM cierre_caja_detalle d WHERE d.turno_id = t.id) AS diferencia_nio,
+       (SELECT sum(d.diferencia) FILTER (WHERE d.moneda = 'USD') FROM cierre_caja_detalle d WHERE d.turno_id = t.id) AS diferencia_usd
+  FROM turno_caja t
+  JOIN caja c      ON c.id = t.caja_id
+  JOIN sucursal s  ON s.id = c.sucursal_id
+  JOIN usuario ua  ON ua.id = t.usuario_apertura_id
+  LEFT JOIN usuario uc ON uc.id = t.usuario_cierre_id;
+
+-- Panel de administración: listado de usuarios
+CREATE OR REPLACE VIEW v_usuarios_admin AS
+SELECT u.id, u.nombre_completo, u.username, u.email, u.telefono,
+       r.codigo AS rol_codigo, r.nombre AS rol,
+       CASE WHEN NOT u.activo THEN 'INACTIVO'
+            WHEN u.bloqueado_hasta > now() THEN 'BLOQUEADO'
+            ELSE 'ACTIVO' END AS estado,
+       CASE WHEN fn_tiene_permiso(u.id, 'SUCURSALES_TODAS') THEN ARRAY['Todas']::text[]
+            ELSE coalesce((SELECT array_agg(s.nombre::text ORDER BY s.nombre)
+                             FROM usuario_sucursal us JOIN sucursal s ON s.id = us.sucursal_id
+                            WHERE us.usuario_id = u.id), ARRAY[]::text[]) END AS sucursales,
+       u.debe_cambiar_password, u.intentos_fallidos, u.bloqueado_hasta, u.ultimo_acceso,
+       (SELECT count(*) FROM sesion se
+         WHERE se.usuario_id = u.id AND se.revocada_at IS NULL AND se.expira_at > now()) AS sesiones_activas,
+       u.created_at
+  FROM usuario u JOIN rol r ON r.id = u.rol_id;
+
+COMMIT;

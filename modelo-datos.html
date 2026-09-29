@@ -1,0 +1,499 @@
+<title>Modelo de datos Esmeralda</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #F3F6F4;
+    --surface: #FFFFFF;
+    --ink: #17221E;
+    --muted: #5A6B64;
+    --line: #D6E0DB;
+    --accent: #0E6B57;
+    --accent-soft: #E1EFEA;
+    --code-bg: #EAF1ED;
+    --diagram-bg: #FFFFFF;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0F1513;
+      --surface: #161E1B;
+      --ink: #E4ECE8;
+      --muted: #97A8A1;
+      --line: #2A3632;
+      --accent: #4CC3A4;
+      --accent-soft: #1B2E28;
+      --code-bg: #1C2622;
+      --diagram-bg: #F7FAF8;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0F1513;
+    --surface: #161E1B;
+    --ink: #E4ECE8;
+    --muted: #97A8A1;
+    --line: #2A3632;
+    --accent: #4CC3A4;
+    --accent-soft: #1B2E28;
+    --code-bg: #1C2622;
+    --diagram-bg: #F7FAF8;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-inline: 16px;
+    padding-block: 32px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 40px; }
+
+  header { display: grid; gap: 10px; }
+  .eyebrow {
+    font: 500 12px/1 "IBM Plex Mono", ui-monospace, monospace;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--accent);
+  }
+  h1 { font-size: clamp(28px, 4vw, 38px); line-height: 1.15; margin: 0; font-weight: 700; text-wrap: balance; }
+  h2 { font-size: 22px; margin: 0; font-weight: 600; text-wrap: balance; }
+  h3 { font-size: 16px; margin: 0; font-weight: 600; }
+  p  { margin: 0; max-width: 68ch; }
+  .lede { color: var(--muted); font-size: 16px; }
+
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .chip {
+    font: 500 12px/1 "IBM Plex Mono", ui-monospace, monospace;
+    padding: 6px 10px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+
+  nav.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+  nav.toc a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  nav.toc a:hover, nav.toc a:focus-visible { border-bottom-color: var(--accent); outline: none; }
+
+  section { display: grid; gap: 14px; }
+  .section-head { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 22px; }
+  .section-head p { color: var(--muted); }
+
+  .diagram {
+    background: var(--diagram-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    overflow-x: auto;
+  }
+  .diagram pre.mermaid { margin: 0; background: transparent; min-width: 640px; color: #17221E; }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
+  .rule {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; display: grid; gap: 4px; align-content: start;
+  }
+  .rule p { color: var(--muted); font-size: 14px; }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px/1.3 "IBM Plex Mono", ui-monospace, monospace; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td:first-child { white-space: nowrap; }
+  .perm { font: 12px/1.4 "IBM Plex Mono", ui-monospace, monospace; color: var(--accent); }
+
+  .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .role { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: grid; gap: 8px; align-content: start; }
+  .role ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  .role .tag { justify-self: start; }
+
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; }
+
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Esmeralda Experience · Sistema de inventario y ventas</div>
+    <h1>Modelo de datos (PostgreSQL 16)</h1>
+    <p class="lede">Esquema para las dos sucursales, con inventario por sucursal y kardex, POS con pagos mixtos en C$ y US$, turnos de caja con arqueo, reportes y un panel de administración de usuarios con roles y permisos.</p>
+    <div class="meta">
+      <span class="chip">25 tablas</span>
+      <span class="chip">11 vistas</span>
+      <span class="chip">LAM · Las Américas</span>
+      <span class="chip">LBR · Las Brisas</span>
+      <span class="chip">moneda base C$</span>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="Secciones">
+    <a href="#seguridad">Seguridad y organización</a>
+    <a href="#inventario">Catálogo e inventario</a>
+    <a href="#ventas">Ventas y caja</a>
+    <a href="#roles">Roles</a>
+    <a href="#reglas">Reglas garantizadas</a>
+    <a href="#funciones">Funciones para el backend</a>
+  </nav>
+
+  <section id="seguridad">
+    <div class="section-head">
+      <h2>Seguridad y organización</h2>
+      <p>Base del panel de administración. Los usuarios nunca se eliminan: se desactivan, y al hacerlo se revocan sus sesiones. El permiso <code>SUCURSALES_TODAS</code> sustituye la asignación por sucursal.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+  SUCURSAL ||--o{ CAJA : tiene
+  SUCURSAL ||--o{ USUARIO_SUCURSAL : asigna
+  USUARIO ||--o{ USUARIO_SUCURSAL : opera_en
+  ROL ||--o{ USUARIO : define
+  ROL ||--o{ ROL_PERMISO : concede
+  PERMISO ||--o{ ROL_PERMISO : incluido_en
+  USUARIO ||--o{ SESION : inicia
+  USUARIO |o--o{ ACCESO_LOG : intenta
+  USUARIO |o--o{ AUDITORIA : modifica
+
+  SUCURSAL {
+    int id PK
+    varchar codigo UK "LAM, LBR"
+    varchar nombre UK
+    boolean activa
+    int ultimo_numero_venta "correlativo"
+  }
+  CAJA {
+    int id PK
+    int sucursal_id FK
+    varchar nombre
+    boolean activa
+  }
+  ROL {
+    int id PK
+    varchar codigo UK "ADMIN, ENCARGADO, VENDEDOR"
+    varchar nombre
+    boolean es_sistema
+  }
+  PERMISO {
+    int id PK
+    varchar codigo UK
+    varchar modulo
+    varchar descripcion
+  }
+  ROL_PERMISO {
+    int rol_id PK,FK
+    int permiso_id PK,FK
+  }
+  USUARIO {
+    bigint id PK
+    varchar nombre_completo
+    varchar username UK
+    varchar email UK
+    varchar password_hash "argon2id o bcrypt"
+    int rol_id FK
+    boolean activo
+    boolean debe_cambiar_password
+    smallint intentos_fallidos
+    timestamptz bloqueado_hasta
+    timestamptz ultimo_acceso
+    bigint created_by FK
+  }
+  USUARIO_SUCURSAL {
+    bigint usuario_id PK,FK
+    int sucursal_id PK,FK
+  }
+  SESION {
+    uuid id PK
+    bigint usuario_id FK
+    char refresh_token_hash UK "SHA-256"
+    inet ip
+    timestamptz expira_at
+    timestamptz revocada_at
+  }
+  ACCESO_LOG {
+    bigint id PK
+    bigint usuario_id FK
+    varchar username_intentado
+    boolean exito
+    inet ip
+    timestamptz fecha
+  }
+  AUDITORIA {
+    bigint id PK
+    varchar tabla
+    varchar registro_id
+    varchar accion
+    jsonb antes
+    jsonb despues
+    bigint usuario_id FK
+    timestamptz fecha
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="inventario">
+    <div class="section-head">
+      <h2>Catálogo e inventario</h2>
+      <p>Lo que se vende es la <strong>variante</strong> (material, calibre, largo). Los servicios de perforación son productos de tipo <code>SERVICIO</code> y no mueven stock. El stock solo cambia a través del kardex (<code>movimiento_inventario</code>), que es de solo inserción.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+  CATEGORIA ||--o{ PRODUCTO : agrupa
+  PRODUCTO ||--|{ VARIANTE : tiene
+  VARIANTE ||--o{ STOCK_SUCURSAL : existencia
+  SUCURSAL ||--o{ STOCK_SUCURSAL : guarda
+  VARIANTE ||--o{ MOVIMIENTO_INVENTARIO : kardex
+  SUCURSAL ||--o{ MOVIMIENTO_INVENTARIO : ocurre_en
+  USUARIO ||--o{ MOVIMIENTO_INVENTARIO : registra
+  VENTA |o--o{ MOVIMIENTO_INVENTARIO : origina
+  VARIANTE ||--o{ HISTORIAL_PRECIO : cambia
+
+  CATEGORIA {
+    int id PK
+    varchar nombre UK
+    boolean activa
+  }
+  PRODUCTO {
+    bigint id PK
+    int categoria_id FK
+    varchar nombre
+    varchar tipo "PRODUCTO o SERVICIO"
+    boolean activo
+  }
+  VARIANTE {
+    bigint id PK
+    bigint producto_id FK
+    varchar sku UK
+    varchar codigo_barras UK
+    varchar nombre "Titanio 16G 8 mm"
+    jsonb atributos
+    numeric precio_venta
+    numeric costo "ultimo costo"
+    boolean activo
+  }
+  STOCK_SUCURSAL {
+    int sucursal_id PK,FK
+    bigint variante_id PK,FK
+    int cantidad "CHECK mayor o igual a 0"
+    int stock_minimo
+  }
+  MOVIMIENTO_INVENTARIO {
+    bigint id PK
+    int sucursal_id FK
+    bigint variante_id FK
+    varchar tipo "ENTRADA, VENTA, MERMA..."
+    int cantidad "con signo"
+    int stock_resultante
+    numeric costo_unitario
+    bigint venta_id FK
+    uuid traslado_ref
+    varchar motivo
+    bigint usuario_id FK
+    timestamptz fecha
+  }
+  HISTORIAL_PRECIO {
+    bigint id PK
+    bigint variante_id FK
+    numeric precio_anterior
+    numeric precio_nuevo
+    numeric costo_anterior
+    numeric costo_nuevo
+    bigint usuario_id FK
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="ventas">
+    <div class="section-head">
+      <h2>Ventas y caja</h2>
+      <p>Toda venta pertenece a un turno abierto de una caja. El precio y el costo se copian al detalle en el momento de vender. El vuelto se guarda como pago negativo en efectivo C$, así el arqueo cuadra al centavo aunque el cliente pague en dólares.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+  CAJA ||--o{ TURNO_CAJA : abre
+  USUARIO ||--o{ TURNO_CAJA : responsable
+  TURNO_CAJA ||--o{ VENTA : contiene
+  TURNO_CAJA ||--o{ CAJA_MOVIMIENTO : ingresos_egresos
+  TURNO_CAJA ||--o{ CIERRE_CAJA_DETALLE : arqueo
+  SUCURSAL ||--o{ VENTA : factura
+  USUARIO ||--o{ VENTA : vende
+  VENTA ||--|{ VENTA_DETALLE : lineas
+  VARIANTE ||--o{ VENTA_DETALLE : vendida
+  VENTA ||--|{ VENTA_PAGO : pagos
+  METODO_PAGO ||--o{ VENTA_PAGO : usa
+  METODO_PAGO ||--o{ CIERRE_CAJA_DETALLE : cuadra
+
+  TURNO_CAJA {
+    bigint id PK
+    int caja_id FK
+    bigint usuario_apertura_id FK
+    numeric monto_inicial_nio
+    numeric monto_inicial_usd
+    varchar estado "ABIERTO o CERRADO"
+    bigint usuario_cierre_id FK
+    timestamptz fecha_cierre
+  }
+  CAJA_MOVIMIENTO {
+    bigint id PK
+    bigint turno_id FK
+    varchar tipo "INGRESO o EGRESO"
+    char moneda
+    numeric monto
+    varchar motivo
+  }
+  VENTA {
+    bigint id PK
+    varchar numero UK "LAM-00000001"
+    int sucursal_id FK
+    bigint turno_id FK
+    bigint vendedor_id FK
+    numeric subtotal
+    numeric descuento
+    numeric total
+    numeric tipo_cambio "snapshot"
+    varchar estado "COMPLETADA o ANULADA"
+    bigint anulada_por FK
+    varchar motivo_anulacion
+  }
+  VENTA_DETALLE {
+    bigint id PK
+    bigint venta_id FK
+    bigint variante_id FK
+    int cantidad
+    numeric precio_lista "establecido, snapshot"
+    numeric precio_unitario "cobrado, mayor o igual a lista"
+    numeric costo_unitario "snapshot"
+    numeric descuento
+    numeric subtotal "calculado"
+  }
+  VENTA_PAGO {
+    bigint id PK
+    bigint venta_id FK
+    smallint metodo_pago_id FK
+    char moneda "NIO o USD"
+    numeric monto
+    numeric tipo_cambio
+    numeric monto_nio "calculado"
+    varchar referencia "voucher"
+    boolean es_vuelto
+  }
+  METODO_PAGO {
+    smallint id PK
+    varchar codigo UK
+    boolean es_efectivo
+    boolean requiere_referencia
+  }
+  CIERRE_CAJA_DETALLE {
+    bigint turno_id PK,FK
+    smallint metodo_pago_id PK,FK
+    char moneda PK
+    numeric monto_esperado
+    numeric monto_contado
+    numeric diferencia "calculado"
+  }
+  PARAMETRO {
+    varchar clave PK "VENTA_SOBREPRECIO_MAX_PCT"
+    varchar valor
+    varchar descripcion
+  }
+  TIPO_CAMBIO {
+    date fecha PK
+    numeric usd_a_nio
+    bigint usuario_id FK
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="roles">
+    <div class="section-head">
+      <h2>Roles iniciales</h2>
+      <p>Los permisos de cada rol se editan desde el panel. El rol ADMIN siempre tiene todos, y solo otro administrador puede asignarlo.</p>
+    </div>
+    <div class="roles">
+      <div class="role">
+        <span class="chip tag">ADMIN</span>
+        <h3>Administrador</h3>
+        <ul>
+          <li>Gestiona usuarios, roles y sucursales</li>
+          <li>Ve costos, márgenes y auditoría</li>
+          <li>Opera en ambas sucursales</li>
+        </ul>
+      </div>
+      <div class="role">
+        <span class="chip tag">ENCARGADO</span>
+        <h3>Encargado de sucursal</h3>
+        <ul>
+          <li>Entradas, ajustes, mermas y traslados</li>
+          <li>Descuentos y anulaciones</li>
+          <li>Ve diferencias del arqueo y reportes de venta</li>
+        </ul>
+      </div>
+      <div class="role">
+        <span class="chip tag">VENDEDOR</span>
+        <h3>Vendedor</h3>
+        <ul>
+          <li>Registra ventas en su sucursal, puede cobrar por encima del precio establecido</li>
+          <li>Abre y cierra su turno (arqueo ciego)</li>
+          <li>Consulta stock y sus propias ventas</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="reglas">
+    <div class="section-head">
+      <h2>Reglas que garantiza la base de datos</h2>
+      <p>Se cumplen aunque el backend tenga un error o alguien inserte datos directamente con el ORM. Cada una tiene una prueba en <code>04_pruebas.sql</code>.</p>
+    </div>
+    <div class="rules">
+      <div class="rule"><h3>Sin sobreventa</h3><p>El stock no puede quedar negativo. Dos ventas simultáneas del último artículo: una pasa y la otra recibe “Stock insuficiente”.</p></div>
+      <div class="rule"><h3>Numeración sin huecos</h3><p>Correlativo independiente por sucursal (LAM-…, LBR-…). Una venta fallida no consume número.</p></div>
+      <div class="rule"><h3>La venta cuadra</h3><p>Al confirmar, el detalle suma el subtotal y los pagos suman el total. Si no, se rechaza la transacción completa.</p></div>
+      <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran. Solo pasan a ANULADA, con motivo, usuario y devolución automática del stock.</p></div>
+      <div class="rule"><h3>Turno cerrado es definitivo</h3><p>No se vende ni se anula en un turno cerrado. Solo puede haber un turno abierto por caja.</p></div>
+      <div class="rule"><h3>Precio solo hacia arriba</h3><p>En la venta se puede cobrar más que el precio establecido, nunca menos, y como máximo +50 % (parámetro editable). El precio del catálogo no cambia y cada línea guarda ambos precios.</p></div>
+      <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN activo, ni desactivar el propio usuario.</p></div>
+      <div class="rule"><h3>Bloqueo por intentos</h3><p>5 intentos fallidos bloquean 15 minutos. El reset del admin desbloquea y obliga a cambiar la contraseña.</p></div>
+      <div class="rule"><h3>Auditoría con autor</h3><p>Cambios en usuarios, productos, precios y permisos quedan con usuario y fecha, sin guardar nunca el hash de la contraseña.</p></div>
+    </div>
+  </section>
+
+  <section id="funciones">
+    <div class="section-head">
+      <h2>Funciones para el backend</h2>
+      <p>La API llama a estas funciones dentro de una transacción, después de <code>SET LOCAL app.usuario_id = …</code>. Cada una valida el permiso y la sucursal del usuario.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Función</th><th>Qué hace</th><th>Permiso</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">fn_registrar_venta</td><td>Crea la venta con detalle, pagos mixtos y vuelto, y descuenta el stock. Acepta un precio por línea mayor o igual al establecido</td><td class="perm">VENTAS_REGISTRAR (+ VENTAS_MODIFICAR_PRECIO, VENTAS_DESCUENTO)</td></tr>
+          <tr><td class="mono">fn_anular_venta</td><td>Anula una venta del turno abierto y devuelve el stock</td><td class="perm">VENTAS_ANULAR</td></tr>
+          <tr><td class="mono">fn_buscar_variantes</td><td>Búsqueda del POS por nombre, SKU o código de barras, con stock</td><td class="perm">—</td></tr>
+          <tr><td class="mono">fn_abrir_turno</td><td>Abre el turno de una caja con fondo inicial en C$ y US$</td><td class="perm">CAJA_ABRIR</td></tr>
+          <tr><td class="mono">fn_movimiento_caja</td><td>Registra un ingreso o egreso de efectivo con motivo</td><td class="perm">CAJA_MOVIMIENTOS</td></tr>
+          <tr><td class="mono">fn_resumen_turno</td><td>Calcula el monto esperado por método de pago y moneda</td><td class="perm">CAJA_VER_DIFERENCIAS</td></tr>
+          <tr><td class="mono">fn_cerrar_turno</td><td>Arqueo: guarda contado contra esperado y cierra el turno</td><td class="perm">CAJA_CERRAR</td></tr>
+          <tr><td class="mono">fn_movimiento_inventario</td><td>Entradas, ajustes y mermas (el motivo es obligatorio en ajustes)</td><td class="perm">INVENTARIO_ENTRADA / _AJUSTAR</td></tr>
+          <tr><td class="mono">fn_trasladar_stock</td><td>Traslado entre sucursales en una sola operación</td><td class="perm">INVENTARIO_TRASLADAR</td></tr>
+          <tr><td class="mono">fn_crear_usuario</td><td>Alta con rol y sucursales, con contraseña temporal</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
+          <tr><td class="mono">fn_actualizar_usuario</td><td>Cambia datos, rol y sucursales del usuario</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
+          <tr><td class="mono">fn_set_usuario_activo</td><td>Activa o desactiva el usuario (revoca sesiones)</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
+          <tr><td class="mono">fn_resetear_password</td><td>Contraseña temporal, desbloqueo y cambio obligatorio</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
+          <tr><td class="mono">fn_revocar_sesiones</td><td>Cierra todas las sesiones activas de un usuario</td><td class="perm">USUARIOS_GESTIONAR</td></tr>
+          <tr><td class="mono">fn_registrar_login</td><td>Bitácora de acceso, contador de intentos y bloqueo</td><td class="perm">(auth)</td></tr>
+          <tr><td class="mono">fn_reporte_ventas</td><td>Ventas, costo, margen y ticket promedio por día, semana o mes</td><td class="perm">REPORTES_VER / _COSTOS</td></tr>
+          <tr><td class="mono">fn_top_productos</td><td>Ranking de productos por venta neta en un rango</td><td class="perm">REPORTES_VER</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_sobreprecio</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_turnos</code>, <code>v_usuarios_admin</code>.</p>
+  </section>
+
+  <footer>Esquema v1.0. Archivos: 01_esquema.sql · 02_seed.sql · 03_datos_demo.sql · 04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
+</div>
