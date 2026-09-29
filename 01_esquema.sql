@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.0  ·  Multi-sucursal
+--  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 1 de 6)  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -45,10 +45,13 @@ END $$;
 -- =====================================================================
 -- 1. ORGANIZACIÓN: sucursales y cajas
 -- =====================================================================
+-- Ubicaciones físicas. tipo SUCURSAL = vende y tiene cajas; tipo BODEGA = solo guarda stock
+-- (la bodega central es donde entra toda la mercadería comprada).
 CREATE TABLE sucursal (
   id                   integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   codigo               varchar(5)   NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z]{2,5}$'),  -- prefijo de facturas
   nombre               varchar(80)  NOT NULL UNIQUE,
+  tipo                 varchar(10)  NOT NULL DEFAULT 'SUCURSAL' CHECK (tipo IN ('SUCURSAL','BODEGA')),
   direccion            varchar(200),
   telefono             varchar(20),
   activa               boolean      NOT NULL DEFAULT true,
@@ -57,6 +60,9 @@ CREATE TABLE sucursal (
   updated_at           timestamptz  NOT NULL DEFAULT now()
 );
 
+-- Solo puede existir una bodega central
+CREATE UNIQUE INDEX ux_sucursal_una_bodega ON sucursal (tipo) WHERE tipo = 'BODEGA';
+
 CREATE TABLE caja (
   id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   sucursal_id  integer     NOT NULL REFERENCES sucursal(id),
@@ -64,6 +70,29 @@ CREATE TABLE caja (
   activa       boolean     NOT NULL DEFAULT true,
   UNIQUE (sucursal_id, nombre)
 );
+
+-- La bodega no vende: no puede tener cajas
+CREATE OR REPLACE FUNCTION fn_validar_caja_sucursal() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (SELECT tipo FROM sucursal WHERE id = NEW.sucursal_id) <> 'SUCURSAL' THEN
+    RAISE EXCEPTION 'Solo las sucursales de venta pueden tener cajas (la bodega no vende)';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_caja_sucursal BEFORE INSERT OR UPDATE OF sucursal_id ON caja
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_caja_sucursal();
+
+CREATE OR REPLACE FUNCTION fn_proteger_tipo_sucursal() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.tipo = 'BODEGA' AND EXISTS (SELECT 1 FROM caja WHERE sucursal_id = NEW.id) THEN
+    RAISE EXCEPTION 'Una ubicación con cajas no puede convertirse en bodega';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_sucursal_tipo BEFORE UPDATE OF tipo ON sucursal
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_tipo_sucursal();
 
 -- =====================================================================
 -- 2. SEGURIDAD: roles, permisos, usuarios, sesiones (panel de administración)
@@ -141,6 +170,34 @@ CREATE TABLE acceso_log (
   fecha               timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_acceso_log_usuario_fecha ON acceso_log (usuario_id, fecha DESC);
+
+-- Equipos autorizados (PC de caja, tablet de sucursal, celular del admin).
+-- Cada equipo se registra una vez y queda ligado a su ubicación (y a su caja si es una PC de caja).
+CREATE TABLE dispositivo (
+  id              uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+  nombre          varchar(60)  NOT NULL,                       -- "Caja 1 Las Américas", "Tablet Las Brisas"
+  tipo            varchar(10)  NOT NULL CHECK (tipo IN ('CAJA','TABLET','MOVIL')),
+  sucursal_id     integer      NOT NULL REFERENCES sucursal(id),
+  caja_id         integer      REFERENCES caja(id),
+  token_hash      char(64)     NOT NULL UNIQUE,                 -- SHA-256 del token del equipo
+  activo          boolean      NOT NULL DEFAULT true,
+  registrado_por  bigint       NOT NULL REFERENCES usuario(id),
+  created_at      timestamptz  NOT NULL DEFAULT now(),
+  ultimo_uso      timestamptz,
+  CONSTRAINT ck_dispositivo_caja CHECK ((tipo = 'CAJA') = (caja_id IS NOT NULL))
+);
+
+CREATE OR REPLACE FUNCTION fn_validar_dispositivo() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.caja_id IS NOT NULL
+     AND (SELECT sucursal_id FROM caja WHERE id = NEW.caja_id) <> NEW.sucursal_id THEN
+    RAISE EXCEPTION 'La caja % no pertenece a la ubicación del equipo', NEW.caja_id;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_dispositivo_validar BEFORE INSERT OR UPDATE ON dispositivo
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_dispositivo();
 
 -- Auditoría genérica de cambios en datos maestros
 CREATE TABLE auditoria (
@@ -314,13 +371,54 @@ CREATE UNIQUE INDEX ux_metodo_pago_un_efectivo ON metodo_pago (es_efectivo) WHER
 CREATE TABLE parametro (
   clave        varchar(40)  PRIMARY KEY CHECK (clave ~ '^[A-Z0-9_]+$'),
   valor        varchar(200),                 -- NULL / vacío = sin valor
+  tipo_valor   varchar(10)  NOT NULL DEFAULT 'TEXTO' CHECK (tipo_valor IN ('NUMERO','HORA','OPCION','TEXTO')),
+  opciones     text[],                       -- valores válidos cuando tipo_valor = 'OPCION'
+  permite_vacio boolean     NOT NULL DEFAULT false,
   descripcion  varchar(300) NOT NULL,
-  updated_at   timestamptz  NOT NULL DEFAULT now()
+  updated_at   timestamptz  NOT NULL DEFAULT now(),
+  CONSTRAINT ck_parametro_opciones CHECK ((tipo_valor = 'OPCION') = (opciones IS NOT NULL))
 );
+
+-- El panel no puede guardar un valor con formato inválido
+CREATE OR REPLACE FUNCTION fn_validar_parametro() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v text := NULLIF(trim(NEW.valor), '');
+BEGIN
+  IF v IS NULL THEN
+    IF NOT NEW.permite_vacio THEN
+      RAISE EXCEPTION 'El parámetro % no puede quedar vacío', NEW.clave;
+    END IF;
+    RETURN NEW;
+  END IF;
+  CASE NEW.tipo_valor
+    WHEN 'NUMERO' THEN
+      IF v !~ '^[0-9]+(\.[0-9]+)?$' THEN
+        RAISE EXCEPTION 'El parámetro % debe ser un número positivo (recibido: %)', NEW.clave, v;
+      END IF;
+    WHEN 'HORA' THEN
+      IF v !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' THEN
+        RAISE EXCEPTION 'El parámetro % debe ser una hora HH:MM (recibido: %)', NEW.clave, v;
+      END IF;
+    WHEN 'OPCION' THEN
+      IF NOT (v = ANY (NEW.opciones)) THEN
+        RAISE EXCEPTION 'Valor inválido para %: %. Opciones: %', NEW.clave, v, array_to_string(NEW.opciones, ', ');
+      END IF;
+    ELSE NULL;
+  END CASE;
+  NEW.valor := v;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_parametro_validar BEFORE INSERT OR UPDATE ON parametro
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_parametro();
 
 CREATE OR REPLACE FUNCTION fn_parametro_num(p_clave text) RETURNS numeric
 LANGUAGE sql STABLE AS $$
   SELECT NULLIF(trim(valor), '')::numeric FROM parametro WHERE clave = p_clave
+$$;
+
+CREATE OR REPLACE FUNCTION fn_parametro_txt(p_clave text) RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(trim(valor), '') FROM parametro WHERE clave = p_clave
 $$;
 
 CREATE TABLE tipo_cambio (
@@ -532,8 +630,8 @@ DECLARE
   v_antes   jsonb;
   v_despues jsonb;
 BEGIN
-  IF TG_OP IN ('UPDATE','DELETE') THEN v_antes   := to_jsonb(OLD) - 'password_hash' - 'updated_at'; END IF;
-  IF TG_OP IN ('INSERT','UPDATE') THEN v_despues := to_jsonb(NEW) - 'password_hash' - 'updated_at'; END IF;
+  IF TG_OP IN ('UPDATE','DELETE') THEN v_antes   := to_jsonb(OLD) - 'password_hash' - 'token_hash' - 'updated_at'; END IF;
+  IF TG_OP IN ('INSERT','UPDATE') THEN v_despues := to_jsonb(NEW) - 'password_hash' - 'token_hash' - 'updated_at'; END IF;
 
   IF TG_OP = 'UPDATE' THEN
     IF to_jsonb(OLD)->>'password_hash' IS DISTINCT FROM to_jsonb(NEW)->>'password_hash' THEN
@@ -559,7 +657,7 @@ BEGIN
                     FOR EACH ROW EXECUTE FUNCTION fn_set_updated_at()', t);
   END LOOP;
   FOREACH t IN ARRAY ARRAY['sucursal','caja','rol','rol_permiso','usuario','usuario_sucursal',
-                           'categoria','producto','variante','metodo_pago','tipo_cambio','parametro'] LOOP
+                           'categoria','producto','variante','metodo_pago','tipo_cambio','parametro','dispositivo'] LOOP
     EXECUTE format('CREATE TRIGGER tg_%1$s_auditoria AFTER INSERT OR UPDATE OR DELETE ON %1$I
                     FOR EACH ROW EXECUTE FUNCTION fn_auditar()', t);
   END LOOP;
@@ -742,6 +840,11 @@ BEGIN
     ELSE RAISE EXCEPTION 'Tipo de movimiento no permitido aquí: % (ventas y traslados tienen su función)', p_tipo;
   END CASE;
   PERFORM fn_exigir_sucursal(p_usuario, p_sucursal);
+
+  -- Toda la mercadería comprada entra por la bodega central
+  IF p_tipo = 'ENTRADA' AND (SELECT tipo FROM sucursal WHERE id = p_sucursal) <> 'BODEGA' THEN
+    RAISE EXCEPTION 'Las entradas de mercadería solo se registran en la bodega central; a las sucursales llega por envío';
+  END IF;
 
   INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
                                      costo_unitario, motivo, usuario_id)
@@ -1154,6 +1257,65 @@ LANGUAGE sql STABLE AS $$
    LIMIT p_limite
 $$;
 
+-- Existencias de una variante en cada ubicación, según lo que el usuario puede ver.
+-- Sin el permiso INVENTARIO_VER_BODEGA, la bodega se muestra según el parámetro
+-- BODEGA_VISIBILIDAD: 'SI_NO' (solo disponible sí/no) o 'CANTIDAD'.
+CREATE OR REPLACE FUNCTION fn_consultar_stock(p_usuario bigint, p_variante bigint)
+RETURNS TABLE (sucursal_id integer, sucursal text, tipo text, cantidad integer, disponible boolean)
+LANGUAGE sql STABLE AS $$
+  SELECT s.id, s.nombre::text, s.tipo::text,
+         CASE WHEN s.tipo = 'BODEGA'
+                   AND NOT fn_tiene_permiso(p_usuario, 'INVENTARIO_VER_BODEGA')
+                   AND coalesce(fn_parametro_txt('BODEGA_VISIBILIDAD'), 'SI_NO') = 'SI_NO'
+              THEN NULL
+              ELSE coalesce(ss.cantidad, 0) END,
+         coalesce(ss.cantidad, 0) > 0
+    FROM sucursal s
+    LEFT JOIN stock_sucursal ss ON ss.sucursal_id = s.id AND ss.variante_id = p_variante
+   WHERE s.activa
+     AND fn_tiene_permiso(p_usuario, 'INVENTARIO_VER')
+   ORDER BY s.tipo DESC, s.nombre
+$$;
+
+-- ---------------------------------------------------------------------
+-- 9.3b Equipos autorizados
+--   El backend genera un token aleatorio, lo entrega UNA vez al equipo y guarda
+--   solo su SHA-256. En cada inicio de sesión el equipo presenta el token.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_registrar_dispositivo(
+  p_admin bigint, p_nombre text, p_tipo text, p_sucursal integer,
+  p_token_hash text, p_caja integer DEFAULT NULL
+) RETURNS uuid
+LANGUAGE plpgsql AS $$
+DECLARE v_id uuid;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  INSERT INTO dispositivo (nombre, tipo, sucursal_id, caja_id, token_hash, registrado_por)
+  VALUES (trim(p_nombre), upper(p_tipo), p_sucursal, p_caja, p_token_hash, p_admin)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Identifica el equipo por su token. NULL si no existe o está desactivado.
+CREATE OR REPLACE FUNCTION fn_dispositivo_por_token(p_token_hash text)
+RETURNS TABLE (dispositivo_id uuid, nombre text, tipo text, sucursal_id integer, caja_id integer)
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY
+    UPDATE dispositivo d SET ultimo_uso = now()
+     WHERE d.token_hash = p_token_hash AND d.activo
+    RETURNING d.id, d.nombre::text, d.tipo::text, d.sucursal_id, d.caja_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_set_dispositivo_activo(p_admin bigint, p_dispositivo uuid, p_activo boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  UPDATE dispositivo SET activo = p_activo WHERE id = p_dispositivo;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Equipo % no existe', p_dispositivo; END IF;
+END $$;
+
 -- ---------------------------------------------------------------------
 -- 9.4 Panel de administración de usuarios
 --     El hash de contraseña SIEMPRE se genera en el backend (argon2id/bcrypt).
@@ -1400,7 +1562,7 @@ SELECT (v.fecha AT TIME ZONE 'America/Managua')::date AS dia,
 
 -- Stock actual de TODO el catálogo físico en cada sucursal (incluye los que están en 0)
 CREATE OR REPLACE VIEW v_stock_actual AS
-SELECT s.id AS sucursal_id, s.nombre AS sucursal,
+SELECT s.id AS sucursal_id, s.nombre AS sucursal, s.tipo AS tipo_ubicacion,
        c.nombre AS categoria, p.id AS producto_id, p.nombre AS producto,
        va.id AS variante_id, va.sku, va.nombre AS variante,
        coalesce(ss.cantidad, 0)     AS cantidad,
@@ -1416,12 +1578,12 @@ SELECT s.id AS sucursal_id, s.nombre AS sucursal,
  WHERE s.activa AND va.activo AND p.activo;
 
 CREATE OR REPLACE VIEW v_inventario_valorizado AS
-SELECT sucursal_id, sucursal, categoria,
+SELECT sucursal_id, sucursal, tipo_ubicacion, categoria,
        sum(cantidad) AS unidades,
        round(sum(valor_costo), 2) AS valor_costo,
        round(sum(cantidad * precio_venta), 2) AS valor_venta
   FROM v_stock_actual
- GROUP BY sucursal_id, sucursal, categoria;
+ GROUP BY sucursal_id, sucursal, tipo_ubicacion, categoria;
 
 -- Historial de turnos con su resultado
 CREATE OR REPLACE VIEW v_turnos AS

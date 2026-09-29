@@ -49,9 +49,17 @@ SELECT p.id, v.sku, v.cb, v.nombre, v.attr::jsonb, v.precio, v.costo
     ('Cadena cartier',             'PLA-CAD-45',   '7501000000042', 'Plata 925 · 45 cm',      '{"material":"plata 925","largo_cm":45}',          1200.00, 480.00)
   ) AS v(producto, sku, cb, nombre, attr, precio, costo) ON v.producto = p.nombre;
 
--- Stock inicial por sucursal (entradas vía función → kardex)
+-- Stock inicial: toda la mercadería entra por la bodega central...
 SELECT fn_movimiento_inventario((SELECT id FROM usuario WHERE username = 'admin'),
-                                s.id, va.id, 'ENTRADA', q.cant, 'Inventario inicial')
+                                (SELECT id FROM sucursal WHERE codigo = 'BOD'), va.id, 'ENTRADA', q.cant,
+                                'Inventario inicial')
+  FROM (VALUES ('TIT-LAB-16-6',40), ('TIT-LAB-16-8',25), ('ACE-ARO-16-8',60),
+               ('NEI-AFT-177',24),  ('PLA-CAD-45',10)) AS q(sku, cant)
+  JOIN variante va ON va.sku = q.sku;
+
+-- ...y se reparte a las sucursales
+SELECT fn_trasladar_stock((SELECT id FROM usuario WHERE username = 'admin'),
+                          (SELECT id FROM sucursal WHERE codigo = 'BOD'), s.id, va.id, q.cant, 'Reparto inicial')
   FROM (VALUES ('LAM','TIT-LAB-16-6',20), ('LAM','TIT-LAB-16-8',15), ('LAM','ACE-ARO-16-8',30),
                ('LAM','NEI-AFT-177',12),  ('LAM','PLA-CAD-45',5),
                ('LBR','TIT-LAB-16-6',10), ('LBR','ACE-ARO-16-8',20), ('LBR','NEI-AFT-177',6),
@@ -59,6 +67,7 @@ SELECT fn_movimiento_inventario((SELECT id FROM usuario WHERE username = 'admin'
   JOIN sucursal s  ON s.codigo = q.suc
   JOIN variante va ON va.sku = q.sku;
 
-UPDATE stock_sucursal SET stock_minimo = 5;
+UPDATE stock_sucursal SET stock_minimo = 5
+ WHERE sucursal_id IN (SELECT id FROM sucursal WHERE tipo = 'SUCURSAL');
 
 COMMIT;

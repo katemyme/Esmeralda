@@ -7,12 +7,14 @@ BEGIN;
 -- ---------------------------------------------------------------------
 -- Sucursales y cajas
 -- ---------------------------------------------------------------------
-INSERT INTO sucursal (codigo, nombre, direccion) VALUES
-  ('LAM', 'Multicentro Las Américas', 'Multicentro Las Américas, Managua'),
-  ('LBR', 'Multicentro Las Brisas',   'Multicentro Las Brisas, Managua');
+INSERT INTO sucursal (codigo, nombre, tipo, direccion) VALUES
+  ('LAM', 'Multicentro Las Américas', 'SUCURSAL', 'Multicentro Las Américas, Managua'),
+  ('LBR', 'Multicentro Las Brisas',   'SUCURSAL', 'Multicentro Las Brisas, Managua'),
+  ('BOD', 'Bodega central',           'BODEGA',   NULL);
 
+-- Una caja por sucursal de venta (la bodega no tiene caja)
 INSERT INTO caja (sucursal_id, nombre)
-SELECT id, 'Caja 1' FROM sucursal;
+SELECT id, 'Caja 1' FROM sucursal WHERE tipo = 'SUCURSAL';
 
 -- ---------------------------------------------------------------------
 -- Permisos
@@ -27,6 +29,7 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('PRODUCTOS_GESTIONAR',   'Catálogo',   'Crear y editar productos, variantes y categorías'),
   ('PRECIOS_EDITAR',        'Catálogo',   'Cambiar precios de venta y costos'),
   ('INVENTARIO_VER',        'Inventario', 'Consultar stock y kardex'),
+  ('INVENTARIO_VER_BODEGA', 'Inventario', 'Ver la cantidad exacta en bodega (sin él: según parámetro BODEGA_VISIBILIDAD)'),
   ('INVENTARIO_ENTRADA',    'Inventario', 'Registrar entradas de mercadería'),
   ('INVENTARIO_AJUSTAR',    'Inventario', 'Ajustes de inventario y mermas'),
   ('INVENTARIO_TRASLADAR',  'Inventario', 'Trasladar stock entre sucursales'),
@@ -60,7 +63,7 @@ SELECT r.id, p.id FROM rol r CROSS JOIN permiso p WHERE r.codigo = 'ADMIN';
 
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
-  'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_ENTRADA','INVENTARIO_AJUSTAR','INVENTARIO_TRASLADAR',
+  'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_AJUSTAR','INVENTARIO_TRASLADAR',
   'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_DESCUENTO','VENTAS_ANULAR',
   'VENTAS_MODIFICAR_PRECIO',
   'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','TIPO_CAMBIO_GESTIONAR',
@@ -84,9 +87,17 @@ INSERT INTO metodo_pago (codigo, nombre, es_efectivo, requiere_referencia) VALUE
 -- ---------------------------------------------------------------------
 -- Parámetros
 -- ---------------------------------------------------------------------
-INSERT INTO parametro (clave, valor, descripcion) VALUES
-  ('VENTA_SOBREPRECIO_MAX_PCT', '50',
-   'Aumento máximo (%) que se puede cobrar sobre el precio establecido. Vacío = sin límite. Nunca se permite cobrar menos.');
+INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, descripcion) VALUES
+  ('VENTA_SOBREPRECIO_MAX_PCT', '50', 'NUMERO', NULL, true,
+   'Aumento máximo (%) que se puede cobrar sobre el precio establecido. Vacío = sin límite. Nunca se permite cobrar menos.'),
+  ('MARGEN_MINIMO_ALERTA_PCT', '40', 'NUMERO', NULL, false,
+   'Si una compra deja el margen de un producto por debajo de este %, se alerta al administrador.'),
+  ('CAJA_TOLERANCIA_DIFERENCIA_NIO', '100', 'NUMERO', NULL, false,
+   'Diferencia de arqueo (en C$, dólares convertidos) a partir de la cual se exige justificación y se alerta.'),
+  ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false,
+   'Hora (Managua) a la que se alerta si una caja sigue sin cerrar.'),
+  ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false,
+   'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.');
 
 -- ---------------------------------------------------------------------
 -- Categorías (rubros de Esmeralda)

@@ -33,6 +33,7 @@ SELECT id AS ana     FROM usuario WHERE username = 'ana.martinez' \gset
 SELECT id AS carlos  FROM usuario WHERE username = 'carlos.ruiz'  \gset
 SELECT id AS lam     FROM sucursal WHERE codigo = 'LAM' \gset
 SELECT id AS lbr     FROM sucursal WHERE codigo = 'LBR' \gset
+SELECT id AS bod     FROM sucursal WHERE codigo = 'BOD' \gset
 SELECT id AS caja_lam FROM caja WHERE sucursal_id = :lam \gset
 SELECT id AS caja_lbr FROM caja WHERE sucursal_id = :lbr \gset
 SELECT id AS lob  FROM variante WHERE sku = 'SRV-LOB'      \gset
@@ -132,9 +133,11 @@ SELECT fn_trasladar_stock(:maria, :lam, :lbr, :lab8, 4, 'Reposición Las Brisas'
 SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab8) = 11
                   AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab8) = 4, 'traslado LAM 15→11, LBR 0→4');
 SELECT pg_temp.espera_error(format('SELECT fn_trasladar_stock(%s, %s, %s, %s, 1)', :carlos, :lbr, :lam, :lab8), 'INVENTARIO_TRASLADAR');
-SELECT set_config('app.usuario_id', :'maria', false);
-SELECT fn_movimiento_inventario(:maria, :lam, :cad, 'ENTRADA', 10, 'Compra proveedor', 500);
-SELECT pg_temp.afirma((SELECT precio_nuevo = 1200 AND costo_nuevo = 500 AND usuario_id = :maria FROM historial_precio WHERE variante_id = :cad ORDER BY id DESC LIMIT 1), 'entrada con costo nuevo → historial de costo con usuario');
+SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :maria, :bod, :cad, 'ENTRADA', 'Compra'), 'INVENTARIO_ENTRADA');
+SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :admin, :lam, :cad, 'ENTRADA', 'Compra'), 'solo se registran en la bodega');
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT fn_movimiento_inventario(:admin, :bod, :cad, 'ENTRADA', 10, 'Compra proveedor', 500);
+SELECT pg_temp.afirma((SELECT precio_nuevo = 1200 AND costo_nuevo = 500 AND usuario_id = :admin FROM historial_precio WHERE variante_id = :cad ORDER BY id DESC LIMIT 1), 'entrada en bodega con costo nuevo → historial de costo con usuario');
 
 \echo '\n=== 8. PANEL DE ADMINISTRACIÓN'
 SELECT set_config('app.usuario_id', :'admin', false);
@@ -223,5 +226,44 @@ SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'parametro' 
 
 \echo 'Ventas con sobreprecio:'
 SELECT numero, vendedor, producto, cantidad, precio_lista, precio_unitario, aumento_pct, sobreprecio FROM v_ventas_sobreprecio;
+
+\echo '\n=== 11. v1.1 PASO 1: BODEGA, EQUIPOS Y PARÁMETROS'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT pg_temp.espera_error(format('INSERT INTO caja (sucursal_id, nombre) VALUES (%s, %L)', :bod, 'Caja bodega'), 'la bodega no vende');
+SELECT pg_temp.espera_error($q$INSERT INTO sucursal (codigo, nombre, tipo) VALUES ('BODX', 'Otra bodega', 'BODEGA')$q$, 'ux_sucursal_una_bodega');
+SELECT pg_temp.espera_error(format('UPDATE sucursal SET tipo = %L WHERE id = %s', 'BODEGA', :lam), 'no puede convertirse en bodega');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :lab6) = 10, 'bodega conserva lo no repartido (40 − 20 − 10 = 10)');
+
+-- Equipos
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_dispositivo(%s, %L, %L, %s, %L)', :admin, 'Caja sin caja', 'CAJA', :lam, repeat('a', 64)), 'ck_dispositivo_caja');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_dispositivo(%s, %L, %L, %s, %L, %s)', :admin, 'Caja cruzada', 'CAJA', :lam, repeat('b', 64), :caja_lbr), 'no pertenece a la ubicación');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_dispositivo(%s, %L, %L, %s, %L)', :maria, 'Tablet', 'TABLET', :lam, repeat('c', 64)), 'SUCURSALES_GESTIONAR');
+SELECT fn_registrar_dispositivo(:admin, 'Caja 1 Las Américas', 'CAJA', :lam, encode(sha256('token-caja-lam'), 'hex'), :caja_lam) AS disp_lam \gset
+SELECT fn_registrar_dispositivo(:admin, 'Tablet Las Brisas', 'TABLET', :lbr, encode(sha256('token-tablet-lbr'), 'hex'));
+SELECT pg_temp.afirma((SELECT sucursal_id = :lam AND caja_id = :caja_lam FROM fn_dispositivo_por_token(encode(sha256('token-caja-lam'), 'hex'))), 'el token identifica equipo, sucursal y caja');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_dispositivo_por_token(encode(sha256('token-falso'), 'hex'))), 'token desconocido → sin acceso');
+SELECT fn_set_dispositivo_activo(:admin, :'disp_lam', false);
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_dispositivo_por_token(encode(sha256('token-caja-lam'), 'hex'))), 'equipo desactivado → sin acceso');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM auditoria WHERE tabla = 'dispositivo' AND (despues ? 'token_hash' OR antes ? 'token_hash'))
+                  AND EXISTS (SELECT 1 FROM auditoria WHERE tabla = 'dispositivo'), 'auditoría de equipos sin guardar el token');
+
+-- Parámetros con validación
+SELECT pg_temp.espera_error($q$UPDATE parametro SET valor = 'cuarenta' WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT'$q$, 'debe ser un número');
+SELECT pg_temp.espera_error($q$UPDATE parametro SET valor = NULL WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT'$q$, 'no puede quedar vacío');
+SELECT pg_temp.espera_error($q$UPDATE parametro SET valor = '25:00' WHERE clave = 'CAJA_HORA_ALERTA_CIERRE'$q$, 'hora HH:MM');
+SELECT pg_temp.espera_error($q$UPDATE parametro SET valor = 'TODO' WHERE clave = 'BODEGA_VISIBILIDAD'$q$, 'Opciones: SI_NO, CANTIDAD');
+UPDATE parametro SET valor = ' 35 ' WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT';
+SELECT pg_temp.afirma(fn_parametro_num('MARGEN_MINIMO_ALERTA_PCT') = 35, 'parámetro válido se guarda limpio');
+UPDATE parametro SET valor = '40' WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT';
+
+-- Visibilidad del stock de bodega
+SELECT pg_temp.afirma((SELECT cantidad IS NULL AND disponible FROM fn_consultar_stock(:ana, :lab6) WHERE tipo = 'BODEGA'), 'vendedora ve bodega solo como disponible sí/no');
+SELECT pg_temp.afirma((SELECT cantidad FROM fn_consultar_stock(:ana, :lab6) WHERE sucursal_id = :lbr) = 10, 'vendedora ve la cantidad de la otra sucursal');
+SELECT pg_temp.afirma((SELECT cantidad FROM fn_consultar_stock(:admin, :lab6) WHERE tipo = 'BODEGA') = 10, 'admin ve la cantidad exacta en bodega');
+UPDATE parametro SET valor = 'CANTIDAD' WHERE clave = 'BODEGA_VISIBILIDAD';
+SELECT pg_temp.afirma((SELECT cantidad FROM fn_consultar_stock(:ana, :lab6) WHERE tipo = 'BODEGA') = 10, 'con BODEGA_VISIBILIDAD = CANTIDAD la vendedora ve el número');
+UPDATE parametro SET valor = 'SI_NO' WHERE clave = 'BODEGA_VISIBILIDAD';
+\echo 'Consulta de stock de la vendedora (labret 6 mm):'
+SELECT sucursal, tipo, cantidad, disponible FROM fn_consultar_stock(:ana, :lab6);
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'
