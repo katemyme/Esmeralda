@@ -266,4 +266,52 @@ UPDATE parametro SET valor = 'SI_NO' WHERE clave = 'BODEGA_VISIBILIDAD';
 \echo 'Consulta de stock de la vendedora (labret 6 mm):'
 SELECT sucursal, tipo, cantidad, disponible FROM fn_consultar_stock(:ana, :lab6);
 
+\echo '\n=== 12. v1.1 PASO 2: PERFORACIONES, GAMAS Y PRECIO DE PAQUETES'
+SELECT id AS pdr  FROM variante WHERE sku = 'ACE-LAB-PDR' \gset
+SELECT id AS p_lob  FROM perforacion WHERE codigo = 'LOB'  \gset
+SELECT id AS p_hlx  FROM perforacion WHERE codigo = 'HLX'  \gset
+SELECT id AS p_par  FROM perforacion WHERE codigo = 'LOBP' \gset
+SELECT id AS p_trg  FROM perforacion WHERE codigo = 'TRG'  \gset
+SELECT id AS g_cla  FROM gama WHERE nombre = 'Acero clásica' \gset
+SELECT id AS g_tit  FROM gama WHERE nombre = 'Titanio' \gset
+
+-- Regla 2 (tabla por gama) y regla 3 (servicio + pieza)
+SELECT pg_temp.afirma((SELECT precio = 450 AND regla = 'TABLA_GAMA' FROM fn_precio_paquete(:p_hlx, ARRAY[:aro]::bigint[])), 'hélix + acero clásica = C$450 (tabla)');
+SELECT pg_temp.afirma((SELECT precio = 550 AND regla = 'TABLA_GAMA' FROM fn_precio_paquete(:p_hlx, ARRAY[:pdr]::bigint[])), 'hélix + acero de lujo = C$550 (tabla)');
+SELECT pg_temp.afirma((SELECT precio = 1000 AND regla = 'SERVICIO_MAS_PIEZA' FROM fn_precio_paquete(:p_hlx, ARRAY[:lab6]::bigint[])), 'hélix + titanio 6 mm = 350 + 650 = C$1000 (servicio + pieza)');
+-- Regla 1 (especial) gana a las demás
+SELECT pg_temp.afirma((SELECT precio = 900 AND regla = 'ESPECIAL' FROM fn_precio_paquete(:p_hlx, ARRAY[:lab8]::bigint[])), 'hélix + titanio 8 mm = C$900 (precio especial)');
+SELECT fn_set_precio_especial(:admin, :p_hlx, NULL, :g_cla, 400, 'Temporada');
+SELECT pg_temp.afirma((SELECT precio = 400 AND regla = 'ESPECIAL' FROM fn_precio_paquete(:p_hlx, ARRAY[:aro]::bigint[])), 'especial por gama gana a la tabla');
+SELECT fn_set_precio_especial(:admin, :p_hlx, NULL, :g_cla, NULL);
+SELECT pg_temp.afirma((SELECT precio = 450 FROM fn_precio_paquete(:p_hlx, ARRAY[:aro]::bigint[])), 'al quitar el especial vuelve la tabla');
+-- Paquete de 2 piezas
+SELECT pg_temp.afirma((SELECT precio = 600 FROM fn_precio_paquete(:p_par, ARRAY[:aro, :aro]::bigint[])), 'lóbulos par + 2 clásicas = C$600 (tabla)');
+SELECT pg_temp.afirma((SELECT precio = 500 + 650 + 650 FROM fn_precio_paquete(:p_par, ARRAY[:lab6, :lab8]::bigint[])), 'lóbulos par + 2 titanio = servicio + ambas piezas');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s, %s]::bigint[])', :p_par, :aro, :lab6), 'misma gama');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s]::bigint[])', :p_par, :aro), 'lleva 2 pieza(s); se recibieron 1');
+-- Validaciones de pieza
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s]::bigint[])', :p_lob, :pdr), 'no está permitida');
+SELECT pg_temp.afirma((SELECT precio = 350 FROM fn_precio_paquete(:p_lob, ARRAY[:aro]::bigint[])), 'lóbulo acepta acero clásica (permitida)');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s]::bigint[])', :p_hlx, :nei), 'no es una pieza de perforación');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s]::bigint[])', :p_trg, :aro), 'Falta el precio');
+SELECT pg_temp.afirma((SELECT precio = 400 + 650 FROM fn_precio_paquete(:p_trg, ARRAY[:lab6]::bigint[])), 'tragus sin tabla igual vende titanio (servicio + pieza)');
+-- Reglas del catálogo
+SELECT pg_temp.espera_error(format('UPDATE variante SET gama_id = %s WHERE id = %s', :g_cla, :lob), 'Solo las piezas');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_gama(%s, %s, %s, 999)', :admin, :p_hlx, :g_tit), 'precio por pieza');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_gama(%s, %s, %s, 999)', :ana, :p_hlx, :g_cla), 'PRECIOS_EDITAR');
+SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, (SELECT paquete_variante_id FROM perforacion WHERE id = %s), %L, 1)', :admin, :bod, :p_hlx, 'ENTRADA'), 'no manejan inventario');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, format('[{"variante_id":%%s,"cantidad":1}]', (SELECT paquete_variante_id FROM perforacion WHERE id = %s))::jsonb, '[{"metodo":"EFECTIVO","monto":500}]')$q$, :carlos, :turno_lbr, :p_hlx), 'paquetes todavía no');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_perforacion(%s, %L, %L, 300)', :admin, 'HLX', 'Hélix 2'), 'duplicate key');
+-- Solo servicio: el precio vive en la variante de servicio (historial de precios incluido)
+UPDATE variante SET precio_venta = 380 WHERE id = (SELECT servicio_variante_id FROM perforacion WHERE id = :p_hlx);
+SELECT pg_temp.afirma((SELECT precio = 380 + 650 FROM fn_precio_paquete(:p_hlx, ARRAY[:lab6]::bigint[])), 'cambiar el precio de solo servicio actualiza la regla 3');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM historial_precio WHERE precio_anterior = 350 AND precio_nuevo = 380), 'cambio del precio de servicio queda en el historial');
+UPDATE variante SET precio_venta = 350 WHERE id = (SELECT servicio_variante_id FROM perforacion WHERE id = :p_hlx);
+
+\echo 'Pantalla de precios de perforación (NULL = falta precio):'
+SELECT perforacion, precio_solo_servicio AS servicio, gama, precio_paquete, precios_especiales FROM v_precios_perforacion ORDER BY perforacion_id, orden;
+\echo 'Búsqueda POS "hélix" en LAM:'
+SELECT sku, producto, variante, tipo, precio, stock FROM fn_buscar_variantes('hélix', :lam);
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

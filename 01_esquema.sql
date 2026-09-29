@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 1 de 6)  ·  2 sucursales + bodega central
+--  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 2 de 6)  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -229,7 +229,8 @@ CREATE TABLE producto (
   categoria_id  integer      NOT NULL REFERENCES categoria(id),
   nombre        varchar(120) NOT NULL,
   descripcion   varchar(500),
-  tipo          varchar(10)  NOT NULL DEFAULT 'PRODUCTO' CHECK (tipo IN ('PRODUCTO','SERVICIO')),
+  tipo          varchar(10)  NOT NULL DEFAULT 'PRODUCTO' CHECK (tipo IN ('PRODUCTO','SERVICIO','PAQUETE')),
+                -- PRODUCTO = pieza o artículo con stock · SERVICIO = perforación sola · PAQUETE = perforación con pieza incluida
   activo        boolean      NOT NULL DEFAULT true,
   created_at    timestamptz  NOT NULL DEFAULT now(),
   updated_at    timestamptz  NOT NULL DEFAULT now()
@@ -248,6 +249,8 @@ CREATE TABLE variante (
   atributos      jsonb         NOT NULL DEFAULT '{}'::jsonb, -- {"material":"titanio","calibre":"16G","largo_mm":8}
   precio_venta   numeric(12,2) NOT NULL CHECK (precio_venta >= 0),
   costo          numeric(12,2) NOT NULL DEFAULT 0 CHECK (costo >= 0),
+  gama_id        integer,                                   -- solo piezas usables en paquetes (FK abajo)
+  foto_url       varchar(300),                              -- foto del diseño para el POS y la tablet
   activo         boolean       NOT NULL DEFAULT true,
   created_at     timestamptz   NOT NULL DEFAULT now(),
   updated_at     timestamptz   NOT NULL DEFAULT now()
@@ -266,6 +269,99 @@ CREATE TABLE historial_precio (
   fecha            timestamptz   NOT NULL DEFAULT now()
 );
 CREATE INDEX ix_historial_precio_variante ON historial_precio (variante_id, fecha DESC);
+
+-- ---------------------------------------------------------------------
+-- 3.1 Perforaciones, gamas de pieza y precios de paquete
+-- ---------------------------------------------------------------------
+-- Gama de pieza. modo_precio:
+--   TABLA = precio fijo por perforación (acero clásica, acero de lujo)
+--   PIEZA = el paquete cuesta el servicio + el precio de la pieza (titanio, varía por diseño)
+CREATE TABLE gama (
+  id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  nombre       varchar(40)  NOT NULL UNIQUE,
+  modo_precio  varchar(5)   NOT NULL CHECK (modo_precio IN ('TABLA','PIEZA')),
+  orden        smallint     NOT NULL DEFAULT 0,
+  activa       boolean      NOT NULL DEFAULT true
+);
+
+ALTER TABLE variante ADD CONSTRAINT fk_variante_gama FOREIGN KEY (gama_id) REFERENCES gama(id);
+CREATE INDEX ix_variante_gama ON variante (gama_id) WHERE gama_id IS NOT NULL;
+
+-- Tipo de perforación. Cada una tiene dos entradas en el catálogo, creadas por fn_crear_perforacion:
+--   · servicio  (tipo SERVICIO): perforación sola; su precio_venta ES el precio de "solo servicio"
+--   · paquete   (tipo PAQUETE):  perforación con pieza; su precio lo calcula fn_precio_paquete
+CREATE TABLE perforacion (
+  id                   integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  codigo               varchar(6)   NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z]{2,6}$'),
+  nombre               varchar(60)  NOT NULL UNIQUE,
+  piezas_por_paquete   smallint     NOT NULL DEFAULT 1 CHECK (piezas_por_paquete BETWEEN 1 AND 4),
+  servicio_variante_id bigint       NOT NULL UNIQUE REFERENCES variante(id),
+  paquete_variante_id  bigint       NOT NULL UNIQUE REFERENCES variante(id),
+  activa               boolean      NOT NULL DEFAULT true,
+  created_at           timestamptz  NOT NULL DEFAULT now()
+);
+
+-- Qué piezas se pueden usar en el paquete de cada perforación (por gama, categoría o variante).
+-- Sin reglas = cualquier pieza que tenga gama.
+CREATE TABLE perforacion_pieza_permitida (
+  id              integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  perforacion_id  integer NOT NULL REFERENCES perforacion(id) ON DELETE CASCADE,
+  gama_id         integer REFERENCES gama(id),
+  categoria_id    integer REFERENCES categoria(id),
+  variante_id     bigint  REFERENCES variante(id),
+  CONSTRAINT ck_permitida_una_regla CHECK (num_nonnulls(gama_id, categoria_id, variante_id) = 1),
+  CONSTRAINT ux_permitida UNIQUE NULLS NOT DISTINCT (perforacion_id, gama_id, categoria_id, variante_id)
+);
+
+-- Regla 2: precio del paquete por perforación × gama (solo gamas en modo TABLA)
+CREATE TABLE precio_perforacion_gama (
+  perforacion_id  integer       NOT NULL REFERENCES perforacion(id) ON DELETE CASCADE,
+  gama_id         integer       NOT NULL REFERENCES gama(id),
+  precio          numeric(12,2) NOT NULL CHECK (precio > 0),
+  updated_by      bigint        REFERENCES usuario(id),
+  updated_at      timestamptz   NOT NULL DEFAULT now(),
+  PRIMARY KEY (perforacion_id, gama_id)
+);
+
+-- Regla 1: precios especiales (excepciones) para una perforación con una pieza o una gama concreta
+CREATE TABLE precio_especial_paquete (
+  id              integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  perforacion_id  integer       NOT NULL REFERENCES perforacion(id) ON DELETE CASCADE,
+  variante_id     bigint        REFERENCES variante(id),
+  gama_id         integer       REFERENCES gama(id),
+  precio          numeric(12,2) NOT NULL CHECK (precio > 0),
+  motivo          varchar(200),
+  created_by      bigint        REFERENCES usuario(id),
+  created_at      timestamptz   NOT NULL DEFAULT now(),
+  CONSTRAINT ck_especial_objetivo CHECK (num_nonnulls(variante_id, gama_id) = 1),
+  CONSTRAINT ux_especial UNIQUE NULLS NOT DISTINCT (perforacion_id, variante_id, gama_id)
+);
+
+-- Solo las piezas (tipo PRODUCTO) llevan gama; la tabla de precios solo acepta gamas en modo TABLA
+CREATE OR REPLACE FUNCTION fn_validar_gama_variante() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.gama_id IS NOT NULL
+     AND (SELECT tipo FROM producto WHERE id = NEW.producto_id) <> 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Solo las piezas (productos con stock) pueden tener gama';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_variante_gama BEFORE INSERT OR UPDATE OF gama_id, producto_id ON variante
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_gama_variante();
+
+CREATE OR REPLACE FUNCTION fn_validar_precio_gama() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF (SELECT modo_precio FROM gama WHERE id = NEW.gama_id) <> 'TABLA' THEN
+    RAISE EXCEPTION 'La gama % tiene precio por pieza; no lleva precio en la tabla de perforaciones',
+          (SELECT nombre FROM gama WHERE id = NEW.gama_id);
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_precio_gama_validar BEFORE INSERT OR UPDATE ON precio_perforacion_gama
+  FOR EACH ROW EXECUTE FUNCTION fn_validar_precio_gama();
 
 -- =====================================================================
 -- 4. INVENTARIO: stock por sucursal + kardex (movimientos)
@@ -317,8 +413,8 @@ BEGIN
     FROM variante v JOIN producto p ON p.id = v.producto_id
    WHERE v.id = NEW.variante_id;
 
-  IF v_tipo_producto = 'SERVICIO' THEN
-    RAISE EXCEPTION 'Los servicios no manejan inventario (%)', v_nombre;
+  IF v_tipo_producto IN ('SERVICIO','PAQUETE') THEN
+    RAISE EXCEPTION 'Los servicios y paquetes no manejan inventario propio (%); se mueve la pieza', v_nombre;
   END IF;
 
   -- UPDATE atómico (bloquea la fila); el CHECK cantidad >= 0 impide la sobreventa
@@ -1140,6 +1236,10 @@ BEGIN
     IF NOT r.activo THEN
       RAISE EXCEPTION 'El producto "%" está inactivo', r.nombre;
     END IF;
+    IF r.tipo = 'PAQUETE' THEN
+      -- TODO paso 5: venta de paquetes con pieza escaneada y precio calculado
+      RAISE EXCEPTION 'Los paquetes todavía no se pueden vender por esta vía ("%")', r.nombre;
+    END IF;
     IF r.cantidad IS NULL OR r.cantidad <= 0 THEN
       RAISE EXCEPTION 'Cantidad inválida para "%"', r.nombre;
     END IF;
@@ -1239,14 +1339,17 @@ END $$;
 -- Búsqueda para el POS: por nombre, SKU o código de barras, con stock de la sucursal
 CREATE OR REPLACE FUNCTION fn_buscar_variantes(p_texto text, p_sucursal integer, p_limite int DEFAULT 20)
 RETURNS TABLE (variante_id bigint, sku text, codigo_barras text, producto text, variante text,
-               categoria text, tipo text, precio numeric, stock integer)
+               categoria text, tipo text, precio numeric, stock integer, gama text, foto_url text)
 LANGUAGE sql STABLE AS $$
   SELECT va.id, va.sku::text, va.codigo_barras::text, p.nombre::text, va.nombre::text,
-         c.nombre::text, p.tipo::text, va.precio_venta,
-         CASE WHEN p.tipo = 'SERVICIO' THEN NULL ELSE coalesce(s.cantidad, 0) END
+         c.nombre::text, p.tipo::text,
+         CASE WHEN p.tipo = 'PAQUETE' THEN NULL ELSE va.precio_venta END,   -- el paquete se calcula con la pieza
+         CASE WHEN p.tipo = 'PRODUCTO' THEN coalesce(s.cantidad, 0) END,
+         g.nombre::text, va.foto_url::text
     FROM variante va
     JOIN producto p  ON p.id = va.producto_id
     JOIN categoria c ON c.id = p.categoria_id
+    LEFT JOIN gama g ON g.id = va.gama_id
     LEFT JOIN stock_sucursal s ON s.variante_id = va.id AND s.sucursal_id = p_sucursal
    WHERE va.activo AND p.activo
      AND ( va.codigo_barras = p_texto
@@ -1315,6 +1418,209 @@ BEGIN
   UPDATE dispositivo SET activo = p_activo WHERE id = p_dispositivo;
   IF NOT FOUND THEN RAISE EXCEPTION 'Equipo % no existe', p_dispositivo; END IF;
 END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.5 Perforaciones y precio de paquetes
+-- ---------------------------------------------------------------------
+-- Crea la perforación con sus dos entradas de catálogo (solo servicio / con pieza).
+CREATE OR REPLACE FUNCTION fn_crear_perforacion(
+  p_admin bigint, p_codigo text, p_nombre text, p_precio_servicio numeric, p_piezas smallint DEFAULT 1
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_cat integer; v_prod_srv bigint; v_prod_paq bigint; v_var_srv bigint; v_var_paq bigint; v_id integer;
+  v_codigo text := upper(trim(p_codigo));
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
+  SELECT id INTO v_cat FROM categoria WHERE nombre = 'Perforaciones';
+  IF v_cat IS NULL THEN RAISE EXCEPTION 'Falta la categoría "Perforaciones"'; END IF;
+
+  INSERT INTO producto (categoria_id, nombre, tipo) VALUES (v_cat, 'Perforación ' || trim(p_nombre), 'SERVICIO')
+  RETURNING id INTO v_prod_srv;
+  INSERT INTO variante (producto_id, sku, nombre, precio_venta)
+  VALUES (v_prod_srv, 'SRV-' || v_codigo, 'Solo servicio', p_precio_servicio)
+  RETURNING id INTO v_var_srv;
+
+  INSERT INTO producto (categoria_id, nombre, tipo) VALUES (v_cat, 'Perforación ' || trim(p_nombre) || ' con pieza', 'PAQUETE')
+  RETURNING id INTO v_prod_paq;
+  INSERT INTO variante (producto_id, sku, nombre, precio_venta)       -- precio calculado al vender
+  VALUES (v_prod_paq, 'PAQ-' || v_codigo, 'Con pieza incluida', 0)
+  RETURNING id INTO v_var_paq;
+
+  INSERT INTO perforacion (codigo, nombre, piezas_por_paquete, servicio_variante_id, paquete_variante_id)
+  VALUES (v_codigo, trim(p_nombre), p_piezas, v_var_srv, v_var_paq)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Regla 2: fija (o quita, con NULL) el precio de perforación × gama
+CREATE OR REPLACE FUNCTION fn_set_precio_gama(p_admin bigint, p_perforacion integer, p_gama integer, p_precio numeric)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
+  IF p_precio IS NULL THEN
+    DELETE FROM precio_perforacion_gama WHERE perforacion_id = p_perforacion AND gama_id = p_gama;
+  ELSE
+    INSERT INTO precio_perforacion_gama (perforacion_id, gama_id, precio, updated_by)
+    VALUES (p_perforacion, p_gama, p_precio, p_admin)
+    ON CONFLICT (perforacion_id, gama_id) DO UPDATE SET precio = EXCLUDED.precio, updated_by = p_admin;
+  END IF;
+END $$;
+
+-- Regla 1: fija (o quita, con NULL) un precio especial para una pieza concreta o una gama
+CREATE OR REPLACE FUNCTION fn_set_precio_especial(
+  p_admin bigint, p_perforacion integer, p_variante bigint, p_gama integer, p_precio numeric, p_motivo text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
+  DELETE FROM precio_especial_paquete
+   WHERE perforacion_id = p_perforacion
+     AND variante_id IS NOT DISTINCT FROM p_variante AND gama_id IS NOT DISTINCT FROM p_gama;
+  IF p_precio IS NOT NULL THEN
+    INSERT INTO precio_especial_paquete (perforacion_id, variante_id, gama_id, precio, motivo, created_by)
+    VALUES (p_perforacion, p_variante, p_gama, p_precio, p_motivo, p_admin);
+  END IF;
+END $$;
+
+-- Agrega o quita una regla de pieza permitida (exactamente una de gama / categoría / variante)
+CREATE OR REPLACE FUNCTION fn_set_pieza_permitida(
+  p_admin bigint, p_perforacion integer, p_gama integer, p_categoria integer, p_variante bigint, p_permitir boolean
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  IF p_permitir THEN
+    INSERT INTO perforacion_pieza_permitida (perforacion_id, gama_id, categoria_id, variante_id)
+    VALUES (p_perforacion, p_gama, p_categoria, p_variante)
+    ON CONFLICT ON CONSTRAINT ux_permitida DO NOTHING;
+  ELSE
+    DELETE FROM perforacion_pieza_permitida
+     WHERE perforacion_id = p_perforacion
+       AND gama_id IS NOT DISTINCT FROM p_gama
+       AND categoria_id IS NOT DISTINCT FROM p_categoria
+       AND variante_id IS NOT DISTINCT FROM p_variante;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_pieza_permitida(p_perforacion integer, p_variante bigint) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM perforacion_pieza_permitida WHERE perforacion_id = p_perforacion)
+      THEN EXISTS (SELECT 1 FROM variante WHERE id = p_variante AND gama_id IS NOT NULL)
+    ELSE EXISTS (
+      SELECT 1
+        FROM perforacion_pieza_permitida r
+        JOIN variante va ON va.id = p_variante
+        JOIN producto pr ON pr.id = va.producto_id
+       WHERE r.perforacion_id = p_perforacion
+         AND va.gama_id IS NOT NULL
+         AND (r.variante_id = va.id OR r.gama_id = va.gama_id OR r.categoria_id = pr.categoria_id))
+  END
+$$;
+
+-- Precio de un paquete según las piezas escaneadas. Primera regla que encaje:
+--   1. ESPECIAL            precio especial para esa pieza (todas iguales) o para esa gama
+--   2. TABLA_GAMA          gama en modo TABLA → tabla perforación × gama (si falta, error)
+--   3. SERVICIO_MAS_PIEZA  precio de solo servicio + precio de cada pieza
+CREATE OR REPLACE FUNCTION fn_precio_paquete(p_perforacion integer, p_piezas bigint[])
+RETURNS TABLE (precio numeric, regla text, detalle text)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  v_perf        record;
+  v_n           integer := coalesce(array_length(p_piezas, 1), 0);
+  v_gamas       integer;
+  v_variantes   integer;
+  v_gama        record;
+  v_precio      numeric;
+  v_suma_piezas numeric;
+  r             record;
+BEGIN
+  SELECT p.*, sv.precio_venta AS precio_servicio INTO v_perf
+    FROM perforacion p JOIN variante sv ON sv.id = p.servicio_variante_id
+   WHERE p.id = p_perforacion;
+  IF v_perf.id IS NULL OR NOT v_perf.activa THEN
+    RAISE EXCEPTION 'La perforación % no existe o está inactiva', p_perforacion;
+  END IF;
+  IF v_n <> v_perf.piezas_por_paquete THEN
+    RAISE EXCEPTION 'El paquete % lleva % pieza(s); se recibieron %', v_perf.nombre, v_perf.piezas_por_paquete, v_n;
+  END IF;
+
+  FOR r IN
+    SELECT u.id AS pedido, va.id, va.gama_id, va.activo AND pr.activo AS activo,
+           pr.nombre || ' — ' || va.nombre AS nombre
+      FROM unnest(p_piezas) AS u(id)
+      LEFT JOIN variante va ON va.id = u.id
+      LEFT JOIN producto pr ON pr.id = va.producto_id
+  LOOP
+    IF r.id IS NULL THEN RAISE EXCEPTION 'La pieza % no existe', r.pedido; END IF;
+    IF r.gama_id IS NULL THEN RAISE EXCEPTION '"%" no es una pieza de perforación (no tiene gama)', r.nombre; END IF;
+    IF NOT r.activo THEN RAISE EXCEPTION '"%" está inactiva', r.nombre; END IF;
+    IF NOT fn_pieza_permitida(p_perforacion, r.id) THEN
+      RAISE EXCEPTION '"%" no está permitida para la perforación %', r.nombre, v_perf.nombre;
+    END IF;
+  END LOOP;
+
+  SELECT count(DISTINCT va.gama_id), count(DISTINCT va.id), sum(va.precio_venta)
+    INTO v_gamas, v_variantes, v_suma_piezas
+    FROM unnest(p_piezas) AS u(id) JOIN variante va ON va.id = u.id;
+
+  -- Regla 1a: especial para la pieza exacta
+  IF v_variantes = 1 THEN
+    SELECT e.precio INTO v_precio FROM precio_especial_paquete e
+     WHERE e.perforacion_id = p_perforacion AND e.variante_id = p_piezas[1];
+    IF FOUND THEN
+      RETURN QUERY SELECT v_precio, 'ESPECIAL'::text, 'Precio especial para esta pieza'::text;
+      RETURN;
+    END IF;
+  END IF;
+
+  IF v_gamas = 1 THEN
+    SELECT g.* INTO v_gama FROM gama g JOIN variante va ON va.gama_id = g.id WHERE va.id = p_piezas[1];
+
+    -- Regla 1b: especial para la gama
+    SELECT e.precio INTO v_precio FROM precio_especial_paquete e
+     WHERE e.perforacion_id = p_perforacion AND e.gama_id = v_gama.id;
+    IF FOUND THEN
+      RETURN QUERY SELECT v_precio, 'ESPECIAL'::text, format('Precio especial para gama %s', v_gama.nombre);
+      RETURN;
+    END IF;
+
+    -- Regla 2: tabla perforación × gama
+    IF v_gama.modo_precio = 'TABLA' THEN
+      SELECT t.precio INTO v_precio FROM precio_perforacion_gama t
+       WHERE t.perforacion_id = p_perforacion AND t.gama_id = v_gama.id;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'Falta el precio de "%" con gama "%" en la tabla de precios de perforación',
+              v_perf.nombre, v_gama.nombre;
+      END IF;
+      RETURN QUERY SELECT v_precio, 'TABLA_GAMA'::text, format('Tabla: %s × %s', v_perf.nombre, v_gama.nombre);
+      RETURN;
+    END IF;
+  ELSIF EXISTS (SELECT 1 FROM unnest(p_piezas) AS u(id) JOIN variante va ON va.id = u.id
+                  JOIN gama g ON g.id = va.gama_id WHERE g.modo_precio = 'TABLA') THEN
+    RAISE EXCEPTION 'Las piezas de un paquete con precio de tabla deben ser de la misma gama';
+  END IF;
+
+  -- Regla 3: servicio + pieza(s)
+  RETURN QUERY SELECT v_perf.precio_servicio + v_suma_piezas, 'SERVICIO_MAS_PIEZA'::text,
+                      format('Servicio C$ %s + pieza(s) C$ %s', v_perf.precio_servicio, v_suma_piezas);
+END $$;
+
+-- Pantalla "Precios de perforación": servicio solo, tabla por gama (NULL = falta) y excepciones
+CREATE OR REPLACE VIEW v_precios_perforacion AS
+SELECT p.id AS perforacion_id, p.codigo, p.nombre AS perforacion, p.piezas_por_paquete, p.activa,
+       sv.precio_venta AS precio_solo_servicio,
+       g.id AS gama_id, g.nombre AS gama, g.orden,
+       t.precio AS precio_paquete,
+       (SELECT count(*) FROM precio_especial_paquete e WHERE e.perforacion_id = p.id) AS precios_especiales
+  FROM perforacion p
+  JOIN variante sv ON sv.id = p.servicio_variante_id
+ CROSS JOIN gama g
+  LEFT JOIN precio_perforacion_gama t ON t.perforacion_id = p.id AND t.gama_id = g.id
+ WHERE g.modo_precio = 'TABLA' AND g.activa;
 
 -- ---------------------------------------------------------------------
 -- 9.4 Panel de administración de usuarios

@@ -100,6 +100,15 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, descri
    'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.');
 
 -- ---------------------------------------------------------------------
+-- Gamas de pieza para paquetes de perforación
+--   TABLA = precio fijo por perforación · PIEZA = servicio + precio de la pieza
+-- ---------------------------------------------------------------------
+INSERT INTO gama (nombre, modo_precio, orden) VALUES
+  ('Acero clásica', 'TABLA', 1),
+  ('Acero de lujo', 'TABLA', 2),
+  ('Titanio',       'PIEZA', 3);
+
+-- ---------------------------------------------------------------------
 -- Categorías (rubros de Esmeralda)
 -- ---------------------------------------------------------------------
 INSERT INTO categoria (nombre, descripcion) VALUES
