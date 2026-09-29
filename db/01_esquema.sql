@@ -1,6 +1,6 @@
 -- =====================================================================
 --  ESMERALDA EXPERIENCE — Sistema de Inventario, Ventas y Caja
---  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 3 de 6)  ·  2 sucursales + bodega central
+--  PostgreSQL 16  ·  Esquema v1.1 (en construcción: paso 4 de 6)  ·  2 sucursales + bodega central
 --
 --  Orden de ejecución:  01_esquema.sql  →  02_seed.sql  →  (03_datos_demo.sql)
 --
@@ -386,7 +386,7 @@ CREATE TABLE movimiento_inventario (
   stock_resultante  integer      NOT NULL,                         -- lo llena el trigger
   costo_unitario    numeric(12,2),
   venta_id          bigint,                                        -- FK agregada tras crear venta
-  traslado_ref      uuid,                                          -- une salida y entrada de un traslado
+  envio_id          bigint,                                        -- envío que originó un traslado (FK abajo)
   motivo            varchar(200),
   usuario_id        bigint       NOT NULL REFERENCES usuario(id),
   fecha             timestamptz  NOT NULL DEFAULT now(),
@@ -395,7 +395,8 @@ CREATE TABLE movimiento_inventario (
     OR (tipo IN ('VENTA','AJUSTE_NEGATIVO','MERMA','TRASLADO_SALIDA')              AND cantidad < 0)),
   CONSTRAINT ck_mov_motivo CHECK (
        tipo NOT IN ('AJUSTE_POSITIVO','AJUSTE_NEGATIVO','MERMA') OR length(trim(motivo)) >= 5),
-  CONSTRAINT ck_mov_venta CHECK ((tipo IN ('VENTA','ANULACION_VENTA')) = (venta_id IS NOT NULL))
+  CONSTRAINT ck_mov_venta CHECK ((tipo IN ('VENTA','ANULACION_VENTA')) = (venta_id IS NOT NULL)),
+  CONSTRAINT ck_mov_envio CHECK ((tipo IN ('TRASLADO_SALIDA','TRASLADO_ENTRADA')) = (envio_id IS NOT NULL))
 );
 CREATE INDEX ix_mov_variante_fecha ON movimiento_inventario (variante_id, fecha DESC);
 CREATE INDEX ix_mov_sucursal_fecha ON movimiento_inventario (sucursal_id, fecha DESC);
@@ -563,6 +564,120 @@ CREATE TABLE alerta (
   CONSTRAINT ck_alerta_atendida CHECK ((atendida_por IS NULL) = (atendida_at IS NULL))
 );
 CREATE INDEX ix_alerta_pendiente ON alerta (creada_at DESC) WHERE atendida_at IS NULL;
+
+-- ---------------------------------------------------------------------
+-- 4.3 Envíos entre ubicaciones (dos pasos: enviar → recibir)
+--   BORRADOR → EN_TRANSITO (sale del origen) → RECIBIDO / RECIBIDO_CON_DIFERENCIAS (entra al destino)
+-- ---------------------------------------------------------------------
+CREATE SEQUENCE seq_envio_numero;
+
+CREATE TABLE envio (
+  id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  numero           varchar(20)  UNIQUE,                        -- ENV-000001, se asigna al enviar
+  origen_id        integer      NOT NULL REFERENCES sucursal(id),
+  destino_id       integer      NOT NULL REFERENCES sucursal(id),
+  estado           varchar(24)  NOT NULL DEFAULT 'BORRADOR'
+                     CHECK (estado IN ('BORRADOR','EN_TRANSITO','RECIBIDO','RECIBIDO_CON_DIFERENCIAS','CANCELADO')),
+  notas            varchar(500),
+  creado_por       bigint       NOT NULL REFERENCES usuario(id),
+  created_at       timestamptz  NOT NULL DEFAULT now(),
+  enviado_por      bigint       REFERENCES usuario(id),
+  fecha_envio      timestamptz,
+  recibido_por     bigint       REFERENCES usuario(id),
+  fecha_recepcion  timestamptz,
+  CONSTRAINT ck_envio_destino CHECK (origen_id <> destino_id),
+  CONSTRAINT ck_envio_enviado CHECK ((estado IN ('BORRADOR','CANCELADO')) = (fecha_envio IS NULL)),
+  CONSTRAINT ck_envio_recibido CHECK ((estado IN ('RECIBIDO','RECIBIDO_CON_DIFERENCIAS')) = (fecha_recepcion IS NOT NULL))
+);
+CREATE INDEX ix_envio_destino_estado ON envio (destino_id, estado);
+
+CREATE TABLE envio_detalle (
+  id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  envio_id           bigint        NOT NULL REFERENCES envio(id) ON DELETE CASCADE,
+  variante_id        bigint        NOT NULL REFERENCES variante(id),
+  cantidad_enviada   integer       NOT NULL CHECK (cantidad_enviada > 0),
+  cantidad_recibida  integer       CHECK (cantidad_recibida >= 0),
+  costo_unitario     numeric(12,2),                            -- costo promedio al enviar
+  CONSTRAINT ux_envio_variante UNIQUE (envio_id, variante_id),
+  CONSTRAINT ck_envio_recibe_max CHECK (cantidad_recibida <= cantidad_enviada)
+);
+
+ALTER TABLE movimiento_inventario
+  ADD CONSTRAINT fk_mov_envio FOREIGN KEY (envio_id) REFERENCES envio(id);
+CREATE INDEX ix_mov_envio ON movimiento_inventario (envio_id) WHERE envio_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION fn_proteger_envio_detalle() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text;
+BEGIN
+  SELECT estado INTO v_estado FROM envio
+   WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.envio_id ELSE NEW.envio_id END;
+  IF v_estado <> 'BORRADOR' AND coalesce(current_setting('app.procesando_envio', true), '') <> 'si' THEN
+    RAISE EXCEPTION 'El envío ya está % y su detalle no se puede modificar', CASE v_estado WHEN 'EN_TRANSITO' THEN 'en tránsito' WHEN 'RECIBIDO_CON_DIFERENCIAS' THEN 'recibido' ELSE lower(v_estado) END;
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+CREATE TRIGGER tg_envio_detalle_proteger BEFORE INSERT OR UPDATE OR DELETE ON envio_detalle
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_envio_detalle();
+
+CREATE OR REPLACE FUNCTION fn_proteger_envio() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'Los envíos no se eliminan: un borrador se cancela'; END IF;
+  IF OLD.estado IN ('RECIBIDO','RECIBIDO_CON_DIFERENCIAS','CANCELADO') THEN
+    RAISE EXCEPTION 'El envío % ya está cerrado', coalesce(OLD.numero, OLD.id::text);
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_envio_proteger BEFORE UPDATE OR DELETE ON envio
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_envio();
+
+-- ---------------------------------------------------------------------
+-- 4.4 Mermas (la sucursal reporta, el admin aprueba) y conteos físicos
+-- ---------------------------------------------------------------------
+CREATE TABLE merma (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  sucursal_id         integer      NOT NULL REFERENCES sucursal(id),
+  variante_id         bigint       NOT NULL REFERENCES variante(id),
+  cantidad            integer      NOT NULL CHECK (cantidad > 0),
+  motivo              varchar(200) NOT NULL CHECK (length(trim(motivo)) >= 5),
+  foto_url            varchar(300),
+  estado              varchar(10)  NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE','APROBADA','RECHAZADA')),
+  reportada_por       bigint       NOT NULL REFERENCES usuario(id),
+  reportada_at        timestamptz  NOT NULL DEFAULT now(),
+  resuelta_por        bigint       REFERENCES usuario(id),
+  resuelta_at         timestamptz,
+  comentario          varchar(200),
+  movimiento_id       bigint       REFERENCES movimiento_inventario(id),
+  CONSTRAINT ck_merma_resuelta CHECK ((estado = 'PENDIENTE') = (resuelta_at IS NULL)),
+  CONSTRAINT ck_merma_movimiento CHECK ((estado = 'APROBADA') = (movimiento_id IS NOT NULL))
+);
+CREATE INDEX ix_merma_pendiente ON merma (sucursal_id) WHERE estado = 'PENDIENTE';
+
+-- Conteo físico: ABIERTO (se escanea) → ENVIADO (foto del stock del sistema) → APLICADO (ajustes) / CANCELADO
+CREATE TABLE conteo (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  sucursal_id   integer      NOT NULL REFERENCES sucursal(id),
+  categoria_id  integer      REFERENCES categoria(id),         -- NULL = conteo total de la ubicación
+  estado        varchar(10)  NOT NULL DEFAULT 'ABIERTO' CHECK (estado IN ('ABIERTO','ENVIADO','APLICADO','CANCELADO')),
+  iniciado_por  bigint       NOT NULL REFERENCES usuario(id),
+  iniciado_at   timestamptz  NOT NULL DEFAULT now(),
+  enviado_por   bigint       REFERENCES usuario(id),
+  enviado_at    timestamptz,
+  aplicado_por  bigint       REFERENCES usuario(id),
+  aplicado_at   timestamptz,
+  notas         varchar(500)
+);
+-- Un solo conteo en curso por ubicación
+CREATE UNIQUE INDEX ux_conteo_en_curso ON conteo (sucursal_id) WHERE estado IN ('ABIERTO','ENVIADO');
+
+CREATE TABLE conteo_detalle (
+  conteo_id        bigint  NOT NULL REFERENCES conteo(id) ON DELETE CASCADE,
+  variante_id      bigint  NOT NULL REFERENCES variante(id),
+  cantidad_contada integer NOT NULL DEFAULT 0 CHECK (cantidad_contada >= 0),
+  stock_sistema    integer,                                    -- foto al enviar el conteo
+  PRIMARY KEY (conteo_id, variante_id)
+);
 
 -- =====================================================================
 -- 5. CAJA: métodos de pago, tipo de cambio, turnos, movimientos de efectivo
@@ -1071,28 +1186,6 @@ BEGIN
   RETURNING id INTO v_id;
 
   RETURN v_id;
-END $$;
-
--- Traslado entre sucursales (salida + entrada en la misma transacción)
-CREATE OR REPLACE FUNCTION fn_trasladar_stock(
-  p_usuario bigint, p_origen integer, p_destino integer, p_variante bigint,
-  p_cantidad integer, p_motivo text DEFAULT NULL
-) RETURNS uuid
-LANGUAGE plpgsql AS $$
-DECLARE v_ref uuid := gen_random_uuid(); v_costo numeric;
-BEGIN
-  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_TRASLADAR');
-  PERFORM fn_exigir_sucursal(p_usuario, p_origen);
-  IF p_origen = p_destino THEN RAISE EXCEPTION 'Origen y destino son la misma sucursal'; END IF;
-  IF p_cantidad IS NULL OR p_cantidad <= 0 THEN RAISE EXCEPTION 'La cantidad debe ser mayor que cero'; END IF;
-
-  SELECT costo INTO v_costo FROM variante WHERE id = p_variante;
-
-  INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
-                                     costo_unitario, traslado_ref, motivo, usuario_id)
-  VALUES (p_origen,  p_variante, 'TRASLADO_SALIDA',  -p_cantidad, 0, v_costo, v_ref, p_motivo, p_usuario),
-         (p_destino, p_variante, 'TRASLADO_ENTRADA',  p_cantidad, 0, v_costo, v_ref, p_motivo, p_usuario);
-  RETURN v_ref;
 END $$;
 
 -- ---------------------------------------------------------------------
@@ -1741,14 +1834,22 @@ SELECT p.id AS perforacion_id, p.codigo, p.nombre AS perforacion, p.piezas_por_p
 -- ---------------------------------------------------------------------
 -- 9.6 Compras, costo promedio y alertas
 -- ---------------------------------------------------------------------
--- Costo promedio ponderado si entran p_cantidad unidades a p_costo (stock de TODAS las ubicaciones)
+-- Unidades existentes de una variante: todas las ubicaciones + lo que va en tránsito
+CREATE OR REPLACE FUNCTION fn_stock_total(p_variante bigint) RETURNS bigint
+LANGUAGE sql STABLE AS $$
+  SELECT (SELECT coalesce(sum(cantidad), 0) FROM stock_sucursal WHERE variante_id = p_variante)
+       + (SELECT coalesce(sum(d.cantidad_enviada), 0)
+            FROM envio_detalle d JOIN envio e ON e.id = d.envio_id
+           WHERE e.estado = 'EN_TRANSITO' AND d.variante_id = p_variante)
+$$;
+
+-- Costo promedio ponderado si entran p_cantidad unidades a p_costo
 CREATE OR REPLACE FUNCTION fn_costo_promedio(p_variante bigint, p_cantidad integer, p_costo numeric)
 RETURNS numeric
 LANGUAGE sql STABLE AS $$
   SELECT CASE WHEN st.total + p_cantidad <= 0 THEN round(p_costo, 2)
               ELSE round((st.total * va.costo + p_cantidad * p_costo) / (st.total + p_cantidad), 2) END
-    FROM variante va,
-         LATERAL (SELECT coalesce(sum(cantidad), 0) AS total FROM stock_sucursal WHERE variante_id = va.id) st
+    FROM variante va, LATERAL (SELECT fn_stock_total(va.id) AS total) st
    WHERE va.id = p_variante
 $$;
 
@@ -1878,7 +1979,7 @@ LANGUAGE sql STABLE AS $$
       FROM x
       JOIN variante va ON va.id = x.variante_id
       JOIN producto pr ON pr.id = va.producto_id,
-      LATERAL (SELECT coalesce(sum(s.cantidad), 0) AS total FROM stock_sucursal s WHERE s.variante_id = x.variante_id) st),
+      LATERAL (SELECT fn_stock_total(x.variante_id) AS total) st),
   z AS (
     SELECT y.*,
            CASE WHEN y.cantidad_recibida = 0 THEN y.costo
@@ -2011,6 +2112,468 @@ SELECT a.id, a.tipo, a.titulo, a.detalle, s.nombre AS ubicacion, a.creada_at
   FROM alerta a LEFT JOIN sucursal s ON s.id = a.sucursal_id
  WHERE a.atendida_at IS NULL
  ORDER BY a.creada_at DESC;
+
+-- ---------------------------------------------------------------------
+-- 9.7 Envíos, sugerencia de reparto, mermas y conteos físicos
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_crear_envio(p_admin bigint, p_origen integer, p_destino integer, p_notas text DEFAULT NULL)
+RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_TRASLADAR');
+  PERFORM fn_exigir_sucursal(p_admin, p_origen);
+  IF (SELECT count(*) FROM sucursal WHERE id IN (p_origen, p_destino) AND activa) < 2 THEN
+    RAISE EXCEPTION 'Origen o destino inexistente o inactivo';
+  END IF;
+  INSERT INTO envio (origen_id, destino_id, notas, creado_por)
+  VALUES (p_origen, p_destino, p_notas, p_admin)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Agrega, cambia o (con cantidad 0) quita una línea del envío en borrador
+CREATE OR REPLACE FUNCTION fn_envio_set_linea(p_admin bigint, p_envio bigint, p_variante bigint, p_cantidad integer)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_TRASLADAR');
+  IF coalesce(p_cantidad, 0) <= 0 THEN
+    DELETE FROM envio_detalle WHERE envio_id = p_envio AND variante_id = p_variante;
+    RETURN;
+  END IF;
+  IF (SELECT pr.tipo FROM variante va JOIN producto pr ON pr.id = va.producto_id WHERE va.id = p_variante)
+     IS DISTINCT FROM 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Solo se envían piezas y artículos con stock (variante %)', p_variante;
+  END IF;
+  INSERT INTO envio_detalle (envio_id, variante_id, cantidad_enviada)
+  VALUES (p_envio, p_variante, p_cantidad)
+  ON CONFLICT (envio_id, variante_id) DO UPDATE SET cantidad_enviada = EXCLUDED.cantidad_enviada;
+END $$;
+
+-- Paso 1: sale del origen y queda EN_TRANSITO
+CREATE OR REPLACE FUNCTION fn_enviar(p_admin bigint, p_envio bigint)
+RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE v_e record; r record; v_numero text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_TRASLADAR');
+  SELECT * INTO v_e FROM envio WHERE id = p_envio FOR UPDATE;
+  IF v_e.id IS NULL THEN RAISE EXCEPTION 'El envío % no existe', p_envio; END IF;
+  IF v_e.estado <> 'BORRADOR' THEN RAISE EXCEPTION 'El envío % ya fue enviado o cancelado', p_envio; END IF;
+  PERFORM fn_exigir_sucursal(p_admin, v_e.origen_id);
+  IF NOT EXISTS (SELECT 1 FROM envio_detalle WHERE envio_id = p_envio) THEN
+    RAISE EXCEPTION 'El envío % no tiene productos', p_envio;
+  END IF;
+
+  v_numero := 'ENV-' || lpad(nextval('seq_envio_numero')::text, 6, '0');
+  PERFORM set_config('app.procesando_envio', 'si', true);
+  FOR r IN SELECT d.id, d.variante_id, d.cantidad_enviada, va.costo
+             FROM envio_detalle d JOIN variante va ON va.id = d.variante_id
+            WHERE d.envio_id = p_envio ORDER BY d.variante_id
+  LOOP
+    UPDATE envio_detalle SET costo_unitario = r.costo WHERE id = r.id;
+    INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                       costo_unitario, envio_id, motivo, usuario_id)
+    VALUES (v_e.origen_id, r.variante_id, 'TRASLADO_SALIDA', -r.cantidad_enviada, 0, r.costo,
+            p_envio, 'Envío ' || v_numero, p_admin);
+  END LOOP;
+  UPDATE envio SET estado = 'EN_TRANSITO', numero = v_numero, enviado_por = p_admin, fecha_envio = now()
+   WHERE id = p_envio;
+  PERFORM set_config('app.procesando_envio', '', true);
+  RETURN v_numero;
+END $$;
+
+-- Paso 2: la sucursal escanea lo que llegó. p_recibido: [{"variante_id": 12, "cantidad": 3}, ...]
+-- (una variante puede repetirse: se suma, como al escanear pieza por pieza). Lo no escaneado = 0.
+CREATE OR REPLACE FUNCTION fn_recibir_envio(p_usuario bigint, p_envio bigint, p_recibido jsonb)
+RETURNS TABLE (producto text, enviada integer, recibida integer, diferencia integer)
+LANGUAGE plpgsql AS $$
+DECLARE v_e record; r record; v_extra text; v_dif integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_RECIBIR');
+  SELECT * INTO v_e FROM envio WHERE id = p_envio FOR UPDATE;
+  IF v_e.id IS NULL THEN RAISE EXCEPTION 'El envío % no existe', p_envio; END IF;
+  IF v_e.estado <> 'EN_TRANSITO' THEN
+    RAISE EXCEPTION 'El envío % no está en tránsito (estado: %)', coalesce(v_e.numero, p_envio::text), v_e.estado;
+  END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_e.destino_id);
+
+  CREATE TEMP TABLE IF NOT EXISTS tmp_recibido (variante_id bigint PRIMARY KEY, cantidad integer) ON COMMIT DROP;
+  TRUNCATE tmp_recibido;
+  INSERT INTO tmp_recibido
+  SELECT (x->>'variante_id')::bigint, sum((x->>'cantidad')::integer)
+    FROM jsonb_array_elements(coalesce(p_recibido, '[]'::jsonb)) x
+   GROUP BY 1;
+
+  SELECT string_agg(t.variante_id::text, ', ') INTO v_extra
+    FROM tmp_recibido t
+   WHERE NOT EXISTS (SELECT 1 FROM envio_detalle d WHERE d.envio_id = p_envio AND d.variante_id = t.variante_id);
+  IF v_extra IS NOT NULL THEN
+    RAISE EXCEPTION 'Estas piezas no vienen en el envío %: %', v_e.numero, v_extra;
+  END IF;
+  IF EXISTS (SELECT 1 FROM tmp_recibido WHERE cantidad < 0) THEN
+    RAISE EXCEPTION 'Cantidad recibida inválida';
+  END IF;
+  IF EXISTS (SELECT 1 FROM tmp_recibido t JOIN envio_detalle d ON d.envio_id = p_envio AND d.variante_id = t.variante_id
+              WHERE t.cantidad > d.cantidad_enviada) THEN
+    RAISE EXCEPTION 'Se escanearon más piezas de las enviadas; revise el conteo';
+  END IF;
+
+  PERFORM set_config('app.procesando_envio', 'si', true);
+  FOR r IN SELECT d.id, d.variante_id, d.cantidad_enviada, d.costo_unitario, coalesce(t.cantidad, 0) AS rec
+             FROM envio_detalle d LEFT JOIN tmp_recibido t ON t.variante_id = d.variante_id
+            WHERE d.envio_id = p_envio ORDER BY d.variante_id
+  LOOP
+    UPDATE envio_detalle SET cantidad_recibida = r.rec WHERE id = r.id;
+    IF r.rec > 0 THEN
+      INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                         costo_unitario, envio_id, motivo, usuario_id)
+      VALUES (v_e.destino_id, r.variante_id, 'TRASLADO_ENTRADA', r.rec, 0, r.costo_unitario,
+              p_envio, 'Recepción ' || v_e.numero, p_usuario);
+    END IF;
+  END LOOP;
+
+  SELECT coalesce(sum(d.cantidad_enviada - d.cantidad_recibida), 0) INTO v_dif
+    FROM envio_detalle d WHERE d.envio_id = p_envio;
+  UPDATE envio
+     SET estado = CASE WHEN v_dif = 0 THEN 'RECIBIDO' ELSE 'RECIBIDO_CON_DIFERENCIAS' END,
+         recibido_por = p_usuario, fecha_recepcion = now()
+   WHERE id = p_envio;
+  PERFORM set_config('app.procesando_envio', '', true);
+
+  IF v_dif > 0 THEN
+    INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+    SELECT 'ENVIO_DIFERENCIA',
+           format('Envío %s: faltan %s pieza(s) al recibir', v_e.numero, v_dif),
+           jsonb_build_object('envio_id', p_envio, 'numero', v_e.numero,
+                              'enviado_por', v_e.enviado_por, 'recibido_por', p_usuario,
+                              'faltantes', jsonb_agg(jsonb_build_object(
+                                 'variante_id', d.variante_id,
+                                 'enviada', d.cantidad_enviada, 'recibida', d.cantidad_recibida,
+                                 'valor_costo', (d.cantidad_enviada - d.cantidad_recibida) * d.costo_unitario))),
+           v_e.destino_id
+      FROM envio_detalle d
+     WHERE d.envio_id = p_envio AND d.cantidad_recibida < d.cantidad_enviada;
+  END IF;
+
+  RETURN QUERY
+    SELECT pr.nombre || ' — ' || va.nombre, d.cantidad_enviada, d.cantidad_recibida,
+           d.cantidad_recibida - d.cantidad_enviada
+      FROM envio_detalle d
+      JOIN variante va ON va.id = d.variante_id
+      JOIN producto pr ON pr.id = va.producto_id
+     WHERE d.envio_id = p_envio
+     ORDER BY d.variante_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_cancelar_envio(p_admin bigint, p_envio bigint, p_motivo text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_TRASLADAR');
+  IF (SELECT estado FROM envio WHERE id = p_envio) <> 'BORRADOR' THEN
+    RAISE EXCEPTION 'Solo se cancela un envío en borrador; uno en tránsito debe recibirse';
+  END IF;
+  UPDATE envio SET estado = 'CANCELADO', notas = left(coalesce(notas || ' · ', '') || 'Cancelado: ' || p_motivo, 500)
+   WHERE id = p_envio;
+END $$;
+
+-- Sugerencia de reparto de p_cantidad unidades entre las sucursales de venta:
+--   1) primero se cubre lo que falta para el stock mínimo (contando lo que ya va en camino)
+--   2) el resto, proporcional a las unidades vendidas en los últimos 30 días (+1 para no excluir a nadie),
+--      con el método D'Hondt para repartir unidades enteras
+CREATE OR REPLACE FUNCTION fn_sugerir_reparto(p_variante bigint, p_cantidad integer)
+RETURNS TABLE (sucursal_id integer, sucursal text, stock integer, stock_minimo integer,
+               en_transito integer, vendidas_30d integer, sugerido integer)
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  ids int[]; nom text[]; st int[]; mn int[]; tr int[]; ve int[]; al int[]; def0 int[];
+  n int; i int; k int; best int; bestsc numeric; sc numeric;
+BEGIN
+  SELECT array_agg(q.id ORDER BY q.id), array_agg(q.nombre ORDER BY q.id), array_agg(q.st ORDER BY q.id),
+         array_agg(q.mn ORDER BY q.id), array_agg(q.tr ORDER BY q.id), array_agg(q.ve ORDER BY q.id)
+    INTO ids, nom, st, mn, tr, ve
+    FROM (
+      SELECT s.id, s.nombre::text,
+             coalesce(ss.cantidad, 0) AS st, coalesce(ss.stock_minimo, 0) AS mn,
+             (SELECT coalesce(sum(d.cantidad_enviada), 0)::int FROM envio_detalle d JOIN envio e ON e.id = d.envio_id
+               WHERE e.estado = 'EN_TRANSITO' AND e.destino_id = s.id AND d.variante_id = p_variante) AS tr,
+             (SELECT coalesce(sum(vd.cantidad), 0)::int FROM venta_detalle vd JOIN venta v ON v.id = vd.venta_id
+               WHERE v.estado = 'COMPLETADA' AND v.sucursal_id = s.id AND vd.variante_id = p_variante
+                 AND v.fecha >= now() - interval '30 days') AS ve
+        FROM sucursal s
+        LEFT JOIN stock_sucursal ss ON ss.sucursal_id = s.id AND ss.variante_id = p_variante
+       WHERE s.tipo = 'SUCURSAL' AND s.activa) q;
+
+  n := coalesce(array_length(ids, 1), 0);
+  IF n = 0 THEN RETURN; END IF;
+  al := array_fill(0, ARRAY[n]);
+  def0 := array_fill(0, ARRAY[n]);
+  FOR i IN 1..n LOOP
+    def0[i] := greatest(mn[i] - st[i] - tr[i], 0);
+  END LOOP;
+
+  FOR k IN 1..greatest(coalesce(p_cantidad, 0), 0) LOOP
+    best := 1; bestsc := -1;
+    FOR i IN 1..n LOOP
+      IF al[i] < def0[i] THEN
+        sc := 1000000 + (def0[i] - al[i]);                    -- déficit de mínimo: prioridad absoluta
+      ELSE
+        sc := (ve[i] + 1)::numeric / (al[i] - def0[i] + 1);   -- D'Hondt sobre las ventas
+      END IF;
+      IF sc > bestsc THEN best := i; bestsc := sc; END IF;
+    END LOOP;
+    al[best] := al[best] + 1;
+  END LOOP;
+
+  FOR i IN 1..n LOOP
+    sucursal_id := ids[i]; sucursal := nom[i]; stock := st[i]; stock_minimo := mn[i];
+    en_transito := tr[i]; vendidas_30d := ve[i]; sugerido := al[i];
+    RETURN NEXT;
+  END LOOP;
+END $$;
+
+-- Mermas: la sucursal reporta (no descuenta) → el admin aprueba (descuenta) o rechaza
+CREATE OR REPLACE FUNCTION fn_reportar_merma(
+  p_usuario bigint, p_sucursal integer, p_variante bigint, p_cantidad integer, p_motivo text, p_foto_url text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint; v_stock integer; v_nombre text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_REPORTAR_MERMA');
+  PERFORM fn_exigir_sucursal(p_usuario, p_sucursal);
+  SELECT pr.nombre || ' — ' || va.nombre INTO v_nombre
+    FROM variante va JOIN producto pr ON pr.id = va.producto_id
+   WHERE va.id = p_variante AND pr.tipo = 'PRODUCTO';
+  IF v_nombre IS NULL THEN RAISE EXCEPTION 'Solo se reportan mermas de piezas y artículos con stock'; END IF;
+  SELECT coalesce(cantidad, 0) INTO v_stock FROM stock_sucursal WHERE sucursal_id = p_sucursal AND variante_id = p_variante;
+  IF coalesce(v_stock, 0) < p_cantidad THEN
+    RAISE EXCEPTION 'No hay % unidad(es) de "%" en esta ubicación (hay %)', p_cantidad, v_nombre, coalesce(v_stock, 0);
+  END IF;
+
+  INSERT INTO merma (sucursal_id, variante_id, cantidad, motivo, foto_url, reportada_por)
+  VALUES (p_sucursal, p_variante, p_cantidad, p_motivo, p_foto_url, p_usuario)
+  RETURNING id INTO v_id;
+
+  INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+  VALUES ('MERMA_PENDIENTE', format('Merma por aprobar: %s × %s', p_cantidad, v_nombre),
+          jsonb_build_object('merma_id', v_id, 'variante_id', p_variante, 'cantidad', p_cantidad, 'motivo', p_motivo),
+          p_sucursal);
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_resolver_merma(p_admin bigint, p_merma bigint, p_aprobar boolean, p_comentario text DEFAULT NULL)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_m record; v_mov bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_AJUSTAR');
+  SELECT * INTO v_m FROM merma WHERE id = p_merma FOR UPDATE;
+  IF v_m.id IS NULL THEN RAISE EXCEPTION 'La merma % no existe', p_merma; END IF;
+  IF v_m.estado <> 'PENDIENTE' THEN RAISE EXCEPTION 'La merma % ya fue %', p_merma, lower(v_m.estado); END IF;
+
+  IF p_aprobar THEN
+    INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                       costo_unitario, motivo, usuario_id)
+    VALUES (v_m.sucursal_id, v_m.variante_id, 'MERMA', -v_m.cantidad, 0,
+            (SELECT costo FROM variante WHERE id = v_m.variante_id),
+            left(format('Merma #%s: %s', p_merma, v_m.motivo), 200), p_admin)
+    RETURNING id INTO v_mov;
+  END IF;
+
+  UPDATE merma
+     SET estado = CASE WHEN p_aprobar THEN 'APROBADA' ELSE 'RECHAZADA' END,
+         resuelta_por = p_admin, resuelta_at = now(), comentario = p_comentario, movimiento_id = v_mov
+   WHERE id = p_merma;
+
+  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+   WHERE tipo = 'MERMA_PENDIENTE' AND (detalle->>'merma_id')::bigint = p_merma AND atendida_at IS NULL;
+END $$;
+
+-- Conteos físicos
+CREATE OR REPLACE FUNCTION fn_proteger_conteo_detalle() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text;
+BEGIN
+  SELECT estado INTO v_estado FROM conteo
+   WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.conteo_id ELSE NEW.conteo_id END;
+  IF v_estado <> 'ABIERTO' AND coalesce(current_setting('app.procesando_conteo', true), '') <> 'si' THEN
+    RAISE EXCEPTION 'El conteo ya está % y no se puede modificar', lower(v_estado);
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+CREATE TRIGGER tg_conteo_detalle_proteger BEFORE INSERT OR UPDATE OR DELETE ON conteo_detalle
+  FOR EACH ROW EXECUTE FUNCTION fn_proteger_conteo_detalle();
+
+CREATE OR REPLACE FUNCTION fn_iniciar_conteo(
+  p_usuario bigint, p_sucursal integer, p_categoria integer DEFAULT NULL, p_notas text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE v_id bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_CONTAR');
+  PERFORM fn_exigir_sucursal(p_usuario, p_sucursal);
+  BEGIN
+    INSERT INTO conteo (sucursal_id, categoria_id, iniciado_por, notas)
+    VALUES (p_sucursal, p_categoria, p_usuario, p_notas)
+    RETURNING id INTO v_id;
+  EXCEPTION WHEN unique_violation THEN
+    RAISE EXCEPTION 'Ya hay un conteo en curso en esta ubicación';
+  END;
+  RETURN v_id;
+END $$;
+
+-- Registra lo escaneado. p_sumar = true suma (una pieza por escaneo); false fija la cantidad.
+CREATE OR REPLACE FUNCTION fn_conteo_registrar(
+  p_usuario bigint, p_conteo bigint, p_variante bigint, p_cantidad integer DEFAULT 1, p_sumar boolean DEFAULT true
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_c record; v_total integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_CONTAR');
+  SELECT * INTO v_c FROM conteo WHERE id = p_conteo;
+  IF v_c.id IS NULL OR v_c.estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El conteo % no está abierto', p_conteo; END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_c.sucursal_id);
+  IF NOT EXISTS (SELECT 1 FROM variante va JOIN producto pr ON pr.id = va.producto_id
+                  WHERE va.id = p_variante AND pr.tipo = 'PRODUCTO'
+                    AND (v_c.categoria_id IS NULL OR pr.categoria_id = v_c.categoria_id)) THEN
+    RAISE EXCEPTION 'La pieza % no corresponde a este conteo', p_variante;
+  END IF;
+  INSERT INTO conteo_detalle AS d (conteo_id, variante_id, cantidad_contada)
+  VALUES (p_conteo, p_variante, p_cantidad)
+  ON CONFLICT (conteo_id, variante_id) DO UPDATE
+    SET cantidad_contada = CASE WHEN p_sumar THEN d.cantidad_contada + EXCLUDED.cantidad_contada
+                                ELSE EXCLUDED.cantidad_contada END
+  RETURNING cantidad_contada INTO v_total;
+  RETURN v_total;
+END $$;
+
+-- Cierra el escaneo: toma la foto del stock del sistema. Lo que el sistema tiene y no se escaneó cuenta como 0.
+CREATE OR REPLACE FUNCTION fn_enviar_conteo(p_usuario bigint, p_conteo bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_c record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_CONTAR');
+  SELECT * INTO v_c FROM conteo WHERE id = p_conteo FOR UPDATE;
+  IF v_c.id IS NULL OR v_c.estado <> 'ABIERTO' THEN RAISE EXCEPTION 'El conteo % no está abierto', p_conteo; END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_c.sucursal_id);
+
+  PERFORM set_config('app.procesando_conteo', 'si', true);
+  INSERT INTO conteo_detalle (conteo_id, variante_id, cantidad_contada)
+  SELECT p_conteo, ss.variante_id, 0
+    FROM stock_sucursal ss
+    JOIN variante va ON va.id = ss.variante_id
+    JOIN producto pr ON pr.id = va.producto_id
+   WHERE ss.sucursal_id = v_c.sucursal_id AND ss.cantidad > 0
+     AND (v_c.categoria_id IS NULL OR pr.categoria_id = v_c.categoria_id)
+  ON CONFLICT (conteo_id, variante_id) DO NOTHING;
+
+  UPDATE conteo_detalle d
+     SET stock_sistema = coalesce((SELECT cantidad FROM stock_sucursal
+                                    WHERE sucursal_id = v_c.sucursal_id AND variante_id = d.variante_id), 0)
+   WHERE d.conteo_id = p_conteo;
+
+  UPDATE conteo SET estado = 'ENVIADO', enviado_por = p_usuario, enviado_at = now() WHERE id = p_conteo;
+  PERFORM set_config('app.procesando_conteo', '', true);
+
+  INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+  SELECT 'CONTEO_POR_REVISAR',
+         format('Conteo #%s por revisar: %s diferencia(s)', p_conteo, count(*) FILTER (WHERE cantidad_contada <> stock_sistema)),
+         jsonb_build_object('conteo_id', p_conteo), v_c.sucursal_id
+    FROM conteo_detalle WHERE conteo_id = p_conteo;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_conteo_diferencias(p_conteo bigint)
+RETURNS TABLE (variante_id bigint, producto text, stock_sistema integer, contada integer,
+               diferencia integer, valor_diferencia numeric)
+LANGUAGE sql STABLE AS $$
+  SELECT d.variante_id, pr.nombre || ' — ' || va.nombre, d.stock_sistema, d.cantidad_contada,
+         d.cantidad_contada - d.stock_sistema, (d.cantidad_contada - d.stock_sistema) * va.costo
+    FROM conteo_detalle d
+    JOIN variante va ON va.id = d.variante_id
+    JOIN producto pr ON pr.id = va.producto_id
+   WHERE d.conteo_id = p_conteo AND d.stock_sistema IS NOT NULL
+   ORDER BY abs(d.cantidad_contada - d.stock_sistema) DESC, 2
+$$;
+
+-- El admin aplica: cada diferencia se vuelve un ajuste en el kardex. Se aplica la diferencia de la foto,
+-- así las ventas hechas después del conteo no se cuentan dos veces.
+CREATE OR REPLACE FUNCTION fn_aplicar_conteo(p_admin bigint, p_conteo bigint)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_c record; r record; n integer := 0;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_AJUSTAR');
+  SELECT * INTO v_c FROM conteo WHERE id = p_conteo FOR UPDATE;
+  IF v_c.id IS NULL OR v_c.estado <> 'ENVIADO' THEN RAISE EXCEPTION 'El conteo % no está listo para aplicar', p_conteo; END IF;
+
+  FOR r IN SELECT * FROM fn_conteo_diferencias(p_conteo) WHERE diferencia <> 0 ORDER BY variante_id LOOP
+    INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
+                                       costo_unitario, motivo, usuario_id)
+    VALUES (v_c.sucursal_id, r.variante_id,
+            CASE WHEN r.diferencia > 0 THEN 'AJUSTE_POSITIVO' ELSE 'AJUSTE_NEGATIVO' END,
+            r.diferencia, 0, (SELECT costo FROM variante WHERE id = r.variante_id),
+            format('Conteo físico #%s', p_conteo), p_admin);
+    n := n + 1;
+  END LOOP;
+
+  UPDATE conteo SET estado = 'APLICADO', aplicado_por = p_admin, aplicado_at = now() WHERE id = p_conteo;
+  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+   WHERE tipo = 'CONTEO_POR_REVISAR' AND (detalle->>'conteo_id')::bigint = p_conteo AND atendida_at IS NULL;
+  RETURN n;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_cancelar_conteo(p_usuario bigint, p_conteo bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_c record;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'INVENTARIO_CONTAR');
+  SELECT * INTO v_c FROM conteo WHERE id = p_conteo FOR UPDATE;
+  IF v_c.estado NOT IN ('ABIERTO','ENVIADO') THEN RAISE EXCEPTION 'El conteo % ya está cerrado', p_conteo; END IF;
+  PERFORM fn_exigir_sucursal(p_usuario, v_c.sucursal_id);
+  UPDATE conteo SET estado = 'CANCELADO' WHERE id = p_conteo;
+END $$;
+
+CREATE OR REPLACE VIEW v_envios AS
+SELECT e.id AS envio_id, e.numero, o.nombre AS origen, d.nombre AS destino, e.estado,
+       count(x.id) AS lineas,
+       coalesce(sum(x.cantidad_enviada), 0) AS piezas_enviadas,
+       sum(x.cantidad_recibida) AS piezas_recibidas,
+       sum(x.cantidad_enviada - x.cantidad_recibida) AS faltantes,
+       ue.nombre_completo AS enviado_por, e.fecha_envio,
+       ur.nombre_completo AS recibido_por, e.fecha_recepcion
+  FROM envio e
+  JOIN sucursal o ON o.id = e.origen_id
+  JOIN sucursal d ON d.id = e.destino_id
+  LEFT JOIN envio_detalle x ON x.envio_id = e.id
+  LEFT JOIN usuario ue ON ue.id = e.enviado_por
+  LEFT JOIN usuario ur ON ur.id = e.recibido_por
+ GROUP BY e.id, o.nombre, d.nombre, ue.nombre_completo, ur.nombre_completo;
+
+-- Lo que cada sucursal tiene por recibir (pantalla de la tablet)
+CREATE OR REPLACE VIEW v_envios_por_recibir AS
+SELECT e.destino_id, e.id AS envio_id, e.numero, o.nombre AS origen, e.fecha_envio,
+       x.variante_id, pr.nombre || ' — ' || va.nombre AS producto, va.sku, x.cantidad_enviada
+  FROM envio e
+  JOIN sucursal o ON o.id = e.origen_id
+  JOIN envio_detalle x ON x.envio_id = e.id
+  JOIN variante va ON va.id = x.variante_id
+  JOIN producto pr ON pr.id = va.producto_id
+ WHERE e.estado = 'EN_TRANSITO';
+
+CREATE OR REPLACE VIEW v_mermas AS
+SELECT m.id AS merma_id, s.nombre AS ubicacion, pr.nombre || ' — ' || va.nombre AS producto,
+       m.cantidad, m.cantidad * va.costo AS valor_costo, m.motivo, m.estado,
+       ur.nombre_completo AS reportada_por, m.reportada_at, ua.nombre_completo AS resuelta_por, m.resuelta_at, m.comentario
+  FROM merma m
+  JOIN sucursal s ON s.id = m.sucursal_id
+  JOIN variante va ON va.id = m.variante_id
+  JOIN producto pr ON pr.id = va.producto_id
+  JOIN usuario ur ON ur.id = m.reportada_por
+  LEFT JOIN usuario ua ON ua.id = m.resuelta_por;
 
 -- ---------------------------------------------------------------------
 -- 9.4 Panel de administración de usuarios
@@ -2263,6 +2826,8 @@ SELECT s.id AS sucursal_id, s.nombre AS sucursal, s.tipo AS tipo_ubicacion,
        va.id AS variante_id, va.sku, va.nombre AS variante,
        coalesce(ss.cantidad, 0)     AS cantidad,
        coalesce(ss.stock_minimo, 0) AS stock_minimo,
+       (SELECT coalesce(sum(d.cantidad_enviada), 0) FROM envio_detalle d JOIN envio e ON e.id = d.envio_id
+         WHERE e.estado = 'EN_TRANSITO' AND e.destino_id = s.id AND d.variante_id = va.id) AS en_transito_entrante,
        coalesce(ss.cantidad, 0) <= coalesce(ss.stock_minimo, 0) AS alerta_stock_bajo,
        va.costo, va.precio_venta,
        coalesce(ss.cantidad, 0) * va.costo AS valor_costo

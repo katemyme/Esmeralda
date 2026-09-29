@@ -83,15 +83,31 @@ SELECT fn_movimiento_inventario((SELECT id FROM usuario WHERE username = 'admin'
                ('NEI-AFT-177',24),  ('PLA-CAD-45',10), ('ACE-LAB-PDR',20)) AS q(sku, cant)
   JOIN variante va ON va.sku = q.sku;
 
--- ...y se reparte a las sucursales
-SELECT fn_trasladar_stock((SELECT id FROM usuario WHERE username = 'admin'),
-                          (SELECT id FROM sucursal WHERE codigo = 'BOD'), s.id, va.id, q.cant, 'Reparto inicial')
-  FROM (VALUES ('LAM','TIT-LAB-16-6',20), ('LAM','TIT-LAB-16-8',15), ('LAM','ACE-ARO-16-8',30),
-               ('LAM','NEI-AFT-177',12),  ('LAM','PLA-CAD-45',5),   ('LAM','ACE-LAB-PDR',10),
-               ('LBR','TIT-LAB-16-6',10), ('LBR','ACE-ARO-16-8',20), ('LBR','NEI-AFT-177',6),
-               ('LBR','PLA-CAD-45',3)) AS q(suc, sku, cant)
-  JOIN sucursal s  ON s.codigo = q.suc
-  JOIN variante va ON va.sku = q.sku;
+-- ...y se reparte a las sucursales con envíos (enviar → recibir)
+DO $$
+DECLARE
+  v_admin bigint := (SELECT id FROM usuario WHERE username = 'admin');
+  v_bod integer := (SELECT id FROM sucursal WHERE codigo = 'BOD');
+  v_suc record; v_env bigint; r record;
+BEGIN
+  FOR v_suc IN SELECT id, codigo FROM sucursal WHERE tipo = 'SUCURSAL' ORDER BY id LOOP
+    v_env := fn_crear_envio(v_admin, v_bod, v_suc.id, 'Reparto inicial');
+    FOR r IN SELECT va.id, q.cant
+               FROM (VALUES ('LAM','TIT-LAB-16-6',20), ('LAM','TIT-LAB-16-8',15), ('LAM','ACE-ARO-16-8',30),
+                            ('LAM','NEI-AFT-177',12),  ('LAM','PLA-CAD-45',5),   ('LAM','ACE-LAB-PDR',10),
+                            ('LBR','TIT-LAB-16-6',10), ('LBR','ACE-ARO-16-8',20), ('LBR','NEI-AFT-177',6),
+                            ('LBR','PLA-CAD-45',3)) AS q(suc, sku, cant)
+               JOIN variante va ON va.sku = q.sku
+              WHERE q.suc = v_suc.codigo
+    LOOP
+      PERFORM fn_envio_set_linea(v_admin, v_env, r.id, r.cant);
+    END LOOP;
+    PERFORM fn_enviar(v_admin, v_env);
+    PERFORM fn_recibir_envio(v_admin, v_env,
+              (SELECT jsonb_agg(jsonb_build_object('variante_id', variante_id, 'cantidad', cantidad_enviada))
+                 FROM envio_detalle WHERE envio_id = v_env));
+  END LOOP;
+END $$;
 
 UPDATE stock_sucursal SET stock_minimo = 5
  WHERE sucursal_id IN (SELECT id FROM sucursal WHERE tipo = 'SUCURSAL');

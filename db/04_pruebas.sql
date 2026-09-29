@@ -128,11 +128,14 @@ COMMIT;
 \set ON_ERROR_STOP 1
 SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM venta WHERE numero = 'LBR-MANUAL'), 'venta descuadrada rechazada al COMMIT');
 
-\echo '\n=== 7. INVENTARIO: traslado y entrada'
-SELECT fn_trasladar_stock(:maria, :lam, :lbr, :lab8, 4, 'Reposición Las Brisas');
+\echo '\n=== 7. INVENTARIO: envío entre sucursales y entrada'
+SELECT fn_crear_envio(:admin, :lam, :lbr, 'Reposición Las Brisas') AS env7 \gset
+SELECT fn_envio_set_linea(:admin, :env7, :lab8, 4);
+SELECT fn_enviar(:admin, :env7);
+SELECT * FROM fn_recibir_envio(:carlos, :env7, format('[{"variante_id":%s,"cantidad":4}]', :lab8)::jsonb);
 SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab8) = 11
-                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab8) = 4, 'traslado LAM 15→11, LBR 0→4');
-SELECT pg_temp.espera_error(format('SELECT fn_trasladar_stock(%s, %s, %s, %s, 1)', :carlos, :lbr, :lam, :lab8), 'INVENTARIO_TRASLADAR');
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab8) = 4, 'envío LAM 15→11, LBR 0→4 (enviado y recibido)');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_envio(%s, %s, %s)', :maria, :lbr, :lam), 'INVENTARIO_TRASLADAR');
 SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :maria, :bod, :cad, 'ENTRADA', 'Compra'), 'INVENTARIO_ENTRADA');
 SELECT pg_temp.espera_error(format('SELECT fn_movimiento_inventario(%s, %s, %s, %L, 10, %L, 500)', :admin, :lam, :cad, 'ENTRADA', 'Compra'), 'solo se registran en la bodega');
 SELECT set_config('app.usuario_id', :'admin', false);
@@ -384,5 +387,98 @@ SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE id = 
 
 \echo 'Compras del mes por proveedor:'
 SELECT proveedor, moneda, compras, total_factura, gastos_nio, costo_total_nio, gastos_sobre_factura_pct FROM v_compras_mensual_proveedor;
+
+\echo '\n=== 14. v1.1 PASO 4: ENVÍOS EN DOS PASOS, SUGERENCIA DE REPARTO, MERMAS Y CONTEOS'
+SELECT set_config('app.usuario_id', :'admin', false);
+-- Envío bodega → Las Brisas
+SELECT cantidad AS bod_lab6 FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :lab6 \gset
+SELECT cantidad AS lbr_lab6 FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab6 \gset
+SELECT cantidad AS lbr_aro  FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro \gset
+SELECT fn_stock_total(:lab6) AS total_lab6 \gset
+SELECT fn_crear_envio(:admin, :bod, :lbr) AS env1 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_enviar(%s, %s)', :admin, :env1), 'no tiene productos');
+SELECT fn_envio_set_linea(:admin, :env1, :lab6, 5);
+SELECT fn_envio_set_linea(:admin, :env1, :aro, 6);
+SELECT pg_temp.espera_error(format('SELECT fn_envio_set_linea(%s, %s, %s, 1)', :admin, :env1, :lob), 'Solo se envían piezas');
+SELECT fn_enviar(:admin, :env1) AS env1_num \gset
+SELECT pg_temp.afirma(:'env1_num' ~ '^ENV-[0-9]{6}$', 'el envío recibe número al enviarse (' || :'env1_num' || ')');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :bod AND variante_id = :lab6) = :bod_lab6 - 5, 'al enviar sale de bodega');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab6) = :lbr_lab6, 'en tránsito todavía no entra a la sucursal');
+SELECT pg_temp.afirma((SELECT en_transito_entrante FROM v_stock_actual WHERE sucursal_id = :lbr AND variante_id = :lab6) = 5, 'la sucursal ve 5 en camino');
+SELECT pg_temp.afirma(fn_stock_total(:lab6) = :total_lab6, 'el stock total (para costo promedio) incluye lo que va en tránsito');
+SELECT pg_temp.espera_error(format('SELECT fn_envio_set_linea(%s, %s, %s, 1)', :admin, :env1, :lab6), 'no se puede modificar');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_envio(%s, %s, %L)', :admin, :env1, 'x'), 'debe recibirse');
+-- Recepción en la tablet de Las Brisas
+SELECT pg_temp.espera_error(format($q$SELECT * FROM fn_recibir_envio(%s, %s, '[]')$q$, :ana, :env1), 'no está asignado');
+SELECT pg_temp.espera_error(format($q$SELECT * FROM fn_recibir_envio(%s, %s, '[{"variante_id":%s,"cantidad":1}]')$q$, :carlos, :env1, :nei), 'no vienen en el envío');
+SELECT pg_temp.espera_error(format($q$SELECT * FROM fn_recibir_envio(%s, %s, '[{"variante_id":%s,"cantidad":6}]')$q$, :carlos, :env1, :lab6), 'más piezas de las enviadas');
+\echo 'Recepción (aros escaneados uno por uno, faltan 2):'
+SELECT * FROM fn_recibir_envio(:carlos, :env1, format(
+  '[{"variante_id":%s,"cantidad":5},{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1}]',
+  :lab6, :aro, :aro, :aro, :aro)::jsonb);
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :lab6) = :lbr_lab6 + 5
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :aro) = :lbr_aro + 4, 'entra a la sucursal lo recibido (5 labret, 4 de 6 aros)');
+SELECT pg_temp.afirma((SELECT estado = 'RECIBIDO_CON_DIFERENCIAS' AND faltantes = 2 FROM v_envios WHERE envio_id = :env1), 'envío cerrado con 2 faltantes');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'ENVIO_DIFERENCIA' AND (detalle->>'envio_id')::bigint = :env1), 'alerta de diferencia con quién envió y quién recibió');
+SELECT pg_temp.espera_error(format($q$SELECT * FROM fn_recibir_envio(%s, %s, '[]')$q$, :carlos, :env1), 'no está en tránsito');
+SELECT pg_temp.afirma((SELECT count(*) = 2 FROM movimiento_inventario WHERE envio_id = :env1 AND tipo = 'TRASLADO_SALIDA')
+                  AND (SELECT count(*) = 2 FROM movimiento_inventario WHERE envio_id = :env1 AND tipo = 'TRASLADO_ENTRADA'), 'kardex: salidas y entradas enlazadas al envío');
+-- Stock insuficiente en el origen: el envío queda en borrador
+SELECT fn_crear_envio(:admin, :bod, :lam) AS env2 \gset
+SELECT fn_envio_set_linea(:admin, :env2, :cad, 999);
+SELECT pg_temp.espera_error(format('SELECT fn_enviar(%s, %s)', :admin, :env2), 'Stock insuficiente');
+SELECT pg_temp.afirma((SELECT estado FROM envio WHERE id = :env2) = 'BORRADOR', 'si falta stock el envío sigue en borrador');
+SELECT fn_cancelar_envio(:admin, :env2, 'Cantidad equivocada');
+SELECT pg_temp.espera_error(format('INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante, usuario_id) VALUES (%s, %s, %L, 1, 0, %s)', :lam, :aro, 'TRASLADO_ENTRADA', :admin), 'ck_mov_envio');
+
+-- Sugerencia de reparto: Las Brisas no tiene labret con piedra y su mínimo es 3
+INSERT INTO stock_sucursal (sucursal_id, variante_id, cantidad, stock_minimo) VALUES (:lbr, :pdr, 0, 3);
+\echo 'Sugerencia para repartir 6 labret con piedra:'
+SELECT sucursal, stock, stock_minimo, en_transito, vendidas_30d, sugerido FROM fn_sugerir_reparto(:pdr, 6);
+SELECT pg_temp.afirma((SELECT sum(sugerido) FROM fn_sugerir_reparto(:pdr, 6)) = 6, 'la sugerencia reparte exactamente lo disponible');
+SELECT pg_temp.afirma((SELECT sugerido >= 3 FROM fn_sugerir_reparto(:pdr, 6) WHERE sucursal_id = :lbr), 'primero cubre el mínimo de la sucursal sin stock');
+SELECT pg_temp.afirma((SELECT sugerido = 2 FROM fn_sugerir_reparto(:pdr, 2) WHERE sucursal_id = :lbr), 'si no alcanza, todo va a cubrir el mínimo');
+
+-- Mermas: la vendedora reporta, solo el admin aprueba
+SELECT cantidad AS lam_lab6 FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6 \gset
+SELECT fn_reportar_merma(:ana, :lam, :lab6, 1, 'Pieza doblada al abrir el empaque') AS merma1 \gset
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6) = :lam_lab6, 'reportar la merma no descuenta stock');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'MERMA_PENDIENTE'), 'merma pendiente avisa al admin');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_merma(%s, %s, true)', :ana, :merma1), 'INVENTARIO_AJUSTAR');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_merma(%s, %s, true)', :maria, :merma1), 'INVENTARIO_AJUSTAR');
+SELECT fn_resolver_merma(:admin, :merma1, true, 'Revisada');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6) = :lam_lab6 - 1, 'merma aprobada descuenta 1');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'MERMA_PENDIENTE' AND (detalle->>'merma_id')::bigint = :merma1), 'la alerta de la merma queda atendida');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_merma(%s, %s, false)', :admin, :merma1), 'ya fue aprobada');
+SELECT pg_temp.espera_error(format('SELECT fn_reportar_merma(%s, %s, %s, 999, %L)', :ana, :lam, :lab6, 'Se perdieron todas'), 'No hay 999');
+SELECT fn_reportar_merma(:ana, :lam, :lab6, 1, 'Cliente dice que se cayó') AS merma2 \gset
+SELECT fn_resolver_merma(:admin, :merma2, false, 'Apareció en la vitrina');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6) = :lam_lab6 - 1, 'merma rechazada no descuenta');
+
+-- Conteo físico (piercing titanio en Las Américas)
+SELECT id AS cat_tit FROM categoria WHERE nombre = 'Piercing titanio' \gset
+SELECT cantidad AS lam_lab6 FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6 \gset
+SELECT cantidad AS lam_lab8 FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab8 \gset
+SELECT fn_iniciar_conteo(:ana, :lam, :cat_tit) AS conteo1 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_iniciar_conteo(%s, %s)', :maria, :lam), 'conteo en curso');
+SELECT fn_conteo_registrar(:ana, :conteo1, :lab6) FROM generate_series(1, 3);
+SELECT pg_temp.afirma(fn_conteo_registrar(:ana, :conteo1, :lab6, 0) = 3, 'escanear suma de a una (3)');
+SELECT pg_temp.espera_error(format('SELECT fn_conteo_registrar(%s, %s, %s)', :ana, :conteo1, :nei), 'no corresponde a este conteo');
+SELECT fn_enviar_conteo(:ana, :conteo1);
+SELECT pg_temp.afirma((SELECT contada = 0 AND diferencia = -:lam_lab8 FROM fn_conteo_diferencias(:conteo1) WHERE variante_id = :lab8), 'lo que no se escaneó cuenta como 0 (faltan ' || :lam_lab8 || ')');
+SELECT pg_temp.espera_error(format('SELECT fn_conteo_registrar(%s, %s, %s)', :ana, :conteo1, :lab6), 'no está abierto');
+SELECT fn_cancelar_conteo(:ana, :conteo1);
+-- Segundo conteo, bien hecho: falta 1 labret 6 mm
+SELECT fn_iniciar_conteo(:ana, :lam, :cat_tit) AS conteo2 \gset
+SELECT fn_conteo_registrar(:ana, :conteo2, :lab6, :lam_lab6 - 1, false);
+SELECT fn_conteo_registrar(:ana, :conteo2, :lab8, :lam_lab8, false);
+SELECT fn_enviar_conteo(:ana, :conteo2);
+\echo 'Diferencias del conteo:'
+SELECT producto, stock_sistema, contada, diferencia, valor_diferencia FROM fn_conteo_diferencias(:conteo2);
+SELECT pg_temp.espera_error(format('SELECT fn_aplicar_conteo(%s, %s)', :ana, :conteo2), 'INVENTARIO_AJUSTAR');
+SELECT pg_temp.afirma(fn_aplicar_conteo(:admin, :conteo2) = 1, 'el admin aplica 1 ajuste');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab6) = :lam_lab6 - 1
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :lab8) = :lam_lab8, 'stock igual al conteo');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM movimiento_inventario WHERE motivo = 'Conteo físico #' || :conteo2 AND tipo = 'AJUSTE_NEGATIVO'), 'ajuste en el kardex con referencia al conteo');
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

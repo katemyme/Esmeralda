@@ -32,8 +32,11 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('INVENTARIO_VER_BODEGA', 'Inventario', 'Ver la cantidad exacta en bodega (sin él: según parámetro BODEGA_VISIBILIDAD)'),
   ('INVENTARIO_ENTRADA',    'Inventario', 'Registrar compras y entradas de mercadería; gestionar proveedores'),
   ('ALERTAS_VER',           'Sistema',    'Ver y atender alertas (margen bajo, diferencias, caja sin cerrar)'),
-  ('INVENTARIO_AJUSTAR',    'Inventario', 'Ajustes de inventario y mermas'),
-  ('INVENTARIO_TRASLADAR',  'Inventario', 'Trasladar stock entre sucursales'),
+  ('INVENTARIO_AJUSTAR',    'Inventario', 'Aprobar mermas, aplicar conteos y hacer ajustes de inventario'),
+  ('INVENTARIO_TRASLADAR',  'Inventario', 'Crear y enviar envíos de mercadería entre ubicaciones'),
+  ('INVENTARIO_RECIBIR',    'Inventario', 'Recibir envíos en su sucursal'),
+  ('INVENTARIO_REPORTAR_MERMA','Inventario','Reportar piezas dañadas o perdidas (las aprueba el admin)'),
+  ('INVENTARIO_CONTAR',     'Inventario', 'Hacer conteos físicos con la tablet'),
   ('VENTAS_REGISTRAR',      'Ventas',     'Registrar ventas en el POS'),
   ('VENTAS_VER_PROPIAS',    'Ventas',     'Ver sus propias ventas'),
   ('VENTAS_VER_TODAS',      'Ventas',     'Ver ventas de todos los vendedores'),
@@ -64,7 +67,7 @@ SELECT r.id, p.id FROM rol r CROSS JOIN permiso p WHERE r.codigo = 'ADMIN';
 
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
-  'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_AJUSTAR','INVENTARIO_TRASLADAR',
+  'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
   'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_DESCUENTO','VENTAS_ANULAR',
   'VENTAS_MODIFICAR_PRECIO',
   'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','TIPO_CAMBIO_GESTIONAR',
@@ -73,7 +76,8 @@ WHERE r.codigo = 'ENCARGADO';
 
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
-  'PRODUCTOS_VER','INVENTARIO_VER','VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO',
+  'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
+  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO',
   'CAJA_ABRIR','CAJA_CERRAR')
 WHERE r.codigo = 'VENDEDOR';
 
