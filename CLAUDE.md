@@ -58,18 +58,43 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
 
-## Siguiente etapa: backend
+## Etapa actual: backend (`backend/`)
 
-Stack: Node 22 + TypeScript, **NestJS**, **Kysely** + `pg` (consultas tipadas; llama a las `fn_*`),
+Stack: Node 22.12+ (desarrollo en Node 24) + TypeScript, **NestJS**, **Kysely** + `pg` (consultas tipadas; llama a las `fn_*`),
 Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + refresh en cookie httpOnly
 (hash SHA-256 en tabla `sesion`), pruebas con Jest + supertest contra una BD de prueba.
 
 | Paso | Contenido |
 |---|---|
-| B1 | Proyecto base, conexión a PostgreSQL, configuración, transacción con `app.usuario_id` |
+| B1 ✅ | Proyecto base, conexión a PostgreSQL, configuración, transacción con `app.usuario_id` |
 | B2 | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
 | B3 | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
 | B4 | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 | Inventario: compras, envíos/recepción, mermas, conteos |
 | B6 | POS y caja: venta, cobro, apertura, cierre, ticket |
 | B7 | Reportes, exportación (Excel/PDF), tarea programada `fn_alertar_cajas_sin_cerrar` |
+
+### Convenciones del backend
+
+- Comandos (en `backend/`): `npm run verificar` (tipos + oxlint + Prettier + Jest) debe quedar en verde
+  antes de cada commit; `npm run start:dev`; `npm run db:recrear` (base local de desarrollo);
+  `npm run db:tipos` después de cambiar el esquema (regenera `src/base-datos/tipos-bd.ts`, no editarlo a mano).
+- Versiones: NestJS 12 y Kysely 0.29 se publican **solo como ESM**; el proyecto compila a CommonJS y Node los
+  carga con `require(esm)` (como la plantilla oficial "ts" de Nest 12). Jest corre con `--experimental-vm-modules`.
+  TypeScript fijado en **6.0** porque ts-jest aún no soporta TypeScript 7.
+- Configuración: variables de entorno validadas con Zod en `src/configuracion/configuracion.ts`
+  (`backend/.env`, no se sube; plantilla en `.env.example`). `DATABASE_URL` lleva la contraseña
+  (codificada, `@` → `%40`): `pg` 8.23 marcó como obsoleto leer `pgpass.conf`.
+- Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
+  `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
+  ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
+- Tipos al leer: `bigint` → number, `date` → texto `AAAA-MM-DD`, `numeric` → texto (montos exactos),
+  `timestamptz` → Date. Configurado en `tipos-pg.ts` y `.kysely-codegenrc.json` (deben coincidir).
+- Errores: `FiltroErrores` responde `{ codigo, mensaje }` en español. Los `RAISE EXCEPTION` de la base se
+  reenvían tal cual (P0001 → 422, 42501 → 403, 23001 → 409); las violaciones de restricción generadas por
+  PostgreSQL se reemplazan por texto genérico + `restriccion`. Error propio: `new HttpException({ codigo, mensaje }, estado)`.
+- Pruebas: `src/**/*.spec.ts` (unitarias e integración) y `test/**/*.e2e-spec.ts` (supertest). Usan la base
+  `esmeralda_api_test` (o `TEST_DATABASE_URL`), recreada desde `db/01..03` en cada corrida. Dentro de Jest
+  `instanceof Error` falla con errores del núcleo de Node: revisar propiedades (`code`, `message`).
+- Para B2: el seed guarda la contraseña del admin (y la demo) con **bcrypt** (`$2a$`, vía `crypt()`); el login
+  debe aceptar bcrypt y volver a guardar el hash como argon2id al entrar.

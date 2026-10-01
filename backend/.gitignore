@@ -1,0 +1,5 @@
+dist/
+coverage/
+*.tsbuildinfo
+# Configuración local con contraseñas: nunca se sube (ver .env.example)
+.env

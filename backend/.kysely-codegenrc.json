@@ -1,0 +1,9 @@
+{
+  "dialect": "postgres",
+  "url": "env(DATABASE_URL)",
+  "envFile": ".env",
+  "outFile": "src/base-datos/tipos-bd.ts",
+  "dateParser": "string",
+  "numericParser": "string",
+  "typeMapping": { "int8": "number" }
+}
