@@ -37,8 +37,18 @@ Usuario inicial: `admin` / `Esmeralda#2026` (temporal, se exige cambiarla en el 
 
 ## Ejecutar las pruebas
 
+Linux:
+
 ```bash
 sudo bash db/scripts/probar.sh
 ```
 
+Windows (PowerShell o cmd, desde la raíz del repositorio):
+
+```powershell
+db\scripts\probar.cmd
+```
+
 Crea la base `esmeralda_test` desde cero, carga esquema + seed + demo y corre `04_pruebas.sql`.
+En Windows la contraseña de `postgres` se lee de `%APPDATA%\postgresql\pgpass.conf`
+(una línea `localhost:5432:*:postgres:CONTRASEÑA`) o se pide al iniciar.

@@ -20,7 +20,8 @@ db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de ve
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
 db/04_pruebas.sql      221 pruebas de reglas de negocio
-db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas
+db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
+db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 ```
 
@@ -33,8 +34,10 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Tablas de movimiento son de solo inserción: `movimiento_inventario`, `venta_detalle`, `venta_pago`,
   `cierre_caja_detalle`. Las ventas se anulan, no se borran.
 - Para cambiar el esquema: editar `db/01_esquema.sql` (y `02_seed.sql` si aplica), agregar pruebas en
-  `db/04_pruebas.sql` y correr `bash db/scripts/probar.sh` hasta ver `*** TODAS LAS PRUEBAS PASARON ***`.
-  (La línea `ERROR: Venta LBR-MANUAL...` es esperada: prueba un trigger diferido.)
+  `db/04_pruebas.sql` y correr `bash db/scripts/probar.sh` (Windows: `db\scripts\probar.cmd`) hasta ver
+  `*** TODAS LAS PRUEBAS PASARON ***`. (La línea `ERROR: Venta LBR-MANUAL...` es esperada: prueba un trigger diferido.)
+- Las pruebas comparan algunos mensajes del sistema en inglés ("duplicate key"): en un PostgreSQL
+  instalado en español, la base de prueba necesita `lc_messages = 'C'` (probar.ps1 ya lo fija).
 
 ## Decisiones de negocio clave
 

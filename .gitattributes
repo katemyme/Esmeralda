@@ -1,0 +1,4 @@
+# Saltos de línea según el sistema que ejecuta cada script
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
