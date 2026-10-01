@@ -1,32 +1,41 @@
 import { Logger } from '@nestjs/common';
-import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { AppModule } from './app.module';
+import { ErrorDeArranque, levantarApi } from './arranque';
 import { BaseDatosService } from './base-datos/base-datos.service';
-import { cargarConfiguracion, describirBaseDatos } from './configuracion/configuracion';
-import { configurarApp } from './configurar-app';
+import {
+  cargarConfiguracion,
+  describirBaseDatos,
+  type Configuracion,
+} from './configuracion/configuracion';
 
 async function iniciar(): Promise<void> {
   // backend/.env (no pisa variables de entorno ya definidas, p. ej. en el servidor)
   const archivoEnv = join(__dirname, '..', '.env');
   if (existsSync(archivoEnv)) process.loadEnvFile(archivoEnv);
+  const logger = new Logger('Inicio');
 
   // Validar antes de levantar Nest para mostrar un error claro si falta configuración
-  let config;
+  let config: Configuracion;
   try {
     config = cargarConfiguracion();
   } catch (error) {
     console.error((error as Error).message);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
-  const app = configurarApp(await NestFactory.create<NestExpressApplication>(AppModule));
-  app.enableShutdownHooks();
-  await app.listen(config.puerto);
+  let app: NestExpressApplication;
+  try {
+    app = await levantarApi(config.puerto);
+  } catch (error) {
+    if (!(error instanceof ErrorDeArranque)) throw error;
+    logger.error(error.message);
+    process.exitCode = 1;
+    return;
+  }
 
-  const logger = new Logger('Inicio');
   logger.log(`API en http://localhost:${config.puerto}/api (entorno: ${config.entorno})`);
   const baseDatos = describirBaseDatos(config.baseDatos.url);
   if (await app.get(BaseDatosService).verificarConexion()) {
