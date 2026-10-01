@@ -26,6 +26,7 @@ export type Numeric = ColumnType<string, number | string, number | string>;
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
 export interface AccesoLog {
+  dispositivo_id: string | null;
   exito: boolean;
   fecha: Generated<Timestamp>;
   id: Generated<number>;
@@ -372,9 +373,11 @@ export interface RolPermiso {
 
 export interface Sesion {
   creada_at: Generated<Timestamp>;
+  dispositivo_id: string | null;
   expira_at: Timestamp;
   id: Generated<string>;
   ip: string | null;
+  reemplazada_por: string | null;
   refresh_token_hash: string;
   revocada_at: Timestamp | null;
   user_agent: string | null;

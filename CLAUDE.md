@@ -19,7 +19,7 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      221 pruebas de reglas de negocio
+db/04_pruebas.sql      255 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -54,6 +54,11 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   lo que queda es el fondo del día siguiente. Diferencia > C$100 → justificación + alerta.
 - Roles: ADMIN (todo), ENCARGADO (ventas, anulaciones, recibir, reportar mermas, contar, ver
   diferencias), VENDEDOR (vender, subir precio, promociones, caja, recibir, reportar mermas, contar).
+- Acceso: el admin entra desde cualquier equipo; encargados y vendedores solo desde un **equipo registrado**
+  (caja o tablet) de una de sus sucursales (`fn_equipo_autorizado`). La sesión dura 12 h si se abrió en un
+  equipo registrado y 7 días si no (parámetros `SESION_HORAS_EQUIPO`, `SESION_DIAS_SIN_EQUIPO`); renovar no la
+  alarga. 5 contraseñas incorrectas → bloqueo de 15 min. Reusar un token de renovación ya rotado → se cierran
+  todas las sesiones del usuario y se alerta (`SESION_REUTILIZADA`).
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".

@@ -614,4 +614,102 @@ SELECT pg_temp.espera_error(format('DELETE FROM cierre_denominacion WHERE turno_
 \echo 'Turnos (vista del admin):'
 SELECT turno_id, sucursal, estado, ventas, total_vendido, diferencia_nio, diferencia_apertura_nio AS dif_apertura, retiro_nio, fondo_siguiente_nio AS fondo, cierre_forzado FROM v_turnos ORDER BY turno_id;
 
+\echo '\n=== 17. LOGIN, SESIONES Y EQUIPOS (backend B2)'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT fn_registrar_dispositivo(:admin, 'Caja 2 Las Américas', 'CAJA', :lam, encode(sha256('login-caja-lam'), 'hex'), :caja_lam) AS eq_lam \gset
+SELECT fn_registrar_dispositivo(:admin, 'Tablet 2 Las Brisas', 'TABLET', :lbr, encode(sha256('login-tablet-lbr'), 'hex')) AS eq_lbr \gset
+-- Usuario propio de esta sección (vendedor de Las Américas): no depende del estado de los anteriores
+SELECT fn_crear_usuario(:admin, 'Luis Pérez', 'luis.perez', 'hash-de-prueba', 'VENDEDOR', ARRAY[:lam]) AS luis \gset
+
+-- Desde qué equipo se puede entrar
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, '10.0.0.7', 'prueba', :'eq_lam')) = 'OK', 'vendedor entra desde la caja registrada de su sucursal');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true)) = 'EQUIPO_NO_AUTORIZADO', 'vendedor sin equipo registrado → no entra');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lbr')) = 'EQUIPO_NO_AUTORIZADO', 'vendedor desde el equipo de otra sucursal → no entra');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('ADMIN ', true)) = 'OK', 'el admin entra sin equipo (usuario sin distinguir mayúsculas ni espacios)');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM acceso_log WHERE usuario_id = :luis AND exito AND dispositivo_id = :'eq_lam' AND ip = '10.0.0.7')
+                  AND EXISTS (SELECT 1 FROM acceso_log WHERE usuario_id = :luis AND NOT exito AND motivo = 'equipo no autorizado'),
+                  'la bitácora guarda equipo, IP y motivo de cada intento');
+SELECT pg_temp.afirma((SELECT resultado = 'CREDENCIALES_INVALIDAS' AND id_usuario IS NULL FROM fn_registrar_login('no.existe', false)), 'usuario inexistente → credenciales inválidas');
+
+-- Bloqueo por intentos
+SELECT fn_registrar_login('luis.perez', false) FROM generate_series(1, 4);
+SELECT pg_temp.afirma((SELECT intentos_fallidos = 4 AND bloqueado_hasta IS NULL FROM usuario WHERE id = :luis), '4 fallos: todavía no se bloquea');
+SELECT pg_temp.afirma((SELECT resultado = 'BLOQUEADO' AND minutos_bloqueo = 15 FROM fn_registrar_login('luis.perez', false)), 'el 5.º fallo bloquea 15 minutos');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lam')) = 'BLOQUEADO', 'bloqueado: ni la contraseña correcta entra');
+SELECT fn_registrar_login('luis.perez', false);
+SELECT pg_temp.afirma((SELECT intentos_fallidos = 5 AND bloqueado_hasta < now() + interval '15 minutes' FROM usuario WHERE id = :luis), 'mientras dura el bloqueo no se cuentan más fallos ni se alarga');
+UPDATE usuario SET bloqueado_hasta = now() - interval '1 minute' WHERE id = :luis;  -- simula que pasaron los 15 minutos
+-- (cada llamada que modifica datos va en su propia sentencia: una misma sentencia no ve sus propios cambios)
+SELECT resultado AS r FROM fn_registrar_login('luis.perez', false) \gset
+SELECT pg_temp.afirma(:'r' = 'CREDENCIALES_INVALIDAS'
+                  AND (SELECT intentos_fallidos = 1 AND bloqueado_hasta IS NULL FROM usuario WHERE id = :luis), 'cumplido el bloqueo, el contador vuelve a empezar');
+SELECT resultado AS r FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lam') \gset
+SELECT pg_temp.afirma(:'r' = 'OK'
+                  AND (SELECT intentos_fallidos = 0 AND ultimo_acceso IS NOT NULL FROM usuario WHERE id = :luis), 'login correcto reinicia el contador');
+SELECT fn_set_usuario_activo(:admin, :luis, false);
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lam')) = 'INACTIVO', 'usuario inactivo con contraseña correcta → INACTIVO');
+SELECT resultado AS r FROM fn_registrar_login('luis.perez', false, NULL, NULL, :'eq_lam') \gset
+SELECT pg_temp.afirma(:'r' = 'CREDENCIALES_INVALIDAS'
+                  AND (SELECT intentos_fallidos FROM usuario WHERE id = :luis) = 0, 'usuario inactivo con contraseña incorrecta: no revela su estado ni cuenta');
+SELECT fn_set_usuario_activo(:admin, :luis, true);
+
+-- Duración de la sesión
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s1'), 'hex'), :'eq_lam', '10.0.0.7', 'prueba');
+SELECT pg_temp.afirma((SELECT expira_at BETWEEN now() + interval '11 hours 59 minutes' AND now() + interval '12 hours 1 minute'
+                         FROM sesion WHERE refresh_token_hash = encode(sha256('s1'), 'hex')), 'sesión en un equipo registrado: 12 horas');
+SELECT * FROM fn_crear_sesion(:admin, encode(sha256('s-admin'), 'hex'));
+SELECT pg_temp.afirma((SELECT expira_at BETWEEN now() + interval '6 days 23 hours' AND now() + interval '7 days 1 hour'
+                         FROM sesion WHERE refresh_token_hash = encode(sha256('s-admin'), 'hex')), 'sesión del admin sin equipo: 7 días');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_sesion(%s, %L)', :luis, repeat('f', 64)), 'no puede iniciar sesión desde este equipo');
+
+-- Renovación con rotación
+SELECT * FROM fn_renovar_sesion(encode(sha256('s1'), 'hex'), encode(sha256('s2'), 'hex'), '10.0.0.8', 'prueba') \gset r_
+SELECT pg_temp.afirma(:r_usuario_id = :luis AND :'r_dispositivo_id' = :'eq_lam', 'renovar conserva usuario y equipo');
+SELECT pg_temp.afirma((SELECT v.revocada_at IS NOT NULL AND v.reemplazada_por = n.id AND n.expira_at = v.expira_at AND n.revocada_at IS NULL
+                         FROM sesion v JOIN sesion n ON n.refresh_token_hash = encode(sha256('s2'), 'hex')
+                        WHERE v.refresh_token_hash = encode(sha256('s1'), 'hex')), 'la sesión vieja apunta a la nueva y el vencimiento no se alarga');
+SELECT count(*) AS n FROM fn_renovar_sesion(encode(sha256('s1'), 'hex'), encode(sha256('s3'), 'hex')) \gset
+SELECT pg_temp.afirma(:n = 0 AND (SELECT revocada_at IS NULL FROM sesion WHERE refresh_token_hash = encode(sha256('s2'), 'hex')),
+                  'un token ya usado no sirve otra vez (si es inmediato, no cierra las demás sesiones)');
+UPDATE sesion SET revocada_at = now() - interval '1 minute' WHERE refresh_token_hash = encode(sha256('s1'), 'hex');
+SELECT count(*) AS n FROM fn_renovar_sesion(encode(sha256('s1'), 'hex'), encode(sha256('s4'), 'hex'), '203.0.113.9') \gset
+SELECT pg_temp.afirma(:n = 0 AND (SELECT revocada_at IS NOT NULL FROM sesion WHERE refresh_token_hash = encode(sha256('s2'), 'hex')),
+                  'reusar un token ya renovado cierra todas las sesiones del usuario');
+SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'SESION_REUTILIZADA' AND (detalle->>'usuario_id')::bigint = :luis
+                                AND detalle->>'ip' = '203.0.113.9'), 'posible robo de sesión: alerta al admin');
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s5'), 'hex'), :'eq_lam');
+UPDATE sesion SET expira_at = now() - interval '1 minute' WHERE refresh_token_hash = encode(sha256('s5'), 'hex');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_renovar_sesion(encode(sha256('s5'), 'hex'), encode(sha256('s6'), 'hex'))), 'sesión vencida no se renueva');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_renovar_sesion(encode(sha256('no-existe'), 'hex'), encode(sha256('s6'), 'hex'))), 'token desconocido no se renueva');
+
+-- Equipo desactivado y vendedor que cambia de sucursal
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s7'), 'hex'), :'eq_lam');
+SELECT fn_set_dispositivo_activo(:admin, :'eq_lam', false);
+SELECT pg_temp.afirma((SELECT revocada_at IS NOT NULL FROM sesion WHERE refresh_token_hash = encode(sha256('s7'), 'hex')), 'desactivar el equipo cierra sus sesiones');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lam')) = 'EQUIPO_NO_AUTORIZADO', 'equipo desactivado → no se puede entrar desde él');
+SELECT fn_set_dispositivo_activo(:admin, :'eq_lam', true);
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s8'), 'hex'), :'eq_lam');
+SELECT fn_actualizar_usuario(:admin, :luis, 'Luis Pérez', 'VENDEDOR', ARRAY[:lbr]);
+SELECT count(*) AS n FROM fn_renovar_sesion(encode(sha256('s8'), 'hex'), encode(sha256('s9'), 'hex')) \gset
+SELECT pg_temp.afirma(:n = 0 AND (SELECT revocada_at IS NOT NULL FROM sesion WHERE refresh_token_hash = encode(sha256('s8'), 'hex')),
+                  'si el vendedor deja la sucursal, la sesión en su equipo ya no se renueva');
+SELECT fn_actualizar_usuario(:admin, :luis, 'Luis Pérez', 'VENDEDOR', ARRAY[:lam]);
+
+-- Cierre de sesión
+SELECT pg_temp.afirma(fn_cerrar_sesion(encode(sha256('s-admin'), 'hex')), 'logout cierra la sesión');
+SELECT pg_temp.afirma(NOT fn_cerrar_sesion(encode(sha256('s-admin'), 'hex')), 'logout repetido no hace nada');
+SELECT count(*) AS n FROM fn_renovar_sesion(encode(sha256('s-admin'), 'hex'), encode(sha256('s10'), 'hex')) \gset
+SELECT pg_temp.afirma(:n = 0 AND NOT EXISTS (SELECT 1 FROM alerta WHERE tipo = 'SESION_REUTILIZADA' AND (detalle->>'usuario_id')::bigint = :admin),
+                  'tras el logout el token no renueva, sin falsa alarma de robo');
+
+-- Cambio de contraseña
+SELECT fn_resetear_password(:admin, :luis, 'hash-temporal');
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s11'), 'hex'), :'eq_lam');
+SELECT fn_cambiar_password(:luis, 'hash-definitivo');
+SELECT pg_temp.afirma((SELECT password_hash = 'hash-definitivo' AND NOT debe_cambiar_password FROM usuario WHERE id = :luis), 'cambiar la contraseña quita la obligación de cambiarla');
+SELECT pg_temp.afirma((SELECT revocada_at IS NOT NULL FROM sesion WHERE refresh_token_hash = encode(sha256('s11'), 'hex')), 'cambiar la contraseña cierra las sesiones abiertas');
+SELECT fn_set_usuario_activo(:admin, :luis, false);
+SELECT pg_temp.espera_error(format('SELECT fn_cambiar_password(%s, %L)', :luis, 'otro-hash'), 'no existe o está inactivo');
+SELECT pg_temp.espera_error($$UPDATE parametro SET valor = 'doce' WHERE clave = 'SESION_HORAS_EQUIPO'$$, 'debe ser un número positivo');
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

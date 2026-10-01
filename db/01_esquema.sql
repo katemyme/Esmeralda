@@ -145,32 +145,6 @@ CREATE TABLE usuario_sucursal (
   PRIMARY KEY (usuario_id, sucursal_id)
 );
 
--- Sesiones (refresh tokens). Permite al admin "cerrar sesión" a un usuario.
-CREATE TABLE sesion (
-  id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  usuario_id          bigint      NOT NULL REFERENCES usuario(id),
-  refresh_token_hash  char(64)    NOT NULL UNIQUE,     -- SHA-256 del token, nunca el token
-  ip                  inet,
-  user_agent          varchar(300),
-  creada_at           timestamptz NOT NULL DEFAULT now(),
-  expira_at           timestamptz NOT NULL,
-  revocada_at         timestamptz
-);
-CREATE INDEX ix_sesion_usuario_activa ON sesion (usuario_id) WHERE revocada_at IS NULL;
-
--- Bitácora de inicios de sesión (exitosos y fallidos)
-CREATE TABLE acceso_log (
-  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  usuario_id          bigint REFERENCES usuario(id),
-  username_intentado  varchar(40) NOT NULL,
-  exito               boolean     NOT NULL,
-  motivo              varchar(60),
-  ip                  inet,
-  user_agent          varchar(300),
-  fecha               timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX ix_acceso_log_usuario_fecha ON acceso_log (usuario_id, fecha DESC);
-
 -- Equipos autorizados (PC de caja, tablet de sucursal, celular del admin).
 -- Cada equipo se registra una vez y queda ligado a su ubicación (y a su caja si es una PC de caja).
 CREATE TABLE dispositivo (
@@ -198,6 +172,37 @@ BEGIN
 END $$;
 CREATE TRIGGER tg_dispositivo_validar BEFORE INSERT OR UPDATE ON dispositivo
   FOR EACH ROW EXECUTE FUNCTION fn_validar_dispositivo();
+
+-- Sesiones (refresh tokens rotativos). Permite al admin "cerrar sesión" a un usuario.
+-- Al renovar, la sesión se revoca y apunta a la que la reemplaza (mismo vencimiento).
+CREATE TABLE sesion (
+  id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  usuario_id          bigint      NOT NULL REFERENCES usuario(id),
+  dispositivo_id      uuid        REFERENCES dispositivo(id),  -- equipo donde se inició (NULL = sin equipo: solo el admin)
+  refresh_token_hash  char(64)    NOT NULL UNIQUE,     -- SHA-256 del token, nunca el token
+  ip                  inet,
+  user_agent          varchar(300),
+  creada_at           timestamptz NOT NULL DEFAULT now(),
+  expira_at           timestamptz NOT NULL,
+  revocada_at         timestamptz,
+  reemplazada_por     uuid        REFERENCES sesion(id)        -- renovación: la sesión que la sustituyó
+);
+CREATE INDEX ix_sesion_usuario_activa ON sesion (usuario_id) WHERE revocada_at IS NULL;
+CREATE INDEX ix_sesion_dispositivo_activa ON sesion (dispositivo_id) WHERE revocada_at IS NULL;
+
+-- Bitácora de inicios de sesión (exitosos y fallidos)
+CREATE TABLE acceso_log (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  usuario_id          bigint REFERENCES usuario(id),
+  username_intentado  varchar(40) NOT NULL,
+  exito               boolean     NOT NULL,
+  motivo              varchar(60),
+  ip                  inet,
+  user_agent          varchar(300),
+  dispositivo_id      uuid        REFERENCES dispositivo(id),
+  fecha               timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_acceso_log_usuario_fecha ON acceso_log (usuario_id, fecha DESC);
 
 -- Auditoría genérica de cambios en datos maestros
 CREATE TABLE auditoria (
@@ -1106,6 +1111,19 @@ END $$;
 CREATE TRIGGER tg_usuario_revocar BEFORE UPDATE ON usuario
   FOR EACH ROW EXECUTE FUNCTION fn_revocar_sesiones_usuario();
 
+-- Al desactivar un equipo → se cierran las sesiones abiertas desde él
+CREATE OR REPLACE FUNCTION fn_revocar_sesiones_dispositivo() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.activo AND NOT NEW.activo THEN
+    UPDATE sesion SET revocada_at = now()
+     WHERE dispositivo_id = NEW.id AND revocada_at IS NULL;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER tg_dispositivo_revocar AFTER UPDATE OF activo ON dispositivo
+  FOR EACH ROW EXECUTE FUNCTION fn_revocar_sesiones_dispositivo();
+
 -- Los roles de sistema no se eliminan
 CREATE OR REPLACE FUNCTION fn_proteger_rol() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -1159,34 +1177,157 @@ BEGIN
   END IF;
 END $$;
 
--- Registro de intento de login (el backend verifica el hash y llama a esta función).
--- 5 intentos fallidos → bloqueo de 15 minutos.
+-- ¿Puede el usuario trabajar desde este equipo? El admin, desde cualquiera (o sin equipo
+-- registrado); los demás roles solo desde un equipo registrado y activo de una de sus sucursales.
+CREATE OR REPLACE FUNCTION fn_equipo_autorizado(p_usuario bigint, p_dispositivo uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN p_dispositivo IS NULL THEN
+      EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+               WHERE u.id = p_usuario AND u.activo AND r.codigo = 'ADMIN')
+    ELSE
+      EXISTS (SELECT 1 FROM dispositivo d
+               WHERE d.id = p_dispositivo AND d.activo AND fn_puede_operar_sucursal(p_usuario, d.sucursal_id))
+  END
+$$;
+
+-- Intento de inicio de sesión. El backend verifica el hash de la contraseña (argon2id; bcrypt en
+-- los usuarios del seed) y llama a esta función con el resultado; aquí se decide si el ingreso procede:
+--   OK                      contraseña correcta, usuario activo y equipo autorizado (reinicia el contador)
+--   CREDENCIALES_INVALIDAS  usuario inexistente o contraseña incorrecta
+--   BLOQUEADO               5 fallos seguidos bloquean 15 minutos; mientras dura, ni la contraseña
+--                           correcta entra ni se cuentan más fallos. Cumplido, el contador vuelve a empezar.
+--   INACTIVO                usuario desactivado (solo se informa si la contraseña es correcta)
+--   EQUIPO_NO_AUTORIZADO    encargados y vendedores solo entran desde un equipo registrado de sus sucursales
 CREATE OR REPLACE FUNCTION fn_registrar_login(
-  p_username text, p_exito boolean, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
-) RETURNS void
+  p_username text, p_exito boolean, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL,
+  p_dispositivo uuid DEFAULT NULL
+) RETURNS TABLE (resultado text, id_usuario bigint, minutos_bloqueo integer)
 LANGUAGE plpgsql AS $$
-DECLARE v_id bigint;
+DECLARE
+  u          usuario%ROWTYPE;
+  v_motivo   text;
+  v_intentos integer;
 BEGIN
-  SELECT id INTO v_id FROM usuario WHERE username = lower(p_username);
+  SELECT * INTO u FROM usuario WHERE username = lower(trim(p_username)) FOR UPDATE;
 
-  INSERT INTO acceso_log (usuario_id, username_intentado, exito, motivo, ip, user_agent)
-  VALUES (v_id, lower(p_username), p_exito,
-          CASE WHEN v_id IS NULL THEN 'usuario inexistente'
-               WHEN NOT p_exito THEN 'contraseña incorrecta' END,
-          p_ip, left(p_user_agent, 300));
-
-  IF v_id IS NULL THEN RETURN; END IF;
-
-  IF p_exito THEN
-    UPDATE usuario SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = now()
-     WHERE id = v_id;
+  IF u.id IS NULL THEN
+    resultado := 'CREDENCIALES_INVALIDAS'; v_motivo := 'usuario inexistente';
+  ELSIF u.bloqueado_hasta > now() THEN
+    resultado := 'BLOQUEADO'; v_motivo := 'cuenta bloqueada';
+  ELSIF NOT p_exito THEN
+    resultado := 'CREDENCIALES_INVALIDAS'; v_motivo := 'contraseña incorrecta';
+    IF u.activo THEN
+      v_intentos := CASE WHEN u.bloqueado_hasta <= now() THEN 1 ELSE u.intentos_fallidos + 1 END;
+      UPDATE usuario
+         SET intentos_fallidos = v_intentos,
+             bloqueado_hasta = CASE WHEN v_intentos >= 5 THEN now() + interval '15 minutes' END
+       WHERE id = u.id
+      RETURNING bloqueado_hasta INTO u.bloqueado_hasta;
+      IF v_intentos >= 5 THEN resultado := 'BLOQUEADO'; END IF;
+    END IF;
+  ELSIF NOT u.activo THEN
+    resultado := 'INACTIVO'; v_motivo := 'usuario inactivo';
+  ELSIF NOT fn_equipo_autorizado(u.id, p_dispositivo) THEN
+    resultado := 'EQUIPO_NO_AUTORIZADO'; v_motivo := 'equipo no autorizado';
   ELSE
-    UPDATE usuario
-       SET intentos_fallidos = intentos_fallidos + 1,
-           bloqueado_hasta = CASE WHEN intentos_fallidos + 1 >= 5
-                                  THEN now() + interval '15 minutes' END
-     WHERE id = v_id;
+    resultado := 'OK';
+    UPDATE usuario SET intentos_fallidos = 0, bloqueado_hasta = NULL, ultimo_acceso = now()
+     WHERE id = u.id;
   END IF;
+
+  INSERT INTO acceso_log (usuario_id, username_intentado, exito, motivo, ip, user_agent, dispositivo_id)
+  VALUES (u.id, left(lower(trim(p_username)), 40), resultado = 'OK', v_motivo, p_ip,
+          left(p_user_agent, 300), p_dispositivo);
+
+  id_usuario := u.id;
+  minutos_bloqueo := CASE WHEN resultado = 'BLOQUEADO'
+                          THEN ceil(extract(epoch FROM u.bloqueado_hasta - now()) / 60)::integer END;
+  RETURN NEXT;
+END $$;
+
+-- Sesiones. El backend genera el token de renovación, lo entrega al navegador en una cookie
+-- httpOnly y aquí solo se guarda su SHA-256. Duración según parámetros: SESION_HORAS_EQUIPO si se
+-- inicia en un equipo registrado, SESION_DIAS_SIN_EQUIPO si no (solo el admin entra sin equipo).
+CREATE OR REPLACE FUNCTION fn_crear_sesion(
+  p_usuario bigint, p_token_hash text, p_dispositivo uuid DEFAULT NULL,
+  p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
+) RETURNS TABLE (sesion_id uuid, expira_at timestamptz)
+LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+BEGIN
+  IF NOT fn_equipo_autorizado(p_usuario, p_dispositivo) THEN
+    RAISE EXCEPTION 'El usuario % no puede iniciar sesión desde este equipo', p_usuario
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN QUERY
+    INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at)
+    VALUES (p_usuario, p_dispositivo, p_token_hash, p_ip, left(p_user_agent, 300),
+            now() + CASE WHEN p_dispositivo IS NULL
+                         THEN coalesce(fn_parametro_num('SESION_DIAS_SIN_EQUIPO'), 7)::float8 * interval '1 day'
+                         ELSE coalesce(fn_parametro_num('SESION_HORAS_EQUIPO'), 12)::float8 * interval '1 hour' END)
+    RETURNING id, expira_at;
+END $$;
+
+-- Renovación con rotación: cada token de renovación sirve una sola vez. La sesión vieja queda
+-- revocada y apunta a la nueva, que conserva el mismo vencimiento (renovar no alarga la sesión).
+-- Si un token ya rotado vuelve a presentarse pasados 30 segundos (no es una carrera entre dos
+-- pestañas), alguien pudo haberlo copiado: se cierran todas las sesiones del usuario y se alerta.
+-- Devuelve vacío si el token no sirve: inexistente, vencido, revocado, o usuario/equipo ya no autorizados.
+CREATE OR REPLACE FUNCTION fn_renovar_sesion(
+  p_token_hash text, p_token_hash_nuevo text, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
+) RETURNS TABLE (sesion_id uuid, usuario_id bigint, dispositivo_id uuid, expira_at timestamptz)
+LANGUAGE plpgsql AS $$
+#variable_conflict use_column
+DECLARE
+  s       sesion%ROWTYPE;
+  v_nueva uuid;
+BEGIN
+  SELECT * INTO s FROM sesion WHERE refresh_token_hash = p_token_hash FOR UPDATE;
+  IF s.id IS NULL OR s.expira_at <= now() THEN RETURN; END IF;
+
+  IF s.revocada_at IS NOT NULL THEN
+    IF s.reemplazada_por IS NOT NULL AND s.revocada_at < now() - interval '30 seconds' THEN
+      UPDATE sesion SET revocada_at = now() WHERE usuario_id = s.usuario_id AND revocada_at IS NULL;
+      INSERT INTO alerta (tipo, titulo, detalle)
+      SELECT 'SESION_REUTILIZADA',
+             'Posible robo de sesión de ' || u.username || ': se cerraron todas sus sesiones',
+             jsonb_build_object('usuario_id', u.id, 'ip', host(p_ip), 'user_agent', left(p_user_agent, 300))
+        FROM usuario u WHERE u.id = s.usuario_id;
+    END IF;
+    RETURN;
+  END IF;
+
+  IF NOT fn_equipo_autorizado(s.usuario_id, s.dispositivo_id) THEN
+    UPDATE sesion SET revocada_at = now() WHERE id = s.id;
+    RETURN;
+  END IF;
+
+  INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at)
+  VALUES (s.usuario_id, s.dispositivo_id, p_token_hash_nuevo, p_ip, left(p_user_agent, 300), s.expira_at)
+  RETURNING id INTO v_nueva;
+  UPDATE sesion SET revocada_at = now(), reemplazada_por = v_nueva WHERE id = s.id;
+
+  RETURN QUERY SELECT v_nueva, s.usuario_id, s.dispositivo_id, s.expira_at;
+END $$;
+
+-- Cierre de sesión (logout). true si había una sesión abierta con ese token.
+CREATE OR REPLACE FUNCTION fn_cerrar_sesion(p_token_hash text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE sesion SET revocada_at = now() WHERE refresh_token_hash = p_token_hash AND revocada_at IS NULL;
+  RETURN FOUND;
+END $$;
+
+-- Cambio de contraseña por el propio usuario. El backend ya verificó la contraseña actual y que la
+-- nueva cumpla la política (aquí nunca llega en texto plano). Quita la obligación de cambiarla y el
+-- trigger tg_usuario_revocar cierra todas sus sesiones (el backend abre una nueva a continuación).
+CREATE OR REPLACE FUNCTION fn_cambiar_password(p_usuario bigint, p_nuevo_hash text) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE usuario SET password_hash = p_nuevo_hash, debe_cambiar_password = false
+   WHERE id = p_usuario AND activo;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe o está inactivo', p_usuario; END IF;
 END $$;
 
 -- =====================================================================

@@ -113,7 +113,11 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, descri
   ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false,
    'Hora (Managua) a la que se alerta si una caja sigue sin cerrar.'),
   ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false,
-   'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.');
+   'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.'),
+  ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false,
+   'Horas que dura una sesión iniciada en un equipo registrado (caja, tablet); luego se pide usuario y contraseña de nuevo.'),
+  ('SESION_DIAS_SIN_EQUIPO', '7', 'NUMERO', NULL, false,
+   'Días que dura una sesión iniciada fuera de un equipo registrado (solo el administrador puede entrar así).');
 
 -- ---------------------------------------------------------------------
 -- Gamas de pieza para paquetes de perforación
