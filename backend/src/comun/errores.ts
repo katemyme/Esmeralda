@@ -9,6 +9,8 @@ export interface RespuestaError {
   mensaje: string;
   /** Restricción de la base que se violó (si aplica), para que el frontend afine el mensaje. */
   restriccion?: string;
+  /** Datos inválidos: un mensaje por campo (DATOS_INVALIDOS). */
+  errores?: { campo: string; mensaje: string }[];
 }
 
 export interface ErrorTraducido {

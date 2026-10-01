@@ -1,15 +1,15 @@
 import { Controller, Get } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { Test } from '@nestjs/testing';
 import { sql } from 'kysely';
 import request from 'supertest';
-import { AppModule } from '../src/app.module';
+import { Publica } from '../src/autenticacion/decoradores';
 import { BaseDatosService } from '../src/base-datos/base-datos.service';
 import { CONFIGURACION, cargarConfiguracion } from '../src/configuracion/configuracion';
-import { configurarApp } from '../src/configurar-app';
+import { crearApp } from './utilidades';
 
 /** Rutas solo para estas pruebas: disparan errores reales de la base a través de HTTP. */
 @Controller('prueba')
+@Publica()
 class PruebaController {
   constructor(private readonly bd: BaseDatosService) {}
 
@@ -35,27 +35,11 @@ class PruebaController {
   }
 }
 
-async function crearApp(
-  configurar?: (modulo: ReturnType<typeof Test.createTestingModule>) => void,
-) {
-  const constructor = Test.createTestingModule({
-    imports: [AppModule],
-    controllers: [PruebaController],
-  });
-  configurar?.(constructor);
-  const modulo = await constructor.compile();
-  const app = configurarApp(
-    modulo.createNestApplication<NestExpressApplication>({ logger: false }),
-  );
-  await app.init();
-  return app;
-}
-
 describe('API con base de datos', () => {
   let app: NestExpressApplication;
 
   beforeAll(async () => {
-    app = await crearApp();
+    app = await crearApp({ controladores: [PruebaController] });
   });
 
   afterAll(() => app.close());
@@ -132,11 +116,13 @@ describe('API sin base de datos', () => {
     const config = cargarConfiguracion();
     const sinServidor = new URL(config.baseDatos.url);
     sinServidor.port = '1'; // nadie escucha ahí: conexión rechazada
-    app = await crearApp((constructor) =>
-      constructor
-        .overrideProvider(CONFIGURACION)
-        .useValue({ ...config, baseDatos: { url: sinServidor.toString(), maxConexiones: 1 } }),
-    );
+    app = await crearApp({
+      controladores: [PruebaController],
+      configurar: (constructor) =>
+        constructor
+          .overrideProvider(CONFIGURACION)
+          .useValue({ ...config, baseDatos: { url: sinServidor.toString(), maxConexiones: 1 } }),
+    });
   });
 
   afterAll(() => app.close());

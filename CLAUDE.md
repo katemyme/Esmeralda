@@ -72,7 +72,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 | Paso | Contenido |
 |---|---|
 | B1 ✅ | Proyecto base, conexión a PostgreSQL, configuración, transacción con `app.usuario_id` |
-| B2 | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
+| B2 ✅ | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
 | B3 | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
 | B4 | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 | Inventario: compras, envíos/recepción, mermas, conteos |
@@ -89,7 +89,18 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   TypeScript fijado en **6.0** porque ts-jest aún no soporta TypeScript 7.
 - Configuración: variables de entorno validadas con Zod en `src/configuracion/configuracion.ts`
   (`backend/.env`, no se sube; plantilla en `.env.example`). `DATABASE_URL` lleva la contraseña
-  (codificada, `@` → `%40`): `pg` 8.23 marcó como obsoleto leer `pgpass.conf`.
+  (codificada, `@` → `%40`): `pg` 8.23 marcó como obsoleto leer `pgpass.conf`. `JWT_SECRETO` (≥ 32 caracteres,
+  `npm run secreto`), `LOGIN_LIMITE_POR_MINUTO` (por IP) y `TRUST_PROXY` (detrás de nginx/Caddy).
+- API: rutas bajo `/api`; JSON en **snake_case** (igual que la base: `debe_cambiar_password`, `sucursal_id`).
+  Entrada validada con `@Body(new ValidacionZod(esquema))` → 400 `DATOS_INVALIDOS` con `errores` por campo.
+- Autenticación (`src/autenticacion/`): toda ruta exige `Authorization: Bearer <JWT>` salvo `@Publica()`;
+  con contraseña temporal solo pasan las `@PermitidaConPasswordTemporal()`. `@UsuarioActual()` da
+  `{ id, sesionId, rol, debeCambiarPassword, equipo: { id, sucursalId, cajaId } | null }` → usar `id` como
+  `usuarioId` de `transaccion()` y `equipo` para validar sucursal/caja (B6). Cookies httpOnly + SameSite=Strict:
+  `esmeralda_sesion` (refresh, path `/api/auth`) y `esmeralda_equipo` (equipo registrado, path `/api`, 400 días).
+- Contraseñas: argon2id; se aceptan los hashes **bcrypt** del seed (`$2a$`, vía `crypt()`) y, como el seed obliga
+  a cambiarla al entrar, la nueva queda en argon2id. La política (mín. 8, letras y números) vive en
+  `esquemas.ts` porque la base nunca ve el texto plano.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
@@ -101,5 +112,5 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 - Pruebas: `src/**/*.spec.ts` (unitarias e integración) y `test/**/*.e2e-spec.ts` (supertest). Usan la base
   `esmeralda_api_test` (o `TEST_DATABASE_URL`), recreada desde `db/01..03` en cada corrida. Dentro de Jest
   `instanceof Error` falla con errores del núcleo de Node: revisar propiedades (`code`, `message`).
-- Para B2: el seed guarda la contraseña del admin (y la demo) con **bcrypt** (`$2a$`, vía `crypt()`); el login
-  debe aceptar bcrypt y volver a guardar el hash como argon2id al entrar.
+  `test/utilidades.ts` tiene `crearApp()` y `cookiePuesta()`. En SQL de prueba, una función que modifica datos
+  y la lectura que la verifica van en sentencias distintas (una sentencia no ve sus propios cambios).

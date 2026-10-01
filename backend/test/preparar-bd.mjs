@@ -7,4 +7,7 @@ export default async function prepararBd() {
   await recrearBaseDatos(url, { log: () => {} });
   process.env.DATABASE_URL = url;
   process.env.NODE_ENV = 'test';
+  process.env.JWT_SECRETO = 'secreto-solo-para-pruebas-automaticas-0123456789';
+  // Las pruebas inician muchas sesiones seguidas; el límite se prueba aparte con un valor bajo
+  process.env.LOGIN_LIMITE_POR_MINUTO = '1000';
 }

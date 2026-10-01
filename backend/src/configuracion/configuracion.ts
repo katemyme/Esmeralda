@@ -11,7 +11,27 @@ const esquemaEntorno = z.object({
     error: 'debe ser una URL postgres://usuario:contraseña@servidor:puerto/base',
   }),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  JWT_SECRETO: z
+    .string({ error: 'falta: genere uno con npm run secreto' })
+    .min(32, 'debe tener al menos 32 caracteres: genere uno con npm run secreto')
+    .refine(
+      (v) => !v.includes('CAMBIE'),
+      'todavía tiene el valor de ejemplo: genere uno con npm run secreto',
+    ),
+  LOGIN_LIMITE_POR_MINUTO: z.coerce.number().int().min(1).max(10_000).default(10),
+  TRUST_PROXY: z.string().default('false').transform(interpretarTrustProxy),
 });
+
+/**
+ * Valor de "trust proxy" de Express: detrás de un proxy (nginx, Caddy) hace falta para conocer la IP
+ * real del cliente (bitácora de accesos y límite de intentos). false | true | n.º de saltos | IPs.
+ */
+function interpretarTrustProxy(valor: string): boolean | number | string {
+  const v = valor.trim();
+  if (v === '' || v.toLowerCase() === 'false') return false;
+  if (v.toLowerCase() === 'true') return true;
+  return /^\d+$/.test(v) ? Number(v) : v;
+}
 
 export interface Configuracion {
   entorno: 'development' | 'test' | 'production';
@@ -20,6 +40,14 @@ export interface Configuracion {
     url: string;
     maxConexiones: number;
   };
+  autenticacion: {
+    secretoJwt: string;
+    /** Intentos de login (y de cambio de contraseña) por minuto desde una misma IP. */
+    limiteLoginPorMinuto: number;
+    /** Cookies solo por HTTPS (en producción). */
+    cookiesSeguras: boolean;
+  };
+  trustProxy: boolean | number | string;
 }
 
 /** Token de inyección: `@Inject(CONFIGURACION) config: Configuracion`. */
@@ -38,6 +66,12 @@ export function cargarConfiguracion(entorno: NodeJS.ProcessEnv = process.env): C
     entorno: e.NODE_ENV,
     puerto: e.PORT,
     baseDatos: { url: e.DATABASE_URL, maxConexiones: e.DB_POOL_MAX },
+    autenticacion: {
+      secretoJwt: e.JWT_SECRETO,
+      limiteLoginPorMinuto: e.LOGIN_LIMITE_POR_MINUTO,
+      cookiesSeguras: e.NODE_ENV === 'production',
+    },
+    trustProxy: e.TRUST_PROXY,
   };
 }
 

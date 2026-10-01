@@ -1,8 +1,10 @@
 import { Controller, Get, HttpException, HttpStatus } from '@nestjs/common';
+import { Publica } from '../autenticacion/decoradores';
 import { BaseDatosService } from '../base-datos/base-datos.service';
 
 /** GET /api/salud — para monitoreo: confirma que la API y PostgreSQL responden. */
 @Controller('salud')
+@Publica()
 export class SaludController {
   constructor(private readonly bd: BaseDatosService) {}
 

@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: B1 listo (base, conexión, configuración) |
+| Backend (Node + TypeScript, NestJS) | En desarrollo: B1 (base) y B2 (login, sesiones, equipos) listos |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -61,7 +61,8 @@ Requisitos: Node 22.12 o superior (probado con Node 24) y PostgreSQL 16 o superi
 ```bash
 cd backend
 npm install
-cp .env.example .env     # Windows: copy .env.example .env — y complete DATABASE_URL
+cp .env.example .env     # Windows: copy .env.example .env — complete DATABASE_URL y JWT_SECRETO
+npm run secreto          # genera un valor para JWT_SECRETO
 npm run db:recrear       # crea la base local "esmeralda" con esquema + seed + datos demo
 npm run start:dev        # API en http://localhost:3000/api (se recarga al guardar cambios)
 ```
@@ -76,3 +77,25 @@ Comprobar que funciona: abrir <http://localhost:3000/api/salud> → `{"estado":"
 | `npm test` | Solo las pruebas (Jest + supertest); recrea la base `esmeralda_api_test` en cada corrida |
 | `npm run db:recrear` | Borra y recrea la base local de desarrollo (solo `localhost`, nunca en producción) |
 | `npm run db:tipos` | Regenera los tipos de Kysely (`src/base-datos/tipos-bd.ts`) tras cambiar el esquema |
+| `npm run secreto` | Genera un secreto aleatorio para `JWT_SECRETO` |
+
+### Inicio de sesión y equipos
+
+1. El admin entra (`admin` / `Esmeralda#2026`) desde cualquier equipo y el sistema lo obliga a cambiar la contraseña.
+2. En cada PC de caja y cada tablet, el admin inicia sesión y **registra ese equipo** (`POST /api/equipos`):
+   el navegador queda identificado con una cookie.
+3. Encargados y vendedores solo pueden entrar desde un equipo registrado de una de sus sucursales.
+   La sesión dura 12 horas en un equipo registrado y 7 días sin equipo (solo el admin).
+
+| Ruta | Qué hace |
+|---|---|
+| `POST /api/auth/login` | `{ username, password }` → token de acceso (15 min) + cookie de sesión |
+| `POST /api/auth/refresh` | Renueva el token de acceso con la cookie (y la rota) |
+| `POST /api/auth/logout` | Cierra la sesión |
+| `GET /api/auth/yo` | Usuario, permisos, sucursales y equipo de la sesión |
+| `POST /api/auth/cambiar-password` | `{ password_actual, password_nueva }` (mín. 8, con letras y números) |
+| `POST /api/equipos` | Registra este equipo: `{ nombre, tipo: CAJA/TABLET/MOVIL, sucursal_id, caja_id }` |
+| `GET /api/equipos/actual` | Qué equipo registrado es este navegador |
+
+Las demás rutas exigen `Authorization: Bearer <token de acceso>`. Los errores responden
+`{ codigo, mensaje }` en español (p. ej. `CREDENCIALES_INVALIDAS`, `CUENTA_BLOQUEADA`, `EQUIPO_NO_AUTORIZADO`).
