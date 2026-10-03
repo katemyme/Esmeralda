@@ -4,6 +4,7 @@ import { AlertasModule } from './alertas/alertas.module';
 import { AuditoriaModule } from './auditoria/auditoria.module';
 import { AutenticacionModule } from './autenticacion/autenticacion.module';
 import { BaseDatosModule } from './base-datos/base-datos.module';
+import { CargaInicialModule } from './carga-inicial/carga-inicial.module';
 import { CategoriasModule } from './categorias/categorias.module';
 import { FiltroErrores } from './comun/filtro-errores';
 import { ComprasModule } from './compras/compras.module';
@@ -52,6 +53,7 @@ import { UsuariosModule } from './usuarios/usuarios.module';
     MermasModule,
     ConteosModule,
     InventarioModule,
+    CargaInicialModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

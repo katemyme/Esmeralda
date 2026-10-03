@@ -226,9 +226,11 @@ describe('Catálogo', () => {
           modo_precio: 'PIEZA',
           orden: 3,
           activa: true,
-          piezas: 2,
+          // (otras pruebas pueden haber creado más piezas de titanio)
+          piezas: expect.any(Number),
         },
       ]);
+      expect((body.gamas as GamaCatalogo[])[2].piezas).toBeGreaterThanOrEqual(2);
     });
 
     it('POST /api/gamas crea la gama; sin uso todavía, puede cambiar de modo de precio', async () => {
