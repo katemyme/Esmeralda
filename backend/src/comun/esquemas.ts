@@ -79,3 +79,27 @@ export const monto = (mensaje: string) =>
 /** Monto mayor que cero (precios de la tabla de perforaciones, valor de una promoción). */
 export const montoPositivo = (mensaje: string) =>
   monto(mensaje).refine((texto) => Number(texto) > 0, mensaje);
+
+/**
+ * Como `monto`, pero con hasta 4 decimales: costos unitarios de una factura de compra y tipos de
+ * cambio (así los guarda la base).
+ */
+export const monto4 = (mensaje: string) =>
+  z
+    .union([z.number(), z.string()], mensaje)
+    .transform((valor) => (typeof valor === 'number' ? String(valor) : valor.trim()))
+    .refine((texto) => /^\d{1,8}(\.\d{1,4})?$/.test(texto), mensaje);
+
+/** Cantidad de piezas que llega en el cuerpo: entero de `minimo` (por defecto 1) a 100 000. */
+export const cantidad = (mensaje: string, minimo = 1) =>
+  z.number(mensaje).int(mensaje).min(minimo, mensaje).max(100_000, mensaje);
+
+/** `{ "motivo": "..." }` para cancelar algo: al menos 5 caracteres. */
+export const esquemaMotivo = z.object({
+  motivo: z
+    .string({ error: 'Escriba el motivo' })
+    .trim()
+    .min(5, 'El motivo debe tener al menos 5 caracteres')
+    .max(200, 'El motivo es demasiado largo'),
+});
+export type DatosMotivo = z.output<typeof esquemaMotivo>;

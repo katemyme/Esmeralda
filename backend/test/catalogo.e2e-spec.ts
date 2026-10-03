@@ -61,7 +61,10 @@ describe('Catálogo', () => {
   }
 
   function precioPaquete(perforacionId: number, piezas: number[]) {
-    return comoJefa('get', `/api/perforaciones/${perforacionId}/precio-paquete?piezas=${piezas}`);
+    return comoJefa(
+      'get',
+      `/api/perforaciones/${perforacionId}/precio-paquete?piezas=${piezas.join(',')}`,
+    );
   }
 
   beforeAll(async () => {
