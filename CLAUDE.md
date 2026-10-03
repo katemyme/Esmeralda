@@ -17,14 +17,15 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 _Actualizado el 2026-10-02._
 
-- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`), **B3**
-  (revisado y aprobado por el dueño) y **B4** del backend. B4 (catálogo) está **pendiente de revisión del dueño**.
-- **Sigue:** **B5** (inventario), solo cuando el dueño lo pida. **Pendiente:** B6, B7 y el frontend.
-- Pruebas en verde: 347 de base de datos y 233 del backend. Nada se ha subido a GitHub.
-- Fuera de B3 (decidir si entran más adelante): consultar la bitácora de cambios y accesos (`AUDITORIA_VER`),
-  crear o editar sucursales y cajas, crear roles nuevos, desbloquear una cuenta sin cambiarle la contraseña.
-- Fuera de B4: subir fotos (hoy `foto_url` es solo una dirección web), consultar el historial de precios,
-  la carga masiva desde la plantilla Excel y la búsqueda del POS con existencias (`fn_buscar_variantes`, va en B6).
+- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`), **B3**, **B4**
+  (aprobados por el dueño) y **B5** del backend. Con B5 se hizo también todo lo que había quedado fuera de B3 y
+  B4: sucursales y cajas, roles nuevos, desbloqueo, mínimo de parámetros, bitácora, fotos, historial de precios,
+  búsqueda para la venta, existencias y la carga inicial desde Excel. Está **pendiente de revisión del dueño**.
+- **Sigue:** **B6** (POS y caja), solo cuando el dueño lo pida. **Pendiente:** B7 y el frontend.
+- Pruebas en verde: 428 de base de datos y 336 del backend. Nada se ha subido a GitHub.
+- Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
+  redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
+  B7) y borrar las fotos sueltas que nunca se usaron.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -95,6 +96,16 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   equipo registrado y 7 días si no (parámetros `SESION_HORAS_EQUIPO`, `SESION_DIAS_SIN_EQUIPO`); renovar no la
   alarga. 5 contraseñas incorrectas → bloqueo de 15 min. Reusar un token de renovación ya rotado → se cierran
   todas las sesiones del usuario y se alerta (`SESION_REUTILIZADA`).
+- Reglas agregadas con el backend (B3 a B5), todas en la base:
+  - Se pueden crear roles nuevos; solo se elimina un rol que no es de sistema y sin usuarios.
+  - Las sucursales nuevas son siempre de venta (la bodega es única). El código de una sucursal no cambia si ya
+    tiene ventas. No se desactiva una sucursal con existencias, turno abierto o envíos en tránsito, ni la bodega;
+    en una sucursal o caja inactiva no se abren turnos.
+  - No se desactiva un producto o variante con existencias. Las perforaciones (SERVICIO y PAQUETE) solo se
+    administran desde su pantalla. Una gama con piezas o precios no cambia de modo de precio.
+  - `PRECIOS_EDITAR` permite cambiar precio **y costo** a mano (además del costo promedio de las compras).
+  - Las duraciones de sesión tienen mínimo 1 (`parametro.minimo`).
+  - Carga inicial: solo crea lo que falta; el inventario inicial entra a la bodega y se reparte con envíos.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -111,7 +122,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 | B2 ✅ | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
 | B3 ✅ | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
 | B4 ✅ | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
-| B5 | Inventario: compras, envíos/recepción, mermas, conteos |
+| B5 ✅ | Inventario: compras, envíos/recepción, mermas, conteos (y carga inicial desde Excel) |
 | B6 | POS y caja: venta, cobro, apertura, cierre, ticket |
 | B7 | Reportes, exportación (Excel/PDF), tarea programada `fn_alertar_cajas_sin_cerrar` |
 
@@ -126,7 +137,8 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 - Configuración: variables de entorno validadas con Zod en `src/configuracion/configuracion.ts`
   (`backend/.env`, no se sube; plantilla en `.env.example`). `DATABASE_URL` lleva la contraseña
   (codificada, `@` → `%40`): `pg` 8.23 marcó como obsoleto leer `pgpass.conf`. `JWT_SECRETO` (≥ 32 caracteres,
-  `npm run secreto`), `LOGIN_LIMITE_POR_MINUTO` (por IP) y `TRUST_PROXY` (detrás de nginx/Caddy).
+  `npm run secreto`), `LOGIN_LIMITE_POR_MINUTO` (por IP), `TRUST_PROXY` (detrás de nginx/Caddy) y `DIR_FOTOS`
+  (carpeta de las fotos subidas; en el servidor debe entrar en los respaldos).
 - API: rutas bajo `/api`; JSON en **snake_case** (igual que la base: `debe_cambiar_password`, `sucursal_id`).
   Entrada validada con `@Body(new ValidacionZod(esquema))` → 400 `DATOS_INVALIDOS` con `errores` por campo.
 - Autenticación (`src/autenticacion/`): toda ruta exige `Authorization: Bearer <JWT>` salvo `@Publica()`;
@@ -163,8 +175,25 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   ser null llevan su tipo en el SQL (`${id}::integer`, `${fecha}::date`).
 - El **costo** solo sale para quien tiene `REPORTES_COSTOS`: se enmascara en la propia consulta
   (`case when (select fn_tiene_permiso(usuario, 'REPORTES_COSTOS')) then v.costo end`), no en TypeScript.
-- Lo que en la base se llama `activa` (categoría, gama, perforación, promoción) usa `esquemaActiva` y la ruta
-  `/activa`; lo que se llama `activo` (usuario, equipo, producto, variante), `esquemaActivo` y `/activo`.
+- Lo que en la base se llama `activa` (categoría, gama, perforación, promoción, sucursal, caja) usa `esquemaActiva`
+  y la ruta `/activa`; lo que se llama `activo` (usuario, equipo, producto, variante, proveedor), `esquemaActivo`
+  y `/activo`.
+- `@RequierePermiso('A', 'B')` con varios permisos pide **uno** de ellos (listas que ven tanto la sucursal como
+  el admin: envíos, mermas, conteos); puede ir en el controlador entero (`proveedores`, `compras`).
+- Inventario (B5): módulos `proveedores/`, `compras/`, `envios/`, `mermas/`, `conteos/` e `inventario/`. Alcance
+  de las listas: cada quien ve lo de **sus** sucursales (`fn_puede_operar_sucursal` en el `where`); un registro
+  ajeno responde 404. La cantidad de la bodega se oculta con `fn_ve_cantidad_bodega`. El conteo es a ciegas: el
+  detalle del conteo no trae el stock del sistema; las diferencias piden `INVENTARIO_AJUSTAR`.
+- Consultas con filtros opcionales: `donde(cond1, filtro.x && sql`...`)` y `patronContiene()` de
+  `src/comun/consultas.ts`; fechas `desde`/`hasta` con `inicioDelDia()` / `finDelDia()` de `src/comun/fechas.ts`
+  (día de Managua). Paginación: `limite` + `antes_de` (por id, listas que crecen) o `desplazamiento` (catálogos).
+- Fotos (`fotos/`): se guardan en `DIR_FOTOS` (por defecto `backend/almacen/fotos`, fuera de Git) con nombre al
+  azar; el formato se decide por el contenido (JPG, PNG, WebP; máx. 5 MB). `GET /api/fotos/:archivo` es pública
+  porque una `<img>` no envía el token. La base solo guarda la dirección (`foto_url`).
+- Carga inicial (`carga-inicial/`): `plantilla.ts` lee el Excel (exceljs) sin depender de fórmulas calculadas;
+  el servicio valida cada fila con el **mismo esquema Zod** de la API y la guarda con la **misma `fn_*`**, todo
+  en una transacción con un `savepoint` por fila para juntar todos los errores. Simula por defecto
+  (`?aplicar=true` para guardar). Solo crea lo que falta; lo repetido dentro del archivo es error.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

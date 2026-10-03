@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración) y B4 (catálogo) |
+| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo) y B5 (inventario y carga inicial). Faltan B6 (POS y caja) y B7 (reportes) |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -23,7 +23,8 @@ db/
   04_pruebas.sql      Pruebas de reglas de negocio
   scripts/probar.sh   Recrea la BD de prueba y ejecuta todas las pruebas (probar.cmd en Windows)
 docs/
-  modelo-datos.html   Diagrama entidad-relación y reglas (v1.0)
+  modelo-datos.html              Diagrama entidad-relación, reglas y funciones (v1.1)
+  plantilla-carga-inicial.xlsx   Plantilla de Excel para cargar el sistema antes de usarlo
 ```
 
 ## Instalar la base de datos
@@ -113,9 +114,11 @@ a un usuario aplica de inmediato.
 | `PUT /api/usuarios/:id` | `USUARIOS_GESTIONAR` | `{ nombre_completo, rol, sucursales, email, telefono }` (se envían todos) |
 | `PUT /api/usuarios/:id/activo` | `USUARIOS_GESTIONAR` | `{ activo }`: desactivar cierra sus sesiones |
 | `POST /api/usuarios/:id/resetear-password` | `USUARIOS_GESTIONAR` | Nueva `password_temporal`; también desbloquea la cuenta |
+| `POST /api/usuarios/:id/desbloquear` | `USUARIOS_GESTIONAR` | Quita el bloqueo por contraseñas incorrectas sin cambiar la contraseña |
 | `POST /api/usuarios/:id/cerrar-sesiones` | `USUARIOS_GESTIONAR` | Cierra las sesiones abiertas del usuario |
 | `GET /api/roles` | `USUARIOS_VER` | Roles con sus permisos (el ADMIN los tiene todos y no es editable) |
 | `GET /api/permisos` | `ROLES_GESTIONAR` | Catálogo de permisos por módulo |
+| `POST /api/roles` · `PUT /api/roles/:codigo` · `DELETE /api/roles/:codigo` | `ROLES_GESTIONAR` | Crea un rol (sin permisos), cambia su nombre o lo elimina (si no es de sistema ni tiene usuarios) |
 | `PUT /api/roles/:codigo/permisos` | `ROLES_GESTIONAR` | `{ permisos: [...] }`: la lista completa con la que queda el rol |
 | `GET /api/equipos` | `SUCURSALES_GESTIONAR` | Equipos registrados, con su último uso y sesiones abiertas |
 | `PUT /api/equipos/:id/activo` | `SUCURSALES_GESTIONAR` | `{ activo }`: desactivar un equipo cierra sus sesiones y ya nadie entra desde él |
@@ -124,6 +127,10 @@ a un usuario aplica de inmediato.
 | `GET /api/alertas` | `ALERTAS_VER` | `?estado=pendientes\|atendidas\|todas&tipo=&sucursal_id=&limite=&antes_de=` → alertas y `total_pendientes` |
 | `POST /api/alertas/:id/atender` | `ALERTAS_VER` | Marca la alerta como atendida |
 | `GET /api/sucursales` | (sesión) | Ubicaciones donde el usuario puede operar, con sus cajas (para los formularios) |
+| `POST /api/sucursales` · `PUT /api/sucursales/:id` · `PUT /api/sucursales/:id/activa` | `SUCURSALES_GESTIONAR` | `{ codigo, nombre, direccion, telefono }`. No se desactiva con existencias, turno abierto o envíos en tránsito |
+| `POST /api/sucursales/:id/cajas` · `PUT /api/cajas/:id` · `PUT /api/cajas/:id/activa` | `SUCURSALES_GESTIONAR` | Cajas de una sucursal: `{ nombre }` |
+| `GET /api/auditoria/cambios` | `AUDITORIA_VER` | `?tabla=&registro_id=&usuario_id=&accion=&desde=&hasta=&limite=&antes_de=` → quién cambió qué (antes y después) |
+| `GET /api/auditoria/accesos` | `AUDITORIA_VER` | `?usuario_id=&username=&exito=&desde=&hasta=&limite=&antes_de=` → inicios de sesión exitosos y fallidos |
 
 ### Catálogo
 
@@ -144,6 +151,11 @@ y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tie
 | `PUT /api/variantes/:id` | Edita la variante (sin precio): `{ sku, nombre, codigo_barras, gama_id, atributos, foto_url }` |
 | `PUT /api/variantes/:id/precio` | `{ precio_venta, costo }`: lo que no se envía no cambia; queda en el historial de precios |
 | `PUT /api/variantes/:id/activo` | Desactiva o reactiva (no se desactiva con existencias) |
+| `POST /api/variantes/:id/foto` · `DELETE /api/variantes/:id/foto` | Sube la foto de la variante (formulario multipart, campo `foto`: JPG, PNG o WebP de hasta 5 MB) o la quita |
+| `POST /api/fotos` · `GET /api/fotos/:archivo` | Sube una imagen suelta (p. ej. la de una merma) y devuelve su `foto_url`; la imagen se sirve sin sesión |
+| `GET /api/variantes/:id/historial-precios` | Cambios de precio y costo de la variante, con quién los hizo |
+| `GET /api/variantes/buscar?texto=&sucursal_id=&limite=` | Búsqueda de la pantalla de venta: por nombre, SKU o código de barras, con precio y stock de la sucursal |
+| `GET /api/variantes/:id/existencias` | Cuánto hay de la variante en cada ubicación (`INVENTARIO_VER`) |
 | `GET /api/perforaciones` · `GET /:id` | Perforaciones con su precio de solo servicio, tabla por gama, precios especiales y piezas permitidas |
 | `POST /api/perforaciones` | `{ codigo, nombre, precio_servicio, piezas_por_paquete }`: crea también sus entradas `SRV-código` y `PAQ-código` |
 | `PUT /api/perforaciones/:id` · `/activa` · `/precio-servicio` | Nombre y piezas del paquete · activar o desactivar · precio de solo servicio |
@@ -153,3 +165,42 @@ y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tie
 | `GET /api/perforaciones/:id/precio-paquete?piezas=12,15` | Precio del paquete con esas piezas y la regla aplicada (`ESPECIAL`, `TABLA_GAMA`, `SERVICIO_MAS_PIEZA`) |
 | `GET /api/promociones` · `POST` · `PUT /:id` · `PUT /:id/activa` | Promociones (`PROMOCIONES_GESTIONAR`): `{ nombre, tipo: PORCENTAJE/MONTO, valor, compra_minima, vigente_desde, vigente_hasta, descripcion }`; nacen inactivas |
 | `GET /api/promociones/disponibles?subtotal=` | Las que el POS puede aplicar hoy y cuánto rebajan (`VENTAS_PROMOCION`) |
+
+### Inventario
+
+Toda la mercadería entra por la bodega central (una compra o una entrada directa) y llega a las sucursales con
+envíos en dos pasos. Cada quien ve los envíos, mermas, conteos y movimientos de **sus** sucursales; de la
+bodega, quien no tiene `INVENTARIO_VER_BODEGA` solo sabe si hay o no (parámetro `BODEGA_VISIBILIDAD`).
+
+| Ruta | Permiso | Qué hace |
+|---|---|---|
+| `GET /api/proveedores` · `POST` · `PUT /:id` · `PUT /:id/activo` | `INVENTARIO_ENTRADA` | Proveedores: `{ nombre, pais, moneda_habitual, contacto, telefono, email }` |
+| `GET /api/compras` · `GET /api/compras/:id` | `INVENTARIO_ENTRADA` | Compras con sus totales; el detalle trae las líneas (en borrador, con la vista previa del costeo) y los gastos |
+| `POST /api/compras` · `PUT /api/compras/:id` | `INVENTARIO_ENTRADA` | `{ proveedor_id, factura_numero, fecha_factura, moneda, tipo_cambio, notas, lineas, gastos }`: queda en borrador |
+| `PUT /api/compras/:id/lineas` · `DELETE /api/compras/:id/lineas/:varianteId` | `INVENTARIO_ENTRADA` | `{ variante_id, cantidad_facturada, costo_unitario, cantidad_recibida }` |
+| `POST /api/compras/:id/gastos` · `DELETE /api/compras/:id/gastos/:gastoId` | `INVENTARIO_ENTRADA` | Gastos de importación: `{ concepto, moneda, monto, descripcion, tipo_cambio }` |
+| `POST /api/compras/:id/confirmar` · `POST /api/compras/:id/cancelar` | `INVENTARIO_ENTRADA` | Confirmar entra el stock a la bodega con su costo prorrateado; cancelar pide `{ motivo }` |
+| `GET /api/envios` · `GET /api/envios/:id` | `INVENTARIO_TRASLADAR` o `INVENTARIO_RECIBIR` | `?estado=&origen_id=&destino_id=&limite=&antes_de=` |
+| `GET /api/envios/sugerencia?variante_id=&cantidad=` | `INVENTARIO_TRASLADAR` | Cuánto mandar a cada sucursal (stock mínimo primero, luego según ventas) |
+| `POST /api/envios` · `PUT /api/envios/:id/lineas` | `INVENTARIO_TRASLADAR` | `{ origen_id, destino_id, notas, lineas }` · `{ variante_id, cantidad }` (0 quita la pieza) |
+| `POST /api/envios/:id/enviar` · `POST /api/envios/:id/cancelar` | `INVENTARIO_TRASLADAR` | Enviar saca la mercadería del origen; solo un borrador se cancela |
+| `POST /api/envios/:id/recibir` | `INVENTARIO_RECIBIR` | `{ recibido: [{ variante_id, cantidad }] }`: entra lo escaneado; si falta algo, alerta |
+| `GET /api/mermas` · `POST /api/mermas` | `INVENTARIO_REPORTAR_MERMA` | `{ sucursal_id, variante_id, cantidad, motivo, foto_url }`: reportar no descuenta |
+| `POST /api/mermas/:id/resolver` | `INVENTARIO_AJUSTAR` | `{ aprobar, comentario }`: aprobar descuenta la pieza |
+| `GET /api/conteos` · `GET /api/conteos/:id` · `POST /api/conteos` | `INVENTARIO_CONTAR` | `{ sucursal_id, categoria_id, notas }`. Quien cuenta no ve el stock del sistema |
+| `POST /api/conteos/:id/registrar` · `/enviar` · `/cancelar` | `INVENTARIO_CONTAR` | `{ variante_id, cantidad, sumar }`: cada escaneo suma una pieza |
+| `GET /api/conteos/:id/diferencias` · `POST /api/conteos/:id/aplicar` | `INVENTARIO_AJUSTAR` | El admin compara lo contado con el sistema y convierte las diferencias en ajustes |
+| `GET /api/inventario/existencias` | `INVENTARIO_VER` | `?sucursal_id=&buscar=&categoria_id=&solo_bajo_minimo=&limite=&desplazamiento=` |
+| `GET /api/inventario/movimientos` | `INVENTARIO_VER` | El kardex: `?sucursal_id=&variante_id=&tipo=&desde=&hasta=&limite=&antes_de=` |
+| `POST /api/inventario/movimientos` | `INVENTARIO_ENTRADA` o `INVENTARIO_AJUSTAR` | Entrada directa a la bodega, ajuste o merma directa: `{ sucursal_id, variante_id, tipo, cantidad, motivo, costo_unitario }` |
+| `PUT /api/inventario/stock-minimo` | `INVENTARIO_AJUSTAR` | `{ sucursal_id, variante_id, stock_minimo }` |
+
+### Carga inicial desde Excel
+
+`POST /api/carga-inicial` (formulario multipart, campo `archivo`) recibe `docs/plantilla-carga-inicial.xlsx` ya llena
+y crea categorías, perforaciones con sus precios, productos, inventario inicial, proveedores, usuarios y promociones.
+
+- Sin parámetros **simula**: responde qué se crearía, los avisos y los errores de cada hoja y fila, y no guarda nada.
+- Con `?aplicar=true` guarda todo en una sola transacción; si hay un solo error no guarda nada (422 con el informe).
+- Solo crea lo que falta: lo que ya existe se omite con un aviso, así el mismo archivo se puede volver a cargar.
+- La respuesta trae las contraseñas temporales de los usuarios creados (se muestran una sola vez).

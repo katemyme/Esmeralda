@@ -122,8 +122,9 @@
     <p class="lede">Dos sucursales y una bodega central. La mercadería entra solo por la bodega, llega a las sucursales con envíos en dos pasos y sale por ventas de piezas, servicios o paquetes de perforación. Cada peso se sigue hasta el cierre de caja.</p>
     <div class="meta">
       <span class="chip">45 tablas</span>
-      <span class="chip">22 vistas</span>
-      <span class="chip">221 pruebas</span>
+      <span class="chip">24 vistas</span>
+      <span class="chip">128 funciones</span>
+      <span class="chip">428 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -229,6 +230,7 @@ erDiagram
     varchar clave PK
     varchar valor
     varchar tipo_valor "NUMERO, HORA, OPCION"
+    numeric minimo "valor más bajo de un NUMERO"
   }
   ALERTA {
     bigint id PK
@@ -581,7 +583,12 @@ erDiagram
       <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran; se anulan con el turno abierto y el stock vuelve, piezas de paquete incluidas.</p></div>
       <div class="rule"><h3>Arqueo con tolerancia</h3><p>Conteo por denominación. Una diferencia mayor a C$100 exige justificación y alerta; el fondo del día siguiente queda registrado.</p></div>
       <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN. 5 intentos fallidos bloquean 15 minutos.</p></div>
-      <div class="rule"><h3>Auditoría con autor</h3><p>Cambios en usuarios, productos, precios, promociones, equipos y parámetros, sin guardar contraseñas ni tokens.</p></div>
+      <div class="rule"><h3>Sin escalar permisos</h3><p>Solo un administrador edita, desactiva, desbloquea o resetea a otro administrador. Nadie otorga a un rol un permiso que no tiene, y el rol ADMIN no se edita.</p></div>
+      <div class="rule"><h3>Acceso por equipo</h3><p>Encargados y vendedores solo entran desde un equipo registrado de su sucursal. Reusar un token de sesión ya rotado cierra todas las sesiones y alerta.</p></div>
+      <div class="rule"><h3>Nada desaparece con existencias</h3><p>No se desactiva un producto, una variante ni una sucursal que todavía tiene mercadería; tampoco una sucursal con un turno abierto o envíos en tránsito.</p></div>
+      <div class="rule"><h3>Catálogo coherente</h3><p>Las perforaciones se administran solo desde su pantalla, una gama en uso no cambia de modo de precio y el paquete no lleva precio propio.</p></div>
+      <div class="rule"><h3>Parámetros válidos</h3><p>Cada parámetro valida su formato (número, hora, opción) y su mínimo: la duración de una sesión no puede quedar en cero.</p></div>
+      <div class="rule"><h3>Auditoría con autor</h3><p>Cambios en usuarios, productos, precios, promociones, equipos, sucursales y parámetros, sin guardar contraseñas ni tokens.</p></div>
     </div>
   </section>
 
@@ -595,20 +602,22 @@ erDiagram
         <thead><tr><th>Módulo</th><th>Funciones</th><th>Qué resuelven</th></tr></thead>
         <tbody>
           <tr><td>Ventas</td><td class="mono">fn_registrar_venta · fn_anular_venta · fn_buscar_variantes · fn_promociones_disponibles</td><td>Venta con piezas, servicios y paquetes, pagos mixtos, vuelto, promoción e idempotencia</td></tr>
-          <tr><td>Precios</td><td class="mono">fn_precio_paquete · fn_crear_perforacion · fn_set_precio_gama · fn_set_precio_especial · fn_set_pieza_permitida</td><td>Precio de paquetes y pantalla de precios de perforación</td></tr>
+          <tr><td>Catálogo</td><td class="mono">fn_guardar_categoria · fn_set_categoria_activa · fn_guardar_gama · fn_set_gama_activa · fn_guardar_producto · fn_set_producto_activo · fn_crear_variante · fn_actualizar_variante · fn_set_precio_variante · fn_set_variante_activa · fn_set_foto_variante</td><td>Categorías, gamas, productos y variantes, con su precio, costo y foto</td></tr>
+          <tr><td>Precios</td><td class="mono">fn_precio_paquete · fn_crear_perforacion · fn_actualizar_perforacion · fn_set_perforacion_activa · fn_set_precio_gama · fn_set_precio_especial · fn_set_pieza_permitida</td><td>Perforaciones, precio de paquetes y pantalla de precios de perforación</td></tr>
           <tr><td>Promociones</td><td class="mono">fn_guardar_promocion · fn_set_promocion_activa</td><td>Apartado de promociones del admin</td></tr>
-          <tr><td>Compras</td><td class="mono">fn_crear_proveedor · fn_crear_compra · fn_compra_set_linea · fn_compra_agregar_gasto · fn_compra_calculo · fn_confirmar_compra · fn_cancelar_compra</td><td>Recepción de mercadería con costeo y vista previa</td></tr>
+          <tr><td>Compras</td><td class="mono">fn_crear_proveedor · fn_actualizar_proveedor · fn_set_proveedor_activo · fn_crear_compra · fn_actualizar_compra · fn_compra_set_linea · fn_compra_quitar_linea · fn_compra_agregar_gasto · fn_compra_quitar_gasto · fn_compra_calculo · fn_confirmar_compra · fn_cancelar_compra</td><td>Proveedores y recepción de mercadería con costeo y vista previa</td></tr>
           <tr><td>Envíos</td><td class="mono">fn_crear_envio · fn_envio_set_linea · fn_enviar · fn_recibir_envio · fn_cancelar_envio · fn_sugerir_reparto</td><td>Reparto de bodega a sucursales y entre sucursales</td></tr>
-          <tr><td>Inventario</td><td class="mono">fn_consultar_stock · fn_movimiento_inventario · fn_reportar_merma · fn_resolver_merma</td><td>Consultas de stock, ajustes y mermas</td></tr>
+          <tr><td>Inventario</td><td class="mono">fn_consultar_stock · fn_ve_cantidad_bodega · fn_movimiento_inventario · fn_set_stock_minimo · fn_reportar_merma · fn_resolver_merma</td><td>Consultas de stock, ajustes, stock mínimo y mermas</td></tr>
           <tr><td>Conteos</td><td class="mono">fn_iniciar_conteo · fn_conteo_registrar · fn_enviar_conteo · fn_conteo_diferencias · fn_aplicar_conteo · fn_cancelar_conteo</td><td>Conteo físico con la tablet</td></tr>
           <tr><td>Caja</td><td class="mono">fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar</td><td>Apertura, arqueo ciego, retiro, fondo y alertas</td></tr>
-          <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_revocar_sesiones · fn_registrar_login · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo · fn_atender_alerta</td><td>Panel de usuarios, equipos y alertas</td></tr>
+          <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables y equipos autorizados</td></tr>
+          <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
           <tr><td>Reportes</td><td class="mono">fn_reporte_ventas · fn_top_productos</td><td>Ventas por día, semana o mes y ranking</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_ventas_perforacion</code>, <code>v_ventas_gama</code>, <code>v_ventas_promocion</code>, <code>v_ventas_sobreprecio</code>, <code>v_piezas_consumidas_paquete</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_compras</code>, <code>v_compras_mensual_proveedor</code>, <code>v_envios</code>, <code>v_envios_por_recibir</code>, <code>v_mermas</code>, <code>v_precios_perforacion</code>, <code>v_turnos</code>, <code>v_alertas_pendientes</code>, <code>v_usuarios_admin</code>.</p>
+    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_ventas_perforacion</code>, <code>v_ventas_gama</code>, <code>v_ventas_promocion</code>, <code>v_ventas_sobreprecio</code>, <code>v_piezas_consumidas_paquete</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_compras</code>, <code>v_compras_mensual_proveedor</code>, <code>v_envios</code>, <code>v_envios_por_recibir</code>, <code>v_mermas</code>, <code>v_precios_perforacion</code>, <code>v_turnos</code>, <code>v_alertas_pendientes</code>, <code>v_usuarios_admin</code>, <code>v_roles_admin</code>, <code>v_promociones_admin</code>.</p>
   </section>
 
-  <footer>Esquema v1.1. Archivos: db/01_esquema.sql · db/02_seed.sql · db/03_datos_demo.sql · db/04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
+  <footer>Esquema v1.1, con las funciones que agregaron los pasos B2 a B5 del backend (octubre de 2026). Archivos: db/01_esquema.sql · db/02_seed.sql · db/03_datos_demo.sql · db/04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
 </div>
