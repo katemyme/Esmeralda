@@ -1031,4 +1031,59 @@ SELECT pg_temp.afirma(fn_set_foto_variante(:admin, :lab6, NULL) = '/api/fotos/la
 SELECT pg_temp.afirma((SELECT foto_url IS NULL FROM variante WHERE id = :lab6), 'foto quitada');
 SELECT pg_temp.espera_error(format('SELECT fn_set_foto_variante(%s, 999999, NULL)', :admin), 'La variante 999999 no existe');
 
+\echo '\n=== 21. INVENTARIO (backend B5): PROVEEDORES, ENCABEZADO DE COMPRA, STOCK MÍNIMO Y VISIBILIDAD DE LA BODEGA'
+SELECT set_config('app.usuario_id', :'admin', false);
+
+-- Proveedores
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_proveedor(%s, %s, %L)', :maria, :prov_loc, 'X'), 'INVENTARIO_ENTRADA');
+SELECT fn_actualizar_proveedor(:admin, :prov_loc, ' Distribuidora Local S.A. ', 'Nicaragua', 'nio', 'Juan Pérez', '2255-0000', 'ventas@local.example');
+SELECT pg_temp.afirma((SELECT nombre = 'Distribuidora Local S.A.' AND moneda_habitual = 'NIO' AND contacto = 'Juan Pérez' AND email = 'ventas@local.example' FROM proveedor WHERE id = :prov_loc), 'proveedor editado');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_proveedor(%s, 999999, %L)', :admin, 'Nadie'), 'El proveedor 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_proveedor(%s, %s, %L)', :admin, :prov_loc, 'Body Jewelry Supply'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_set_proveedor_activo(%s, %s, false)', :maria, :prov_loc), 'INVENTARIO_ENTRADA');
+SELECT fn_set_proveedor_activo(:admin, :prov_loc, false);
+SELECT pg_temp.espera_error(format('SELECT fn_crear_compra(%s, %s, %L, current_date, %L)', :admin, :prov_loc, 'B5-1', 'NIO'), 'no existe o está inactivo');
+SELECT fn_set_proveedor_activo(:admin, :prov_loc, true);
+SELECT pg_temp.espera_error(format('SELECT fn_set_proveedor_activo(%s, 999999, false)', :admin), 'El proveedor 999999 no existe');
+
+-- Encabezado de una compra en borrador
+SELECT fn_crear_compra(:admin, :prov_loc, 'B5-1', current_date, 'NIO') AS compra_b5 \gset
+SELECT fn_compra_set_linea(:admin, :compra_b5, :cad, 2, 500);
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_compra(%s, %s, %s, %L, current_date, %L)', :maria, :compra_b5, :prov_loc, 'B5-2', 'NIO'), 'INVENTARIO_ENTRADA');
+SELECT fn_actualizar_compra(:admin, :compra_b5, :prov_usa, ' B5-2 ', current_date - 1, 'usd', 36.50, 'Corregida');
+SELECT pg_temp.afirma((SELECT proveedor_id = :prov_usa AND factura_numero = 'B5-2' AND fecha_factura = current_date - 1 AND moneda = 'USD' AND tipo_cambio = 36.50 AND notas = 'Corregida'
+                         FROM compra WHERE id = :compra_b5) AND (SELECT count(*) FROM compra_detalle WHERE compra_id = :compra_b5) = 1,
+                      'se corrige el encabezado de la compra en borrador y sus líneas se conservan');
+SELECT fn_actualizar_compra(:admin, :compra_b5, :prov_usa, 'B5-2', current_date, 'USD');
+SELECT pg_temp.afirma((SELECT tipo_cambio = fn_tipo_cambio_vigente(current_date) FROM compra WHERE id = :compra_b5), 'en dólares, sin tipo de cambio se usa el vigente a la fecha de la factura');
+SELECT fn_actualizar_compra(:admin, :compra_b5, :prov_loc, 'B5-2', current_date, 'NIO', 36.50);
+SELECT pg_temp.afirma((SELECT tipo_cambio = 1 FROM compra WHERE id = :compra_b5), 'en córdobas el tipo de cambio siempre es 1');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_compra(%s, %s, %s, %L, current_date, %L)', :admin, :compra_b5, :prov_usa, 'INV-1001', 'USD'), 'ya fue registrada');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_compra(%s, 999999, %s, %L, current_date, %L)', :admin, :prov_usa, 'X', 'USD'), 'La compra 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_compra(%s, %s, 999999, %L, current_date, %L)', :admin, :compra_b5, 'X', 'USD'), 'no existe o está inactivo');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_compra(%s, %s, %s, %L, current_date, %L)', :admin, :compra1, :prov_usa, 'INV-1001', 'USD'), 'ya está confirmada');
+SELECT fn_cancelar_compra(:admin, :compra_b5, 'Era una prueba');
+
+-- Stock mínimo
+SELECT pg_temp.espera_error(format('SELECT fn_set_stock_minimo(%s, %s, %s, 4)', :maria, :lam, :cad), 'INVENTARIO_AJUSTAR');
+SELECT cantidad AS cad_lam FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :cad \gset
+SELECT fn_set_stock_minimo(:admin, :lam, :cad, :cad_lam + 2);
+SELECT pg_temp.afirma((SELECT stock_minimo = :cad_lam + 2 AND cantidad = :cad_lam FROM stock_sucursal WHERE sucursal_id = :lam AND variante_id = :cad)
+                  AND (SELECT alerta_stock_bajo FROM v_stock_actual WHERE sucursal_id = :lam AND variante_id = :cad), 'el stock mínimo no toca la cantidad y enciende la alerta de stock bajo');
+SELECT fn_set_stock_minimo(:admin, :lam, :cad, 0);
+SELECT fn_set_stock_minimo(:admin, :lbr, :var_rel, 3);
+SELECT pg_temp.afirma((SELECT cantidad = 0 AND stock_minimo = 3 FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :var_rel), 'se puede fijar el mínimo de una pieza que todavía no ha llegado a la sucursal');
+SELECT pg_temp.afirma((SELECT sugerido FROM fn_sugerir_reparto(:var_rel, 3) WHERE sucursal_id = :lbr) = 3, 'la sugerencia de reparto cubre primero ese mínimo');
+SELECT pg_temp.espera_error(format('SELECT fn_set_stock_minimo(%s, %s, %s, -1)', :admin, :lam, :cad), 'debe ser 0 o más');
+SELECT pg_temp.espera_error(format('SELECT fn_set_stock_minimo(%s, 999999, %s, 1)', :admin, :cad), 'La sucursal 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_set_stock_minimo(%s, %s, %s, 1)', :admin, :lam, :lob), 'Solo las piezas y artículos con stock');
+SELECT pg_temp.espera_error(format('SELECT fn_set_stock_minimo(%s, %s, 999999, 1)', :admin, :lam), 'Solo las piezas y artículos con stock');
+
+-- Visibilidad de la bodega (misma regla para la consulta de una pieza y para los listados)
+SELECT pg_temp.afirma(fn_ve_cantidad_bodega(:admin) AND NOT fn_ve_cantidad_bodega(:ana), 'el admin ve la cantidad de la bodega; la vendedora, solo si hay o no');
+SELECT fn_set_parametro(:admin, 'BODEGA_VISIBILIDAD', 'CANTIDAD');
+SELECT pg_temp.afirma(fn_ve_cantidad_bodega(:ana), 'con BODEGA_VISIBILIDAD = CANTIDAD la vendedora también la ve');
+SELECT fn_set_parametro(:admin, 'BODEGA_VISIBILIDAD', 'SI_NO');
+SELECT pg_temp.afirma((SELECT cantidad IS NULL AND disponible FROM fn_consultar_stock(:ana, :lab6) WHERE tipo = 'BODEGA'), 'fn_consultar_stock sigue aplicando la regla');
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

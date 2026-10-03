@@ -2072,16 +2072,21 @@ LANGUAGE sql STABLE AS $$
    LIMIT p_limite
 $$;
 
--- Existencias de una variante en cada ubicación, según lo que el usuario puede ver.
--- Sin el permiso INVENTARIO_VER_BODEGA, la bodega se muestra según el parámetro
--- BODEGA_VISIBILIDAD: 'SI_NO' (solo disponible sí/no) o 'CANTIDAD'.
+-- ¿Ve el usuario la cantidad exacta que hay en la bodega? Sin el permiso INVENTARIO_VER_BODEGA
+-- depende del parámetro BODEGA_VISIBILIDAD: 'SI_NO' (solo sabe si hay o no) o 'CANTIDAD'.
+CREATE OR REPLACE FUNCTION fn_ve_cantidad_bodega(p_usuario bigint) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT fn_tiene_permiso(p_usuario, 'INVENTARIO_VER_BODEGA')
+      OR coalesce(fn_parametro_txt('BODEGA_VISIBILIDAD'), 'SI_NO') = 'CANTIDAD'
+$$;
+
+-- Existencias de una variante en cada ubicación, según lo que el usuario puede ver
+-- (la cantidad de la bodega, solo si fn_ve_cantidad_bodega).
 CREATE OR REPLACE FUNCTION fn_consultar_stock(p_usuario bigint, p_variante bigint)
 RETURNS TABLE (sucursal_id integer, sucursal text, tipo text, cantidad integer, disponible boolean)
 LANGUAGE sql STABLE AS $$
   SELECT s.id, s.nombre::text, s.tipo::text,
-         CASE WHEN s.tipo = 'BODEGA'
-                   AND NOT fn_tiene_permiso(p_usuario, 'INVENTARIO_VER_BODEGA')
-                   AND coalesce(fn_parametro_txt('BODEGA_VISIBILIDAD'), 'SI_NO') = 'SI_NO'
+         CASE WHEN s.tipo = 'BODEGA' AND NOT fn_ve_cantidad_bodega(p_usuario)
               THEN NULL
               ELSE coalesce(ss.cantidad, 0) END,
          coalesce(ss.cantidad, 0) > 0
@@ -2683,6 +2688,50 @@ BEGIN
   RETURN v_id;
 END $$;
 
+CREATE OR REPLACE FUNCTION fn_actualizar_proveedor(
+  p_admin bigint, p_proveedor integer, p_nombre text, p_pais text DEFAULT NULL, p_moneda text DEFAULT 'USD',
+  p_contacto text DEFAULT NULL, p_telefono text DEFAULT NULL, p_email text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  UPDATE proveedor
+     SET nombre = trim(p_nombre), pais = p_pais, moneda_habitual = upper(p_moneda),
+         contacto = p_contacto, telefono = p_telefono, email = p_email
+   WHERE id = p_proveedor;
+  IF NOT FOUND THEN RAISE EXCEPTION 'El proveedor % no existe', p_proveedor; END IF;
+END $$;
+
+-- A un proveedor inactivo no se le registran compras nuevas (fn_crear_compra lo rechaza).
+CREATE OR REPLACE FUNCTION fn_set_proveedor_activo(p_admin bigint, p_proveedor integer, p_activo boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  UPDATE proveedor SET activo = p_activo WHERE id = p_proveedor;
+  IF NOT FOUND THEN RAISE EXCEPTION 'El proveedor % no existe', p_proveedor; END IF;
+END $$;
+
+-- Stock mínimo de una pieza en una ubicación: por debajo de él, v_stock_actual marca alerta_stock_bajo
+-- y la sugerencia de reparto le da prioridad.
+CREATE OR REPLACE FUNCTION fn_set_stock_minimo(p_admin bigint, p_sucursal integer, p_variante bigint, p_minimo integer)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_AJUSTAR');
+  IF p_minimo IS NULL OR p_minimo < 0 THEN RAISE EXCEPTION 'El stock mínimo debe ser 0 o más'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM sucursal WHERE id = p_sucursal) THEN
+    RAISE EXCEPTION 'La sucursal % no existe', p_sucursal;
+  END IF;
+  IF (SELECT pr.tipo FROM variante va JOIN producto pr ON pr.id = va.producto_id WHERE va.id = p_variante)
+     IS DISTINCT FROM 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Solo las piezas y artículos con stock llevan stock mínimo (variante %)', p_variante;
+  END IF;
+  INSERT INTO stock_sucursal (sucursal_id, variante_id, cantidad, stock_minimo)
+  VALUES (p_sucursal, p_variante, 0, p_minimo)
+  ON CONFLICT (sucursal_id, variante_id) DO UPDATE SET stock_minimo = EXCLUDED.stock_minimo;
+END $$;
+
 -- Abre una compra en BORRADOR, siempre con destino la bodega central.
 -- En dólares, si no se indica tipo de cambio se usa el vigente a la fecha de la factura.
 CREATE OR REPLACE FUNCTION fn_crear_compra(
@@ -2708,6 +2757,35 @@ BEGIN
     RAISE EXCEPTION 'La factura % de este proveedor ya fue registrada', p_factura;
   END;
   RETURN v_id;
+END $$;
+
+-- Corrige el encabezado de una compra en borrador (proveedor, factura, fecha, moneda, tipo de cambio).
+-- Las líneas y los gastos ya cargados no cambian: un gasto en dólares conserva su tipo de cambio.
+CREATE OR REPLACE FUNCTION fn_actualizar_compra(
+  p_admin bigint, p_compra bigint, p_proveedor integer, p_factura text, p_fecha date, p_moneda text,
+  p_tipo_cambio numeric DEFAULT NULL, p_notas text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v compra%ROWTYPE; v_moneda text := upper(p_moneda);
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'INVENTARIO_ENTRADA');
+  SELECT * INTO v FROM compra WHERE id = p_compra FOR UPDATE;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La compra % no existe', p_compra; END IF;
+  IF v.estado <> 'BORRADOR' THEN
+    RAISE EXCEPTION 'La compra % ya está % y no se puede modificar', p_compra, lower(v.estado);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM proveedor WHERE id = p_proveedor AND (activo OR id = v.proveedor_id)) THEN
+    RAISE EXCEPTION 'El proveedor % no existe o está inactivo', p_proveedor;
+  END IF;
+  BEGIN
+    UPDATE compra
+       SET proveedor_id = p_proveedor, factura_numero = trim(p_factura), fecha_factura = p_fecha, moneda = v_moneda,
+           tipo_cambio = CASE WHEN v_moneda = 'USD' THEN coalesce(p_tipo_cambio, fn_tipo_cambio_vigente(p_fecha)) ELSE 1 END,
+           notas = p_notas
+     WHERE id = p_compra;
+  EXCEPTION WHEN unique_violation THEN
+    RAISE EXCEPTION 'La factura % de este proveedor ya fue registrada', p_factura;
+  END;
 END $$;
 
 -- Agrega o actualiza una línea (cantidad recibida por defecto = facturada)
