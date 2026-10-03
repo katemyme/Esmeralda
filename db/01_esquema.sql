@@ -2326,6 +2326,305 @@ SELECT p.id AS perforacion_id, p.codigo, p.nombre AS perforacion, p.piezas_por_p
   LEFT JOIN precio_perforacion_gama t ON t.perforacion_id = p.id AND t.gama_id = g.id
  WHERE g.modo_precio = 'TABLA' AND g.activa;
 
+-- Cambia el nombre de la perforación (y el de sus dos entradas del catálogo) y cuántas piezas lleva
+-- su paquete. El código no cambia: de él salen los SKU SRV-xxx y PAQ-xxx.
+CREATE OR REPLACE FUNCTION fn_actualizar_perforacion(p_admin bigint, p_perforacion integer, p_nombre text, p_piezas integer)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v perforacion%ROWTYPE;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT * INTO v FROM perforacion WHERE id = p_perforacion FOR UPDATE;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La perforación % no existe', p_perforacion; END IF;
+
+  UPDATE perforacion SET nombre = trim(p_nombre), piezas_por_paquete = p_piezas WHERE id = p_perforacion;
+  UPDATE producto SET nombre = 'Perforación ' || trim(p_nombre)
+   WHERE id = (SELECT producto_id FROM variante WHERE id = v.servicio_variante_id);
+  UPDATE producto SET nombre = 'Perforación ' || trim(p_nombre) || ' con pieza'
+   WHERE id = (SELECT producto_id FROM variante WHERE id = v.paquete_variante_id);
+END $$;
+
+-- Activa o desactiva la perforación junto con sus dos entradas del catálogo (servicio y paquete):
+-- desactivada no aparece en la búsqueda del POS ni se puede vender.
+CREATE OR REPLACE FUNCTION fn_set_perforacion_activa(p_admin bigint, p_perforacion integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v perforacion%ROWTYPE;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  UPDATE perforacion SET activa = p_activa WHERE id = p_perforacion RETURNING * INTO v;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La perforación % no existe', p_perforacion; END IF;
+  UPDATE variante SET activo = p_activa WHERE id IN (v.servicio_variante_id, v.paquete_variante_id);
+  UPDATE producto SET activo = p_activa
+   WHERE id IN (SELECT producto_id FROM variante WHERE id IN (v.servicio_variante_id, v.paquete_variante_id));
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.5b Catálogo: categorías, gamas, productos y variantes (pantallas del admin)
+--   Los productos de tipo SERVICIO y PAQUETE son las perforaciones: solo se crean y editan con
+--   las funciones de perforación. Aquí se administran las piezas y artículos con stock (PRODUCTO).
+-- ---------------------------------------------------------------------
+-- Crea (p_id NULL) o edita una categoría. "Perforaciones" es del sistema: fn_crear_perforacion
+-- la busca por su nombre.
+CREATE OR REPLACE FUNCTION fn_guardar_categoria(p_admin bigint, p_id integer, p_nombre text, p_descripcion text DEFAULT NULL)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  IF p_id IS NULL THEN
+    INSERT INTO categoria (nombre, descripcion)
+    VALUES (trim(p_nombre), nullif(trim(p_descripcion), ''))
+    RETURNING id INTO v_id;
+  ELSE
+    IF (SELECT nombre FROM categoria WHERE id = p_id) = 'Perforaciones' AND trim(p_nombre) <> 'Perforaciones' THEN
+      RAISE EXCEPTION 'La categoría "Perforaciones" es del sistema: no se puede renombrar';
+    END IF;
+    UPDATE categoria SET nombre = trim(p_nombre), descripcion = nullif(trim(p_descripcion), '')
+     WHERE id = p_id
+    RETURNING id INTO v_id;
+    IF v_id IS NULL THEN RAISE EXCEPTION 'La categoría % no existe', p_id; END IF;
+  END IF;
+  RETURN v_id;
+END $$;
+
+-- Una categoría inactiva no admite productos nuevos (los que ya tiene siguen igual).
+CREATE OR REPLACE FUNCTION fn_set_categoria_activa(p_admin bigint, p_id integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_nombre text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT nombre INTO v_nombre FROM categoria WHERE id = p_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La categoría % no existe', p_id; END IF;
+  IF NOT p_activa AND v_nombre = 'Perforaciones' THEN
+    RAISE EXCEPTION 'La categoría "Perforaciones" es del sistema: no se puede desactivar';
+  END IF;
+  UPDATE categoria SET activa = p_activa WHERE id = p_id;
+END $$;
+
+-- Crea (p_id NULL) o edita una gama. El modo de precio (TABLA / PIEZA) decide cómo se cobra el
+-- paquete, por eso no se cambia cuando la gama ya tiene piezas o precios.
+CREATE OR REPLACE FUNCTION fn_guardar_gama(p_admin bigint, p_id integer, p_nombre text, p_modo_precio text, p_orden integer DEFAULT 0)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+  g    gama%ROWTYPE;
+  v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  IF p_id IS NULL THEN
+    INSERT INTO gama (nombre, modo_precio, orden)
+    VALUES (trim(p_nombre), upper(trim(p_modo_precio)), coalesce(p_orden, 0))
+    RETURNING id INTO v_id;
+    RETURN v_id;
+  END IF;
+
+  SELECT * INTO g FROM gama WHERE id = p_id FOR UPDATE;
+  IF g.id IS NULL THEN RAISE EXCEPTION 'La gama % no existe', p_id; END IF;
+  IF g.modo_precio <> upper(trim(p_modo_precio))
+     AND (EXISTS (SELECT 1 FROM variante WHERE gama_id = p_id)
+       OR EXISTS (SELECT 1 FROM precio_perforacion_gama WHERE gama_id = p_id)
+       OR EXISTS (SELECT 1 FROM precio_especial_paquete WHERE gama_id = p_id)) THEN
+    RAISE EXCEPTION 'La gama "%" ya tiene piezas o precios: no se puede cambiar su modo de precio', g.nombre;
+  END IF;
+  UPDATE gama SET nombre = trim(p_nombre), modo_precio = upper(trim(p_modo_precio)), orden = coalesce(p_orden, 0)
+   WHERE id = p_id;
+  RETURN p_id;
+END $$;
+
+-- Una gama inactiva deja de mostrarse en la tabla de precios y no admite piezas nuevas.
+CREATE OR REPLACE FUNCTION fn_set_gama_activa(p_admin bigint, p_id integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  UPDATE gama SET activa = p_activa WHERE id = p_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La gama % no existe', p_id; END IF;
+END $$;
+
+-- Crea (p_id NULL) o edita un producto con stock (pieza o artículo). Sus variantes van aparte.
+CREATE OR REPLACE FUNCTION fn_guardar_producto(
+  p_admin bigint, p_id bigint, p_categoria integer, p_nombre text, p_descripcion text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_actual  producto%ROWTYPE;
+  v_cat     categoria%ROWTYPE;
+  v_id      bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  IF p_id IS NOT NULL THEN
+    SELECT * INTO v_actual FROM producto WHERE id = p_id FOR UPDATE;
+    IF v_actual.id IS NULL THEN RAISE EXCEPTION 'El producto % no existe', p_id; END IF;
+    IF v_actual.tipo <> 'PRODUCTO' THEN
+      RAISE EXCEPTION 'Las perforaciones (servicios y paquetes) se editan desde la pantalla de perforaciones';
+    END IF;
+  END IF;
+
+  SELECT * INTO v_cat FROM categoria WHERE id = p_categoria;
+  IF v_cat.id IS NULL THEN RAISE EXCEPTION 'La categoría % no existe', p_categoria; END IF;
+  IF NOT v_cat.activa AND p_categoria IS DISTINCT FROM v_actual.categoria_id THEN
+    RAISE EXCEPTION 'La categoría "%" está inactiva', v_cat.nombre;
+  END IF;
+
+  IF p_id IS NULL THEN
+    INSERT INTO producto (categoria_id, nombre, descripcion, tipo)
+    VALUES (p_categoria, trim(p_nombre), nullif(trim(p_descripcion), ''), 'PRODUCTO')
+    RETURNING id INTO v_id;
+    RETURN v_id;
+  END IF;
+  UPDATE producto SET categoria_id = p_categoria, nombre = trim(p_nombre), descripcion = nullif(trim(p_descripcion), '')
+   WHERE id = p_id;
+  RETURN p_id;
+END $$;
+
+-- Un producto con existencias (en cualquier ubicación o en tránsito) no se desactiva: dejaría de
+-- aparecer en el inventario con mercadería todavía en los estantes.
+CREATE OR REPLACE FUNCTION fn_set_producto_activo(p_admin bigint, p_id bigint, p_activo boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  v        producto%ROWTYPE;
+  v_stock  bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT * INTO v FROM producto WHERE id = p_id FOR UPDATE;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'El producto % no existe', p_id; END IF;
+  IF v.tipo <> 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Las perforaciones (servicios y paquetes) se activan o desactivan desde la pantalla de perforaciones';
+  END IF;
+  IF NOT p_activo THEN
+    SELECT coalesce(sum(fn_stock_total(va.id)), 0) INTO v_stock FROM variante va WHERE va.producto_id = p_id;
+    IF v_stock > 0 THEN
+      RAISE EXCEPTION 'El producto "%" todavía tiene % unidad(es) en existencia o en tránsito: no se puede desactivar',
+            v.nombre, v_stock;
+    END IF;
+  END IF;
+  UPDATE producto SET activo = p_activo WHERE id = p_id;
+END $$;
+
+-- Agrega una variante (lo que realmente se vende) a un producto con stock. Fija su precio, por eso
+-- pide también PRECIOS_EDITAR. Sin nombre queda "Única".
+CREATE OR REPLACE FUNCTION fn_crear_variante(
+  p_admin bigint, p_producto bigint, p_sku text, p_precio_venta numeric, p_nombre text DEFAULT NULL,
+  p_costo numeric DEFAULT 0, p_codigo_barras text DEFAULT NULL, p_gama integer DEFAULT NULL,
+  p_atributos jsonb DEFAULT '{}'::jsonb, p_foto_url text DEFAULT NULL
+) RETURNS bigint
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_tipo text;
+  v_gama gama%ROWTYPE;
+  v_id   bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
+  SELECT tipo INTO v_tipo FROM producto WHERE id = p_producto;
+  IF NOT FOUND THEN RAISE EXCEPTION 'El producto % no existe', p_producto; END IF;
+  IF v_tipo <> 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Las variantes de una perforación las crea el sistema: no se agregan a mano';
+  END IF;
+  IF p_gama IS NOT NULL THEN
+    SELECT * INTO v_gama FROM gama WHERE id = p_gama;
+    IF v_gama.id IS NULL THEN RAISE EXCEPTION 'La gama % no existe', p_gama; END IF;
+    IF NOT v_gama.activa THEN RAISE EXCEPTION 'La gama "%" está inactiva', v_gama.nombre; END IF;
+  END IF;
+
+  INSERT INTO variante (producto_id, sku, codigo_barras, nombre, atributos, precio_venta, costo, gama_id, foto_url)
+  VALUES (p_producto, upper(trim(p_sku)), nullif(trim(p_codigo_barras), ''),
+          coalesce(nullif(trim(p_nombre), ''), 'Única'), coalesce(p_atributos, '{}'::jsonb),
+          p_precio_venta, coalesce(p_costo, 0), p_gama, nullif(trim(p_foto_url), ''))
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+-- Edita los datos de una variante, sin tocar precio ni costo (para eso, fn_set_precio_variante).
+CREATE OR REPLACE FUNCTION fn_actualizar_variante(
+  p_admin bigint, p_variante bigint, p_sku text, p_nombre text, p_codigo_barras text DEFAULT NULL,
+  p_gama integer DEFAULT NULL, p_atributos jsonb DEFAULT '{}'::jsonb, p_foto_url text DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_tipo     text;
+  v_gama_act integer;
+  v_gama     gama%ROWTYPE;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT p.tipo, va.gama_id INTO v_tipo, v_gama_act
+    FROM variante va JOIN producto p ON p.id = va.producto_id
+   WHERE va.id = p_variante
+     FOR UPDATE OF va;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La variante % no existe', p_variante; END IF;
+  IF v_tipo <> 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Las variantes de una perforación no se editan a mano: cambie la perforación';
+  END IF;
+  IF p_gama IS NOT NULL AND p_gama IS DISTINCT FROM v_gama_act THEN
+    SELECT * INTO v_gama FROM gama WHERE id = p_gama;
+    IF v_gama.id IS NULL THEN RAISE EXCEPTION 'La gama % no existe', p_gama; END IF;
+    IF NOT v_gama.activa THEN RAISE EXCEPTION 'La gama "%" está inactiva', v_gama.nombre; END IF;
+  END IF;
+
+  UPDATE variante
+     SET sku = upper(trim(p_sku)), nombre = coalesce(nullif(trim(p_nombre), ''), 'Única'),
+         codigo_barras = nullif(trim(p_codigo_barras), ''), gama_id = p_gama,
+         atributos = coalesce(p_atributos, '{}'::jsonb), foto_url = nullif(trim(p_foto_url), '')
+   WHERE id = p_variante;
+END $$;
+
+-- Precio de venta y costo de una variante (NULL = ese dato no cambia). El cambio queda en
+-- historial_precio. El paquete no lleva precio propio (se calcula con la pieza) y solo las piezas
+-- y artículos llevan costo.
+CREATE OR REPLACE FUNCTION fn_set_precio_variante(
+  p_admin bigint, p_variante bigint, p_precio_venta numeric DEFAULT NULL, p_costo numeric DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_tipo text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
+  SELECT p.tipo INTO v_tipo
+    FROM variante va JOIN producto p ON p.id = va.producto_id
+   WHERE va.id = p_variante
+     FOR UPDATE OF va;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La variante % no existe', p_variante; END IF;
+  IF v_tipo = 'PAQUETE' THEN
+    RAISE EXCEPTION 'El precio de un paquete se calcula con la pieza: use la tabla de precios de perforación';
+  END IF;
+  IF v_tipo <> 'PRODUCTO' AND p_costo IS NOT NULL THEN
+    RAISE EXCEPTION 'Solo las piezas y artículos con stock llevan costo';
+  END IF;
+  UPDATE variante
+     SET precio_venta = coalesce(p_precio_venta, precio_venta), costo = coalesce(p_costo, costo)
+   WHERE id = p_variante;
+END $$;
+
+-- Igual que el producto: una variante con existencias no se desactiva.
+CREATE OR REPLACE FUNCTION fn_set_variante_activa(p_admin bigint, p_variante bigint, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_tipo    text;
+  v_nombre  text;
+  v_stock   bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT p.tipo, p.nombre || ' — ' || va.nombre INTO v_tipo, v_nombre
+    FROM variante va JOIN producto p ON p.id = va.producto_id
+   WHERE va.id = p_variante
+     FOR UPDATE OF va;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La variante % no existe', p_variante; END IF;
+  IF v_tipo <> 'PRODUCTO' THEN
+    RAISE EXCEPTION 'Las perforaciones (servicios y paquetes) se activan o desactivan desde la pantalla de perforaciones';
+  END IF;
+  IF NOT p_activa THEN
+    v_stock := fn_stock_total(p_variante);
+    IF v_stock > 0 THEN
+      RAISE EXCEPTION '"%" todavía tiene % unidad(es) en existencia o en tránsito: no se puede desactivar',
+            v_nombre, v_stock;
+    END IF;
+  END IF;
+  UPDATE variante SET activo = p_activa WHERE id = p_variante;
+END $$;
+
 -- ---------------------------------------------------------------------
 -- 9.6 Compras, costo promedio y alertas
 -- ---------------------------------------------------------------------
@@ -3507,5 +3806,18 @@ SELECT r.id, r.codigo, r.nombre, r.descripcion, r.es_sistema,
               ORDER BY p.codigo) AS permisos,
        (SELECT count(*) FROM usuario u WHERE u.rol_id = r.id AND u.activo) AS usuarios_activos
   FROM rol r;
+
+-- Pantalla "Promociones": cada una con su estado de hoy (hora de Managua) y cuántas ventas la usaron.
+--   VIGENTE = activa y dentro de sus fechas: es la que aparece en el POS (fn_promociones_disponibles)
+CREATE OR REPLACE VIEW v_promociones_admin AS
+SELECT p.id, p.nombre, p.descripcion, p.tipo, p.valor, p.compra_minima, p.vigente_desde, p.vigente_hasta, p.activa,
+       CASE WHEN p.vigente_hasta < h.hoy THEN 'VENCIDA'
+            WHEN NOT p.activa            THEN 'INACTIVA'
+            WHEN p.vigente_desde > h.hoy THEN 'PROGRAMADA'
+            ELSE 'VIGENTE' END AS estado,
+       (SELECT count(*) FROM venta v WHERE v.promocion_id = p.id AND v.estado = 'COMPLETADA') AS ventas,
+       p.created_at, p.updated_at
+  FROM promocion p
+ CROSS JOIN (SELECT (now() AT TIME ZONE 'America/Managua')::date AS hoy) h;
 
 COMMIT;

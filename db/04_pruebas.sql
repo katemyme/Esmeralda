@@ -776,4 +776,145 @@ SELECT pg_temp.afirma((SELECT permisos = :'perm_enc'::text[] FROM v_roles_admin 
                   AND (SELECT permisos = :'perm_ven'::text[] FROM v_roles_admin WHERE codigo = 'VENDEDOR')
                   AND NOT fn_tiene_permiso(:maria, 'ROLES_GESTIONAR'), 'los roles vuelven a sus permisos originales');
 
+\echo '\n=== 19. CATÁLOGO: CATEGORÍAS, PRODUCTOS, VARIANTES, GAMAS Y PERFORACIONES (backend B4)'
+SELECT set_config('app.usuario_id', :'admin', false);
+
+-- Categorías
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L)', :maria, 'Relojes'), 'PRODUCTOS_GESTIONAR');
+SELECT fn_guardar_categoria(:admin, NULL, '  Relojes ', ' Relojes de pulsera ') AS cat_rel \gset
+SELECT pg_temp.afirma((SELECT nombre = 'Relojes' AND descripcion = 'Relojes de pulsera' AND activa FROM categoria WHERE id = :cat_rel), 'categoría nueva, con el texto limpio');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L)', :admin, 'Relojes'), 'duplicate key');
+SELECT fn_guardar_categoria(:admin, :cat_rel, 'Relojes y pulseras', '');
+SELECT pg_temp.afirma((SELECT nombre = 'Relojes y pulseras' AND descripcion IS NULL FROM categoria WHERE id = :cat_rel), 'categoría editada (descripción vacía → sin descripción)');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, 999999, %L)', :admin, 'Nada'), 'La categoría 999999 no existe');
+SELECT id AS cat_perf FROM categoria WHERE nombre = 'Perforaciones' \gset
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, %s, %L)', :admin, :cat_perf, 'Piercings'), 'no se puede renombrar');
+SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_activa(%s, %s, false)', :admin, :cat_perf), 'no se puede desactivar');
+
+-- Productos
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_producto(%s, NULL, %s, %L)', :maria, :cat_rel, 'Reloj'), 'PRODUCTOS_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_producto(%s, NULL, 999999, %L)', :admin, 'Reloj'), 'La categoría 999999 no existe');
+SELECT fn_guardar_producto(:admin, NULL, :cat_rel, ' Reloj clásico ', 'Correa de cuero') AS prod_rel \gset
+SELECT pg_temp.afirma((SELECT nombre = 'Reloj clásico' AND descripcion = 'Correa de cuero' AND tipo = 'PRODUCTO' AND activo FROM producto WHERE id = :prod_rel), 'producto nuevo: siempre de tipo PRODUCTO');
+SELECT fn_set_categoria_activa(:admin, :cat_rel, false);
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_producto(%s, NULL, %s, %L)', :admin, :cat_rel, 'Otro reloj'), 'está inactiva');
+SELECT fn_guardar_producto(:admin, :prod_rel, :cat_rel, 'Reloj clásico dama');
+SELECT pg_temp.afirma((SELECT nombre = 'Reloj clásico dama' AND descripcion IS NULL FROM producto WHERE id = :prod_rel), 'el producto se puede editar aunque su categoría esté inactiva');
+SELECT fn_set_categoria_activa(:admin, :cat_rel, true);
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_producto(%s, 999999, %s, %L)', :admin, :cat_rel, 'Nada'), 'El producto 999999 no existe');
+-- las perforaciones no se editan como productos
+SELECT producto_id AS prod_srv FROM variante WHERE id = :lob \gset
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_producto(%s, %s, %s, %L)', :admin, :prod_srv, :cat_rel, 'Otra cosa'), 'pantalla de perforaciones');
+SELECT pg_temp.espera_error(format('SELECT fn_set_producto_activo(%s, %s, false)', :admin, :prod_srv), 'pantalla de perforaciones');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 100)', :admin, :prod_srv, 'SRV-X'), 'las crea el sistema');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_variante(%s, %s, %L, %L)', :admin, :lob, 'SRV-LOB', 'Otro'), 'no se editan a mano');
+SELECT pg_temp.espera_error(format('SELECT fn_set_variante_activa(%s, %s, false)', :admin, :lob), 'pantalla de perforaciones');
+
+-- Variantes
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 900)', :maria, :prod_rel, 'REL-01'), 'PRODUCTOS_GESTIONAR');
+SELECT fn_crear_variante(:admin, :prod_rel, ' rel-cla-01 ', 900) AS var_rel \gset
+SELECT pg_temp.afirma((SELECT sku = 'REL-CLA-01' AND nombre = 'Única' AND precio_venta = 900 AND costo = 0 AND gama_id IS NULL AND atributos = '{}'::jsonb AND activo
+                         FROM variante WHERE id = :var_rel), 'variante mínima: SKU en mayúsculas, nombre "Única", costo 0');
+SELECT fn_crear_variante(:admin, :prod_rel, 'REL-CLA-02', 1100, 'Dorado', 400, ' 7509990000011 ', NULL, '{"color":"dorado"}', 'https://ejemplo.com/reloj.jpg') AS var_rel2 \gset
+SELECT pg_temp.afirma((SELECT nombre = 'Dorado' AND costo = 400 AND codigo_barras = '7509990000011' AND atributos->>'color' = 'dorado' AND foto_url = 'https://ejemplo.com/reloj.jpg'
+                         FROM variante WHERE id = :var_rel2), 'variante completa: costo, código de barras, atributos y foto');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 900)', :admin, :prod_rel, 'rel-cla-01'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 900, NULL, 0, %L)', :admin, :prod_rel, 'REL-CLA-03', '7509990000011'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, -1)', :admin, :prod_rel, 'REL-CLA-03'), 'check');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, 999999, %L, 900)', :admin, 'REL-CLA-03'), 'El producto 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 900, NULL, 0, NULL, 999999)', :admin, :prod_rel, 'REL-CLA-03'), 'La gama 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_variante(%s, 999999, %L, %L)', :admin, 'X', 'X'), 'La variante 999999 no existe');
+
+-- Con PRODUCTOS_GESTIONAR pero sin PRECIOS_EDITAR: se edita el catálogo, no los precios
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[] || ARRAY['PRODUCTOS_GESTIONAR']);
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, %L, 900)', :maria, :prod_rel, 'REL-CLA-03'), 'PRECIOS_EDITAR');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_variante(%s, %s, 950)', :maria, :var_rel), 'PRECIOS_EDITAR');
+SELECT fn_actualizar_variante(:maria, :var_rel, 'rel-cla-01', 'Plateado', NULL, NULL, '{"color":"plateado"}');
+SELECT pg_temp.afirma((SELECT nombre = 'Plateado' AND sku = 'REL-CLA-01' AND precio_venta = 900 AND atributos->>'color' = 'plateado' FROM variante WHERE id = :var_rel), 'editar la variante no toca su precio');
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[]);
+
+-- Precio y costo
+SELECT count(*) AS hist_antes FROM historial_precio WHERE variante_id = :var_rel \gset
+SELECT fn_set_precio_variante(:admin, :var_rel, 950);
+SELECT pg_temp.afirma((SELECT precio_venta = 950 AND costo = 0 FROM variante WHERE id = :var_rel), 'cambiar solo el precio deja el costo igual');
+SELECT fn_set_precio_variante(:admin, :var_rel, NULL, 380);
+SELECT pg_temp.afirma((SELECT precio_venta = 950 AND costo = 380 FROM variante WHERE id = :var_rel), 'cambiar solo el costo deja el precio igual');
+SELECT pg_temp.afirma((SELECT count(*) FROM historial_precio WHERE variante_id = :var_rel) = :hist_antes + 2
+                  AND (SELECT usuario_id = :admin AND precio_anterior = 950 AND precio_nuevo = 950 AND costo_anterior = 0 AND costo_nuevo = 380
+                         FROM historial_precio WHERE variante_id = :var_rel ORDER BY id DESC LIMIT 1),
+                      'cada cambio de precio o de costo queda en el historial con quién lo hizo');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_variante(%s, %s, -5)', :admin, :var_rel), 'check');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_variante(%s, 999999, 5)', :admin), 'La variante 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_variante(%s, (SELECT paquete_variante_id FROM perforacion WHERE id = %s), 500)', :admin, :p_hlx), 'se calcula con la pieza');
+SELECT pg_temp.espera_error(format('SELECT fn_set_precio_variante(%s, %s, 300, 50)', :admin, :lob), 'llevan costo');
+SELECT fn_set_precio_variante(:admin, :lob, 320);
+SELECT pg_temp.afirma((SELECT precio = 320 + 650 FROM fn_precio_paquete(:p_lob, ARRAY[:lab6]::bigint[])), 'el precio de "solo servicio" de una perforación se cambia igual');
+SELECT fn_set_precio_variante(:admin, :lob, 300);
+
+-- Desactivar: no mientras haya existencias
+SELECT pg_temp.espera_error(format('SELECT fn_set_variante_activa(%s, %s, false)', :admin, :lab6), 'no se puede desactivar');
+SELECT pg_temp.espera_error(format('SELECT fn_set_producto_activo(%s, (SELECT producto_id FROM variante WHERE id = %s), false)', :admin, :lab6), 'no se puede desactivar');
+SELECT fn_set_variante_activa(:admin, :var_rel2, false);
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_buscar_variantes('REL-CLA-02', :lam)) AND EXISTS (SELECT 1 FROM fn_buscar_variantes('REL-CLA-01', :lam)),
+                      'la variante desactivada sale de la búsqueda del POS');
+SELECT fn_set_producto_activo(:admin, :prod_rel, false);
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_buscar_variantes('REL-CLA-01', :lam)), 'el producto desactivado (sin existencias) sale de la búsqueda del POS');
+SELECT fn_set_producto_activo(:admin, :prod_rel, true);
+SELECT fn_set_variante_activa(:admin, :var_rel2, true);
+SELECT fn_movimiento_inventario(:admin, :bod, :var_rel, 'ENTRADA', 3, 'Inventario inicial de relojes', 380);
+SELECT pg_temp.espera_error(format('SELECT fn_set_variante_activa(%s, %s, false)', :admin, :var_rel), 'todavía tiene 3 unidad(es)');
+SELECT pg_temp.espera_error(format('SELECT fn_set_producto_activo(%s, %s, false)', :admin, :prod_rel), 'todavía tiene 3 unidad(es)');
+
+-- Gamas
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_gama(%s, NULL, %L, %L)', :maria, 'Oro 14k', 'PIEZA'), 'PRODUCTOS_GESTIONAR');
+SELECT fn_guardar_gama(:admin, NULL, ' Oro 14k ', 'pieza', 4) AS g_oro \gset
+SELECT pg_temp.afirma((SELECT nombre = 'Oro 14k' AND modo_precio = 'PIEZA' AND orden = 4 AND activa FROM gama WHERE id = :g_oro), 'gama nueva');
+SELECT fn_guardar_gama(:admin, :g_oro, 'Oro 14 k', 'TABLA', 5);
+SELECT pg_temp.afirma((SELECT nombre = 'Oro 14 k' AND modo_precio = 'TABLA' AND orden = 5 FROM gama WHERE id = :g_oro), 'una gama sin uso puede cambiar de modo de precio');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_gama(%s, %s, %L, %L)', :admin, :g_cla, 'Acero clásica', 'PIEZA'), 'no se puede cambiar su modo de precio');
+SELECT fn_guardar_gama(:admin, :g_cla, 'Acero clásica', 'TABLA', 1);
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_gama(%s, 999999, %L, %L)', :admin, 'Nada', 'TABLA'), 'La gama 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_gama(%s, NULL, %L, %L)', :admin, 'Rara', 'OTRO'), 'check');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_gama(%s, NULL, %L, %L)', :admin, 'Titanio', 'PIEZA'), 'duplicate key');
+SELECT fn_set_gama_activa(:admin, :g_oro, false);
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_variante(%s, %s, %L, %L, NULL, %s)', :admin, :var_rel, 'REL-CLA-01', 'Plateado', :g_oro), 'está inactiva');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM v_precios_perforacion WHERE gama_id = :g_oro), 'la gama inactiva no aparece en la tabla de precios');
+SELECT fn_set_gama_activa(:admin, :g_oro, true);
+SELECT fn_actualizar_variante(:admin, :var_rel, 'REL-CLA-01', 'Plateado', NULL, :g_oro);
+SELECT pg_temp.afirma((SELECT gama_id = :g_oro FROM variante WHERE id = :var_rel)
+                  AND (SELECT count(*) FROM v_precios_perforacion WHERE gama_id = :g_oro AND precio_paquete IS NULL) = (SELECT count(*) FROM perforacion),
+                      'la pieza queda en la gama nueva, que aparece en la tabla de precios sin precio todavía');
+SELECT pg_temp.espera_error(format('SELECT fn_set_gama_activa(%s, 999999, false)', :admin), 'La gama 999999 no existe');
+
+-- Perforaciones: editar y desactivar
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_perforacion(%s, %s, %L, 1)', :maria, :p_trg, 'Trago'), 'PRODUCTOS_GESTIONAR');
+SELECT fn_actualizar_perforacion(:admin, :p_trg, ' Tragus doble ', 2);
+SELECT pg_temp.afirma((SELECT nombre = 'Tragus doble' AND piezas_por_paquete = 2 AND codigo = 'TRG' FROM perforacion WHERE id = :p_trg)
+                  AND (SELECT count(*) FROM producto WHERE nombre IN ('Perforación Tragus doble', 'Perforación Tragus doble con pieza')) = 2,
+                      'renombrar la perforación renombra sus dos entradas del catálogo');
+SELECT pg_temp.afirma((SELECT precio = 400 + 650 + 650 FROM fn_precio_paquete(:p_trg, ARRAY[:lab6, :lab8]::bigint[])), 'el paquete pasa a llevar 2 piezas');
+SELECT fn_actualizar_perforacion(:admin, :p_trg, 'Tragus', 1);
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_perforacion(%s, 999999, %L, 1)', :admin, 'Nada'), 'La perforación 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_perforacion(%s, %s, %L, 9)', :admin, :p_trg, 'Tragus'), 'check');
+SELECT fn_set_perforacion_activa(:admin, :p_trg, false);
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_buscar_variantes('tragus', :lam)), 'la perforación desactivada sale de la búsqueda del POS (servicio y paquete)');
+SELECT pg_temp.espera_error(format('SELECT * FROM fn_precio_paquete(%s, ARRAY[%s]::bigint[])', :p_trg, :lab6), 'no existe o está inactiva');
+SELECT fn_set_perforacion_activa(:admin, :p_trg, true);
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_buscar_variantes('tragus', :lam)) = 2, 'al reactivarla vuelven sus dos entradas');
+SELECT pg_temp.espera_error(format('SELECT fn_set_perforacion_activa(%s, 999999, false)', :admin), 'La perforación 999999 no existe');
+
+-- Promociones: estado de cada una para la pantalla del admin
+SELECT fn_guardar_promocion(:admin, NULL, 'Vencida B4', 'MONTO', 50, 0, current_date - 20, current_date - 10) AS promo_venc \gset
+SELECT fn_set_promocion_activa(:admin, :promo_venc, true);
+SELECT fn_guardar_promocion(:admin, NULL, 'Programada B4', 'MONTO', 50, 0, current_date + 10, current_date + 20) AS promo_prog \gset
+SELECT fn_set_promocion_activa(:admin, :promo_prog, true);
+SELECT pg_temp.afirma((SELECT estado FROM v_promociones_admin WHERE id = :promo_venc) = 'VENCIDA'
+                  AND (SELECT estado FROM v_promociones_admin WHERE id = :promo_prog) = 'PROGRAMADA'
+                  AND (SELECT estado = 'VIGENTE' AND ventas = 1 FROM v_promociones_admin WHERE id = :promo40)
+                  AND (SELECT estado FROM v_promociones_admin WHERE nombre = 'Black Friday 20 %') = 'INACTIVA',
+                      'la pantalla de promociones muestra el estado de cada una y cuántas ventas la usaron');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_promociones_disponibles() d JOIN v_promociones_admin p ON p.id = d.promocion_id WHERE p.estado <> 'VIGENTE')
+                  AND (SELECT count(*) FROM fn_promociones_disponibles()) = (SELECT count(*) FROM v_promociones_admin WHERE estado = 'VIGENTE'),
+                      'VIGENTE coincide con lo que ofrece el POS');
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'
