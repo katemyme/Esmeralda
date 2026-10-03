@@ -917,4 +917,118 @@ SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_promociones_disponibles() d J
                   AND (SELECT count(*) FROM fn_promociones_disponibles()) = (SELECT count(*) FROM v_promociones_admin WHERE estado = 'VIGENTE'),
                       'VIGENTE coincide con lo que ofrece el POS');
 
+\echo '\n=== 20. PENDIENTES DEL PANEL: PARÁMETROS CON MÍNIMO, SUCURSALES, CAJAS, ROLES, DESBLOQUEO Y FOTOS'
+SELECT set_config('app.usuario_id', :'admin', false);
+
+-- Parámetros con mínimo: una sesión de 0 horas se cerraría sola al instante
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'SESION_HORAS_EQUIPO', '0'), 'no puede ser menor que 1');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'SESION_DIAS_SIN_EQUIPO', '0.5'), 'no puede ser menor que 1');
+SELECT fn_set_parametro(:admin, 'SESION_HORAS_EQUIPO', '1');
+SELECT fn_set_parametro(:admin, 'CAJA_TOLERANCIA_DIFERENCIA_NIO', '0');
+SELECT pg_temp.afirma(fn_parametro_num('SESION_HORAS_EQUIPO') = 1 AND fn_parametro_num('CAJA_TOLERANCIA_DIFERENCIA_NIO') = 0,
+                      'el mínimo se acepta, y los parámetros sin mínimo siguen aceptando 0');
+SELECT fn_set_parametro(:admin, 'SESION_HORAS_EQUIPO', '12');
+SELECT fn_set_parametro(:admin, 'CAJA_TOLERANCIA_DIFERENCIA_NIO', '100');
+SELECT pg_temp.espera_error($q$UPDATE parametro SET minimo = 1 WHERE clave = 'CAJA_HORA_ALERTA_CIERRE'$q$, 'ck_parametro_minimo');
+
+-- Sucursales
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_sucursal(%s, NULL, %L, %L)', :maria, 'MET', 'Metrocentro'), 'SUCURSALES_GESTIONAR');
+SELECT fn_guardar_sucursal(:admin, NULL, ' met ', ' Metrocentro ', 'Metrocentro, Managua', '2222-0000') AS suc_met \gset
+SELECT pg_temp.afirma((SELECT codigo = 'MET' AND nombre = 'Metrocentro' AND tipo = 'SUCURSAL' AND telefono = '2222-0000' AND activa FROM sucursal WHERE id = :suc_met),
+                      'sucursal nueva: siempre de venta, con el código en mayúsculas');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_sucursal(%s, NULL, %L, %L)', :admin, 'MET', 'Otra'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_sucursal(%s, NULL, %L, %L)', :admin, 'M1', 'Otra'), 'check');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_sucursal(%s, 999999, %L, %L)', :admin, 'XXX', 'Nada'), 'La sucursal 999999 no existe');
+SELECT fn_guardar_sucursal(:admin, :suc_met, 'MTC', 'Metrocentro Managua');
+SELECT pg_temp.afirma((SELECT codigo = 'MTC' AND nombre = 'Metrocentro Managua' AND direccion IS NULL FROM sucursal WHERE id = :suc_met), 'sin ventas, la sucursal puede cambiar de código');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_sucursal(%s, %s, %L, %L)', :admin, :lam, 'AME', 'Multicentro Las Américas'), 'no se puede cambiar');
+SELECT fn_guardar_sucursal(:admin, :lam, 'LAM', 'Multicentro Las Américas', 'Multicentro Las Américas, Managua', '2277-0000');
+SELECT pg_temp.afirma((SELECT telefono = '2277-0000' FROM sucursal WHERE id = :lam), 'con ventas, la sucursal se edita si conserva su código');
+SELECT fn_guardar_sucursal(:admin, :bod, 'BOD', 'Bodega central', 'Casa del dueño');
+SELECT pg_temp.afirma((SELECT tipo = 'BODEGA' AND direccion = 'Casa del dueño' FROM sucursal WHERE id = :bod), 'la bodega se puede editar y sigue siendo la bodega');
+
+-- Cajas
+SELECT pg_temp.espera_error(format('SELECT fn_crear_caja(%s, %s, %L)', :maria, :suc_met, 'Caja 1'), 'SUCURSALES_GESTIONAR');
+SELECT fn_crear_caja(:admin, :suc_met, ' Caja 1 ') AS caja_met \gset
+SELECT pg_temp.espera_error(format('SELECT fn_crear_caja(%s, %s, %L)', :admin, :suc_met, 'Caja 1'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_caja(%s, %s, %L)', :admin, :bod, 'Caja bodega'), 'la bodega no vende');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_caja(%s, 999999, %L)', :admin, 'Caja'), 'La sucursal 999999 no existe');
+SELECT fn_renombrar_caja(:admin, :caja_met, 'Caja principal');
+SELECT pg_temp.afirma((SELECT nombre = 'Caja principal' AND activa FROM caja WHERE id = :caja_met), 'caja creada y renombrada');
+SELECT pg_temp.espera_error(format('SELECT fn_renombrar_caja(%s, 999999, %L)', :admin, 'Nada'), 'La caja 999999 no existe');
+
+-- Desactivar una caja o una sucursal: no con un turno abierto, envíos en tránsito o existencias
+SELECT fn_abrir_turno(:admin, :caja_met, 0, 0) AS turno_met \gset
+SELECT pg_temp.espera_error(format('SELECT fn_set_caja_activa(%s, %s, false)', :admin, :caja_met), 'tiene un turno abierto');
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :admin, :suc_met), 'tiene un turno de caja abierto');
+SELECT fn_cierre_forzado(:admin, :turno_met, 'Prueba de desactivación de la sucursal');
+SELECT fn_crear_envio(:admin, :bod, :suc_met, 'Prueba') AS env_met \gset
+SELECT fn_envio_set_linea(:admin, :env_met, :lab6, 1);
+SELECT fn_enviar(:admin, :env_met);
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :admin, :suc_met), 'tiene envíos en tránsito');
+SELECT * FROM fn_recibir_envio(:admin, :env_met, format('[{"variante_id":%s,"cantidad":1}]', :lab6)::jsonb);
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :admin, :suc_met), 'todavía tiene 1 unidad(es) en existencia');
+SELECT fn_crear_envio(:admin, :suc_met, :bod, 'Devolución') AS env_met2 \gset
+SELECT fn_envio_set_linea(:admin, :env_met2, :lab6, 1);
+SELECT fn_enviar(:admin, :env_met2);
+SELECT * FROM fn_recibir_envio(:admin, :env_met2, format('[{"variante_id":%s,"cantidad":1}]', :lab6)::jsonb);
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :maria, :suc_met), 'SUCURSALES_GESTIONAR');
+SELECT fn_set_sucursal_activa(:admin, :suc_met, false);
+SELECT pg_temp.afirma((SELECT NOT activa FROM sucursal WHERE id = :suc_met), 'sucursal vacía desactivada');
+SELECT pg_temp.espera_error(format('SELECT fn_abrir_turno(%s, %s, 0, 0)', :admin, :caja_met), 'está inactiva');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_envio(%s, %s, %s)', :admin, :bod, :suc_met), 'inexistente o inactivo');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_consultar_stock(:admin, :lab6) WHERE sucursal_id = :suc_met), 'la sucursal inactiva sale de la consulta de existencias');
+SELECT fn_set_sucursal_activa(:admin, :suc_met, true);
+SELECT fn_set_caja_activa(:admin, :caja_met, false);
+SELECT pg_temp.espera_error(format('SELECT fn_abrir_turno(%s, %s, 0, 0)', :admin, :caja_met), 'no existe o está inactiva');
+SELECT fn_set_caja_activa(:admin, :caja_met, true);
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :admin, :bod), 'La bodega central no se puede desactivar');
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, %s, false)', :admin, :lam), 'todavía tiene');
+SELECT pg_temp.espera_error(format('SELECT fn_set_sucursal_activa(%s, 999999, false)', :admin), 'La sucursal 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_set_caja_activa(%s, 999999, false)', :admin), 'La caja 999999 no existe');
+
+-- Roles nuevos
+SELECT pg_temp.espera_error(format('SELECT fn_crear_rol(%s, %L, %L)', :maria, 'SUPERVISOR', 'Supervisor'), 'ROLES_GESTIONAR');
+SELECT fn_crear_rol(:admin, ' supervisor ', ' Supervisor ', 'Revisa cajas') AS rol_sup \gset
+SELECT pg_temp.afirma((SELECT codigo = 'SUPERVISOR' AND nombre = 'Supervisor' AND NOT es_sistema AND editable AND permisos = '{}'::text[] AND usuarios = 0
+                         FROM v_roles_admin WHERE id = :rol_sup), 'rol nuevo: sin permisos y no es de sistema');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_rol(%s, %L, %L)', :admin, 'SUPERVISOR', 'Otro'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_rol(%s, %L, %L)', :admin, 'jefe 1', 'Otro'), 'check');
+SELECT fn_set_permisos_rol(:admin, 'SUPERVISOR', ARRAY['CAJA_VER_DIFERENCIAS', 'REPORTES_VER']);
+SELECT fn_actualizar_rol(:admin, 'supervisor', 'Supervisora', '');
+SELECT pg_temp.afirma((SELECT nombre = 'Supervisora' AND descripcion IS NULL AND cardinality(permisos) = 2 FROM v_roles_admin WHERE id = :rol_sup),
+                      'rol editado: cambia nombre y descripción, conserva sus permisos');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_rol(%s, %L, %L)', :admin, 'GERENTE', 'Gerente'), 'Rol inexistente');
+SELECT fn_actualizar_usuario(:admin, :carlos, 'Carlos Ruiz', 'SUPERVISOR', ARRAY[:lbr]);
+SELECT pg_temp.afirma(fn_tiene_permiso(:carlos, 'REPORTES_VER') AND NOT fn_tiene_permiso(:carlos, 'VENTAS_REGISTRAR')
+                  AND (SELECT usuarios = 1 AND usuarios_activos = 1 FROM v_roles_admin WHERE id = :rol_sup), 'el usuario toma los permisos de su rol nuevo');
+SELECT pg_temp.espera_error(format('SELECT fn_eliminar_rol(%s, %L)', :admin, 'SUPERVISOR'), 'tiene 1 usuario(s)');
+SELECT fn_actualizar_usuario(:admin, :carlos, 'Carlos Ruiz', 'VENDEDOR', ARRAY[:lbr]);
+SELECT pg_temp.espera_error(format('SELECT fn_eliminar_rol(%s, %L)', :admin, 'VENDEDOR'), 'es de sistema');
+SELECT pg_temp.espera_error(format('SELECT fn_eliminar_rol(%s, %L)', :maria, 'SUPERVISOR'), 'ROLES_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_eliminar_rol(%s, %L)', :admin, 'GERENTE'), 'Rol inexistente');
+SELECT fn_eliminar_rol(:admin, 'SUPERVISOR');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM rol WHERE codigo = 'SUPERVISOR') AND NOT EXISTS (SELECT 1 FROM rol_permiso WHERE rol_id = :rol_sup),
+                      'rol eliminado junto con sus permisos');
+
+-- Desbloquear una cuenta sin cambiarle la contraseña
+SELECT fn_registrar_login('ana.martinez', false) FROM generate_series(1, 5);
+SELECT pg_temp.afirma((SELECT estado FROM v_usuarios_admin WHERE id = :ana) = 'BLOQUEADO', 'cuenta bloqueada por 5 contraseñas incorrectas');
+SELECT password_hash AS hash_ana FROM usuario WHERE id = :ana \gset
+SELECT pg_temp.espera_error(format('SELECT fn_desbloquear_usuario(%s, %s)', :maria, :ana), 'USUARIOS_GESTIONAR');
+SELECT fn_desbloquear_usuario(:admin, :ana);
+SELECT pg_temp.afirma((SELECT estado = 'ACTIVO' AND intentos_fallidos = 0 AND bloqueado_hasta IS NULL FROM v_usuarios_admin WHERE id = :ana)
+                  AND (SELECT password_hash = :'hash_ana' FROM usuario WHERE id = :ana), 'desbloquear no cambia la contraseña');
+SELECT pg_temp.espera_error(format('SELECT fn_desbloquear_usuario(%s, 999999)', :admin), 'Usuario 999999 no existe');
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[] || ARRAY['USUARIOS_GESTIONAR']);
+SELECT pg_temp.espera_error(format('SELECT fn_desbloquear_usuario(%s, %s)', :maria, :admin), 'Solo un administrador puede modificar a otro administrador');
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[]);
+
+-- Foto de una variante
+SELECT pg_temp.espera_error(format('SELECT fn_set_foto_variante(%s, %s, %L)', :maria, :lab6, '/api/fotos/x.jpg'), 'PRODUCTOS_GESTIONAR');
+SELECT pg_temp.afirma(fn_set_foto_variante(:admin, :lab6, ' /api/fotos/labret.jpg ') IS NULL, 'primera foto: no había una anterior');
+SELECT pg_temp.afirma(fn_set_foto_variante(:admin, :lab6, NULL) = '/api/fotos/labret.jpg', 'al cambiar o quitar la foto se devuelve la anterior (para borrar su archivo)');
+SELECT pg_temp.afirma((SELECT foto_url IS NULL FROM variante WHERE id = :lab6), 'foto quitada');
+SELECT pg_temp.espera_error(format('SELECT fn_set_foto_variante(%s, 999999, NULL)', :admin), 'La variante 999999 no existe');
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

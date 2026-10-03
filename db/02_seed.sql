@@ -103,20 +103,21 @@ UNION ALL SELECT 'USD', v, 'MONEDA' FROM unnest(ARRAY[0.01, 0.05, 0.10, 0.25, 0.
 -- ---------------------------------------------------------------------
 -- Parámetros
 -- ---------------------------------------------------------------------
-INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, descripcion) VALUES
-  ('VENTA_SOBREPRECIO_MAX_PCT', '50', 'NUMERO', NULL, true,
+--   minimo: valor más bajo que se acepta (solo números). Una sesión de 0 horas se cerraría sola al instante.
+INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo, descripcion) VALUES
+  ('VENTA_SOBREPRECIO_MAX_PCT', '50', 'NUMERO', NULL, true, NULL,
    'Aumento máximo (%) que se puede cobrar sobre el precio establecido. Vacío = sin límite. Nunca se permite cobrar menos.'),
-  ('MARGEN_MINIMO_ALERTA_PCT', '40', 'NUMERO', NULL, false,
+  ('MARGEN_MINIMO_ALERTA_PCT', '40', 'NUMERO', NULL, false, NULL,
    'Si una compra deja el margen de un producto por debajo de este %, se alerta al administrador.'),
-  ('CAJA_TOLERANCIA_DIFERENCIA_NIO', '100', 'NUMERO', NULL, false,
+  ('CAJA_TOLERANCIA_DIFERENCIA_NIO', '100', 'NUMERO', NULL, false, NULL,
    'Diferencia de arqueo (en C$, dólares convertidos) a partir de la cual se exige justificación y se alerta.'),
-  ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false,
+  ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false, NULL,
    'Hora (Managua) a la que se alerta si una caja sigue sin cerrar.'),
-  ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false,
+  ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false, NULL,
    'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.'),
-  ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false,
+  ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false, 1,
    'Horas que dura una sesión iniciada en un equipo registrado (caja, tablet); luego se pide usuario y contraseña de nuevo.'),
-  ('SESION_DIAS_SIN_EQUIPO', '7', 'NUMERO', NULL, false,
+  ('SESION_DIAS_SIN_EQUIPO', '7', 'NUMERO', NULL, false, 1,
    'Días que dura una sesión iniciada fuera de un equipo registrado (solo el administrador puede entrar así).');
 
 -- ---------------------------------------------------------------------

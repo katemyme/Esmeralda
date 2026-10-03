@@ -268,6 +268,7 @@ export interface MovimientoInventario {
 export interface Parametro {
   clave: string;
   descripcion: string;
+  minimo: Numeric | null;
   opciones: string[] | null;
   permite_vacio: Generated<boolean>;
   tipo_valor: Generated<string>;
@@ -678,6 +679,7 @@ export interface VRolesAdmin {
   id: number | null;
   nombre: string | null;
   permisos: string[] | null;
+  usuarios: number | null;
   usuarios_activos: number | null;
 }
 

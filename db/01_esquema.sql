@@ -704,9 +704,11 @@ CREATE TABLE parametro (
   tipo_valor   varchar(10)  NOT NULL DEFAULT 'TEXTO' CHECK (tipo_valor IN ('NUMERO','HORA','OPCION','TEXTO')),
   opciones     text[],                       -- valores válidos cuando tipo_valor = 'OPCION'
   permite_vacio boolean     NOT NULL DEFAULT false,
+  minimo       numeric,                      -- valor mínimo cuando tipo_valor = 'NUMERO' (NULL = de 0 en adelante)
   descripcion  varchar(300) NOT NULL,
   updated_at   timestamptz  NOT NULL DEFAULT now(),
-  CONSTRAINT ck_parametro_opciones CHECK ((tipo_valor = 'OPCION') = (opciones IS NOT NULL))
+  CONSTRAINT ck_parametro_opciones CHECK ((tipo_valor = 'OPCION') = (opciones IS NOT NULL)),
+  CONSTRAINT ck_parametro_minimo CHECK (minimo IS NULL OR tipo_valor = 'NUMERO')
 );
 
 -- El panel no puede guardar un valor con formato inválido
@@ -724,6 +726,9 @@ BEGIN
     WHEN 'NUMERO' THEN
       IF v !~ '^[0-9]+(\.[0-9]+)?$' THEN
         RAISE EXCEPTION 'El parámetro % debe ser un número positivo (recibido: %)', NEW.clave, v;
+      END IF;
+      IF NEW.minimo IS NOT NULL AND v::numeric < NEW.minimo THEN
+        RAISE EXCEPTION 'El parámetro % no puede ser menor que % (recibido: %)', NEW.clave, NEW.minimo, v;
       END IF;
     WHEN 'HORA' THEN
       IF v !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' THEN
@@ -1418,6 +1423,9 @@ BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'CAJA_ABRIR');
   SELECT sucursal_id INTO v_sucursal FROM caja WHERE id = p_caja AND activa;
   IF v_sucursal IS NULL THEN RAISE EXCEPTION 'La caja % no existe o está inactiva', p_caja; END IF;
+  IF NOT (SELECT activa FROM sucursal WHERE id = v_sucursal) THEN
+    RAISE EXCEPTION 'La sucursal de la caja % está inactiva', p_caja;
+  END IF;
   PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
   IF EXISTS (SELECT 1 FROM turno_caja WHERE caja_id = p_caja AND estado = 'ABIERTO') THEN
     RAISE EXCEPTION 'La caja % ya tiene un turno abierto: ciérrelo antes de abrir otro', p_caja;
@@ -2625,6 +2633,20 @@ BEGIN
   UPDATE variante SET activo = p_activa WHERE id = p_variante;
 END $$;
 
+-- Foto de una variante: la dirección que guarda el backend al subir la imagen (NULL la quita).
+-- Devuelve la foto anterior, para que el backend borre ese archivo.
+CREATE OR REPLACE FUNCTION fn_set_foto_variante(p_admin bigint, p_variante bigint, p_foto_url text)
+RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE v_anterior text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  SELECT foto_url INTO v_anterior FROM variante WHERE id = p_variante FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La variante % no existe', p_variante; END IF;
+  UPDATE variante SET foto_url = nullif(trim(p_foto_url), '') WHERE id = p_variante;
+  RETURN v_anterior;
+END $$;
+
 -- ---------------------------------------------------------------------
 -- 9.6 Compras, costo promedio y alertas
 -- ---------------------------------------------------------------------
@@ -3553,6 +3575,165 @@ BEGIN
   ON CONFLICT DO NOTHING;
 END $$;
 
+-- Rol nuevo. Nace sin permisos: se le dan con fn_set_permisos_rol.
+CREATE OR REPLACE FUNCTION fn_crear_rol(p_admin bigint, p_codigo text, p_nombre text, p_descripcion text DEFAULT NULL)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'ROLES_GESTIONAR');
+  INSERT INTO rol (codigo, nombre, descripcion, es_sistema)
+  VALUES (upper(trim(p_codigo)), trim(p_nombre), nullif(trim(p_descripcion), ''), false)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_actualizar_rol(p_admin bigint, p_codigo text, p_nombre text, p_descripcion text DEFAULT NULL)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'ROLES_GESTIONAR');
+  UPDATE rol SET nombre = trim(p_nombre), descripcion = nullif(trim(p_descripcion), '')
+   WHERE codigo = upper(trim(p_codigo));
+  IF NOT FOUND THEN RAISE EXCEPTION 'Rol inexistente: %', p_codigo; END IF;
+END $$;
+
+-- Solo se elimina un rol que no es de sistema y que ya no tiene usuarios (activos o no).
+CREATE OR REPLACE FUNCTION fn_eliminar_rol(p_admin bigint, p_codigo text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  r          rol%ROWTYPE;
+  v_usuarios integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'ROLES_GESTIONAR');
+  SELECT * INTO r FROM rol WHERE codigo = upper(trim(p_codigo)) FOR UPDATE;
+  IF r.id IS NULL THEN RAISE EXCEPTION 'Rol inexistente: %', p_codigo; END IF;
+  IF r.es_sistema THEN RAISE EXCEPTION 'El rol % es de sistema y no se puede eliminar', r.codigo; END IF;
+  SELECT count(*) INTO v_usuarios FROM usuario WHERE rol_id = r.id;
+  IF v_usuarios > 0 THEN
+    RAISE EXCEPTION 'El rol % tiene % usuario(s): asígneles otro rol antes de eliminarlo', r.codigo, v_usuarios;
+  END IF;
+  DELETE FROM rol WHERE id = r.id;
+END $$;
+
+-- Desbloquea una cuenta bloqueada por contraseñas incorrectas, sin cambiarle la contraseña.
+CREATE OR REPLACE FUNCTION fn_desbloquear_usuario(p_admin bigint, p_usuario bigint)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
+  UPDATE usuario SET intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = p_usuario;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
+END $$;
+
+-- ---------------------------------------------------------------------
+-- 9.4c Panel de administración: sucursales y cajas
+-- ---------------------------------------------------------------------
+-- Crea (p_id NULL) o edita una ubicación. Las nuevas son siempre sucursales de venta: la bodega
+-- central es única y viene con el sistema. El código es el prefijo de las facturas (LAM-00000001),
+-- por eso no cambia cuando la sucursal ya tiene ventas.
+CREATE OR REPLACE FUNCTION fn_guardar_sucursal(
+  p_admin bigint, p_id integer, p_codigo text, p_nombre text, p_direccion text DEFAULT NULL, p_telefono text DEFAULT NULL
+) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+  v         sucursal%ROWTYPE;
+  v_id      integer;
+  v_codigo  text := upper(trim(p_codigo));
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  IF p_id IS NULL THEN
+    INSERT INTO sucursal (codigo, nombre, tipo, direccion, telefono)
+    VALUES (v_codigo, trim(p_nombre), 'SUCURSAL', nullif(trim(p_direccion), ''), nullif(trim(p_telefono), ''))
+    RETURNING id INTO v_id;
+    RETURN v_id;
+  END IF;
+
+  SELECT * INTO v FROM sucursal WHERE id = p_id FOR UPDATE;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La sucursal % no existe', p_id; END IF;
+  IF v.codigo <> v_codigo AND EXISTS (SELECT 1 FROM venta WHERE sucursal_id = p_id) THEN
+    RAISE EXCEPTION '"%" ya tiene ventas: su código (%) es el prefijo de las facturas y no se puede cambiar',
+          v.nombre, v.codigo;
+  END IF;
+  UPDATE sucursal
+     SET codigo = v_codigo, nombre = trim(p_nombre),
+         direccion = nullif(trim(p_direccion), ''), telefono = nullif(trim(p_telefono), '')
+   WHERE id = p_id;
+  RETURN p_id;
+END $$;
+
+-- Una ubicación inactiva sale del inventario y de los envíos, y no se abren turnos en sus cajas.
+-- No se desactiva la bodega central, ni una ubicación con existencias, con un turno de caja abierto
+-- o con envíos en tránsito.
+CREATE OR REPLACE FUNCTION fn_set_sucursal_activa(p_admin bigint, p_id integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  v        sucursal%ROWTYPE;
+  v_stock  bigint;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  SELECT * INTO v FROM sucursal WHERE id = p_id FOR UPDATE;
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La sucursal % no existe', p_id; END IF;
+
+  IF NOT p_activa THEN
+    IF v.tipo = 'BODEGA' THEN
+      RAISE EXCEPTION 'La bodega central no se puede desactivar: por ella entra toda la mercadería';
+    END IF;
+    SELECT coalesce(sum(cantidad), 0) INTO v_stock FROM stock_sucursal WHERE sucursal_id = p_id;
+    IF v_stock > 0 THEN
+      RAISE EXCEPTION '"%" todavía tiene % unidad(es) en existencia: envíelas a otra ubicación antes de desactivarla',
+            v.nombre, v_stock;
+    END IF;
+    IF EXISTS (SELECT 1 FROM turno_caja t JOIN caja c ON c.id = t.caja_id
+                WHERE c.sucursal_id = p_id AND t.estado = 'ABIERTO') THEN
+      RAISE EXCEPTION '"%" tiene un turno de caja abierto: ciérrelo antes de desactivarla', v.nombre;
+    END IF;
+    IF EXISTS (SELECT 1 FROM envio WHERE estado = 'EN_TRANSITO' AND p_id IN (origen_id, destino_id)) THEN
+      RAISE EXCEPTION '"%" tiene envíos en tránsito: recíbalos antes de desactivarla', v.nombre;
+    END IF;
+  END IF;
+  UPDATE sucursal SET activa = p_activa WHERE id = p_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_crear_caja(p_admin bigint, p_sucursal integer, p_nombre text)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_id integer;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  IF NOT EXISTS (SELECT 1 FROM sucursal WHERE id = p_sucursal) THEN
+    RAISE EXCEPTION 'La sucursal % no existe', p_sucursal;
+  END IF;
+  INSERT INTO caja (sucursal_id, nombre) VALUES (p_sucursal, trim(p_nombre))
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END $$;
+
+CREATE OR REPLACE FUNCTION fn_renombrar_caja(p_admin bigint, p_caja integer, p_nombre text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  UPDATE caja SET nombre = trim(p_nombre) WHERE id = p_caja;
+  IF NOT FOUND THEN RAISE EXCEPTION 'La caja % no existe', p_caja; END IF;
+END $$;
+
+-- En una caja inactiva no se abren turnos; no se desactiva con un turno abierto.
+CREATE OR REPLACE FUNCTION fn_set_caja_activa(p_admin bigint, p_caja integer, p_activa boolean)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'SUCURSALES_GESTIONAR');
+  IF NOT EXISTS (SELECT 1 FROM caja WHERE id = p_caja) THEN RAISE EXCEPTION 'La caja % no existe', p_caja; END IF;
+  IF NOT p_activa AND EXISTS (SELECT 1 FROM turno_caja WHERE caja_id = p_caja AND estado = 'ABIERTO') THEN
+    RAISE EXCEPTION 'La caja % tiene un turno abierto: ciérrelo antes de desactivarla', p_caja;
+  END IF;
+  UPDATE caja SET activa = p_activa WHERE id = p_caja;
+END $$;
+
 -- =====================================================================
 -- 10. VISTAS DE REPORTES Y PANEL
 -- =====================================================================
@@ -3804,7 +3985,8 @@ SELECT r.id, r.codigo, r.nombre, r.descripcion, r.es_sistema,
               WHERE r.codigo = 'ADMIN'
                  OR EXISTS (SELECT 1 FROM rol_permiso rp WHERE rp.rol_id = r.id AND rp.permiso_id = p.id)
               ORDER BY p.codigo) AS permisos,
-       (SELECT count(*) FROM usuario u WHERE u.rol_id = r.id AND u.activo) AS usuarios_activos
+       (SELECT count(*) FROM usuario u WHERE u.rol_id = r.id AND u.activo) AS usuarios_activos,
+       (SELECT count(*) FROM usuario u WHERE u.rol_id = r.id) AS usuarios     -- con usuarios no se elimina
   FROM rol r;
 
 -- Pantalla "Promociones": cada una con su estado de hoy (hora de Managua) y cuántas ventas la usaron.
