@@ -758,6 +758,18 @@ SELECT pg_temp.afirma(fn_tiene_permiso(:carlos, 'VENTAS_ANULAR') AND fn_tiene_pe
 SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :maria, 'VENDEDOR', '{VENTAS_REGISTRAR,INVENTARIO_ENTRADA}'),
                             'No puede otorgar un permiso que usted no tiene: INVENTARIO_ENTRADA');
 
+-- Con USUARIOS_GESTIONAR la encargada administra a los vendedores, pero no puede tocar a un administrador
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[] || ARRAY['USUARIOS_GESTIONAR']);
+SELECT pg_temp.espera_error(format('SELECT fn_resetear_password(%s, %s, %L)', :maria, :admin, 'hash-ajeno'), 'Solo un administrador puede modificar a otro administrador');
+SELECT pg_temp.espera_error(format('SELECT fn_set_usuario_activo(%s, %s, false)', :maria, :admin), 'Solo un administrador puede modificar a otro administrador');
+SELECT pg_temp.espera_error(format('SELECT fn_revocar_sesiones(%s, %s)', :maria, :admin), 'Solo un administrador puede modificar a otro administrador');
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_usuario(%s, %s, %L, %L, %L)', :maria, :admin, 'Administrador', 'VENDEDOR', '{}'), 'Solo un administrador puede modificar a otro administrador');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_usuario(%s, %L, %L, %L, %L)', :maria, 'Otra Jefa', 'otra.jefa', 'hash', 'ADMIN'), 'Solo un administrador puede asignar el rol ADMIN');
+SELECT pg_temp.afirma((SELECT password_hash <> 'hash-ajeno' AND activo FROM usuario WHERE id = :admin), 'el administrador sigue intacto');
+SELECT fn_resetear_password(:maria, :carlos, 'hash-temporal-carlos');
+SELECT pg_temp.afirma((SELECT password_hash = 'hash-temporal-carlos' AND debe_cambiar_password FROM usuario WHERE id = :carlos),
+                      'con USUARIOS_GESTIONAR la encargada sí puede resetear la contraseña de un vendedor');
+
 SELECT fn_set_permisos_rol(:admin, 'VENDEDOR', :'perm_ven'::text[]);
 SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[]);
 SELECT pg_temp.afirma((SELECT permisos = :'perm_enc'::text[] FROM v_roles_admin WHERE codigo = 'ENCARGADO')

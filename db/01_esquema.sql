@@ -3098,6 +3098,21 @@ BEGIN
   RETURN v_rol;
 END $$;
 
+-- Solo un administrador puede modificar a otro administrador: editarlo, desactivarlo, resetear su
+-- contraseña o cerrar sus sesiones. Sin esto, quien tuviera USUARIOS_GESTIONAR sin ser admin podría
+-- resetear la contraseña de un administrador y entrar como él.
+CREATE OR REPLACE FUNCTION fn_exigir_gestion_usuario(p_admin bigint, p_usuario bigint) RETURNS void
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+              WHERE u.id = p_usuario AND r.codigo = 'ADMIN')
+     AND NOT EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
+                      WHERE u.id = p_admin AND r.codigo = 'ADMIN') THEN
+    RAISE EXCEPTION 'Solo un administrador puede modificar a otro administrador'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION fn_crear_usuario(
   p_admin bigint, p_nombre text, p_username text, p_password_hash text,
   p_rol_codigo text, p_sucursales integer[] DEFAULT '{}',
@@ -3130,15 +3145,7 @@ DECLARE v_rol integer;
 BEGIN
   PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
   v_rol := fn_validar_asignacion_rol(p_admin, p_rol_codigo);
-
-  -- Un no-admin no puede editar a un admin
-  IF EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
-              WHERE u.id = p_usuario AND r.codigo = 'ADMIN')
-     AND NOT EXISTS (SELECT 1 FROM usuario u JOIN rol r ON r.id = u.rol_id
-                      WHERE u.id = p_admin AND r.codigo = 'ADMIN') THEN
-    RAISE EXCEPTION 'Solo un administrador puede modificar a otro administrador'
-          USING ERRCODE = 'insufficient_privilege';
-  END IF;
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
 
   UPDATE usuario
      SET nombre_completo = trim(p_nombre), rol_id = v_rol,
@@ -3162,6 +3169,7 @@ BEGIN
   IF p_admin = p_usuario AND NOT p_activo THEN
     RAISE EXCEPTION 'No puede desactivar su propio usuario';
   END IF;
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
   UPDATE usuario SET activo = p_activo WHERE id = p_usuario;
   IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
 END $$;
@@ -3172,6 +3180,7 @@ RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
   UPDATE usuario
      SET password_hash = p_nuevo_hash, debe_cambiar_password = true,
          intentos_fallidos = 0, bloqueado_hasta = NULL
@@ -3185,6 +3194,7 @@ LANGUAGE plpgsql AS $$
 DECLARE n integer;
 BEGIN
   PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
   UPDATE sesion SET revocada_at = now() WHERE usuario_id = p_usuario AND revocada_at IS NULL;
   GET DIAGNOSTICS n = ROW_COUNT;
   RETURN n;
