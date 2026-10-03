@@ -712,4 +712,56 @@ SELECT fn_set_usuario_activo(:admin, :luis, false);
 SELECT pg_temp.espera_error(format('SELECT fn_cambiar_password(%s, %L)', :luis, 'otro-hash'), 'no existe o está inactivo');
 SELECT pg_temp.espera_error($$UPDATE parametro SET valor = 'doce' WHERE clave = 'SESION_HORAS_EQUIPO'$$, 'debe ser un número positivo');
 
+\echo '\n=== 18. PANEL DE ADMINISTRACIÓN: PARÁMETROS Y PERMISOS DE ROLES (backend B3)'
+SELECT set_config('app.usuario_id', :'admin', false);
+
+-- Parámetros: la función exige el permiso; el formato lo sigue validando el trigger
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :maria, 'MARGEN_MINIMO_ALERTA_PCT', '10'), 'PARAMETROS_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'NO_EXISTE', '10'), 'El parámetro NO_EXISTE no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'MARGEN_MINIMO_ALERTA_PCT', 'mucho'), 'debe ser un número');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, NULL)', :admin, 'MARGEN_MINIMO_ALERTA_PCT'), 'no puede quedar vacío');
+SELECT fn_set_parametro(:admin, ' margen_minimo_alerta_pct ', ' 35 ');
+SELECT pg_temp.afirma(fn_parametro_num('MARGEN_MINIMO_ALERTA_PCT') = 35, 'fn_set_parametro guarda el valor limpio (la clave no distingue mayúsculas)');
+SELECT pg_temp.afirma((SELECT usuario_id = :admin AND despues->>'valor' = '35' FROM auditoria
+                        WHERE tabla = 'parametro' AND registro_id = 'MARGEN_MINIMO_ALERTA_PCT' ORDER BY id DESC LIMIT 1),
+                      'el cambio del parámetro queda auditado con quién lo hizo');
+SELECT fn_set_parametro(:admin, 'MARGEN_MINIMO_ALERTA_PCT', '40');
+SELECT fn_set_parametro(:admin, 'VENTA_SOBREPRECIO_MAX_PCT', '');
+SELECT pg_temp.afirma(fn_parametro_num('VENTA_SOBREPRECIO_MAX_PCT') IS NULL, 'un parámetro que permite vacío puede quedar sin valor');
+SELECT fn_set_parametro(:admin, 'VENTA_SOBREPRECIO_MAX_PCT', '50');
+
+-- Permisos de los roles
+SELECT permisos AS perm_enc FROM v_roles_admin WHERE codigo = 'ENCARGADO' \gset
+SELECT permisos AS perm_ven FROM v_roles_admin WHERE codigo = 'VENDEDOR'  \gset
+SELECT pg_temp.afirma((SELECT cardinality(permisos) = (SELECT count(*) FROM permiso) AND NOT editable FROM v_roles_admin WHERE codigo = 'ADMIN'),
+                      'el rol ADMIN aparece con todos los permisos y no es editable');
+SELECT pg_temp.afirma((SELECT editable AND usuarios_activos = 1 AND 'VENTAS_ANULAR' = ANY (permisos) AND NOT 'USUARIOS_VER' = ANY (permisos)
+                         FROM v_roles_admin WHERE codigo = 'ENCARGADO'), 'el rol ENCARGADO es editable y muestra sus permisos y usuarios activos');
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :maria, 'VENDEDOR', '{}'), 'ROLES_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :admin, 'ADMIN', '{}'), 'no se puede modificar');
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :admin, 'GERENTE', '{}'), 'Rol inexistente');
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :admin, 'ENCARGADO', '{VENTAS_REGISTRAR,VOLAR,ALGO_MAS}'), 'Permiso inexistente: ALGO_MAS, VOLAR');
+
+SELECT count(*) AS aud_antes FROM auditoria WHERE tabla = 'rol_permiso' \gset
+SELECT fn_set_permisos_rol(:admin, 'encargado', :'perm_enc'::text[] || ARRAY['usuarios_ver', 'ROLES_GESTIONAR', 'USUARIOS_VER']);
+SELECT pg_temp.afirma(fn_tiene_permiso(:maria, 'USUARIOS_VER') AND fn_tiene_permiso(:maria, 'ROLES_GESTIONAR') AND fn_tiene_permiso(:maria, 'VENTAS_ANULAR'),
+                      'el admin agrega permisos al rol ENCARGADO y se conservan los que tenía');
+SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'rol_permiso') = :aud_antes + 2, 'solo se auditan las diferencias (2 permisos agregados)');
+
+-- Con ROLES_GESTIONAR la encargada reparte los permisos que ella tiene, pero no puede darse (ni dar) los que no tiene
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :maria, 'ENCARGADO', '{ROLES_GESTIONAR,USUARIOS_GESTIONAR,PARAMETROS_GESTIONAR}'),
+                            'No puede otorgar un permiso que usted no tiene: PARAMETROS_GESTIONAR, USUARIOS_GESTIONAR');
+SELECT fn_set_permisos_rol(:admin, 'VENDEDOR', :'perm_ven'::text[] || ARRAY['INVENTARIO_AJUSTAR']);
+SELECT fn_set_permisos_rol(:maria, 'VENDEDOR', ARRAY['VENTAS_REGISTRAR', 'VENTAS_ANULAR', 'INVENTARIO_AJUSTAR']);
+SELECT pg_temp.afirma(fn_tiene_permiso(:carlos, 'VENTAS_ANULAR') AND fn_tiene_permiso(:carlos, 'INVENTARIO_AJUSTAR') AND NOT fn_tiene_permiso(:carlos, 'CAJA_ABRIR'),
+                      'la encargada otorga lo que ella tiene, respeta lo que el rol ya tenía y quita lo que no va en la lista');
+SELECT pg_temp.espera_error(format('SELECT fn_set_permisos_rol(%s, %L, %L)', :maria, 'VENDEDOR', '{VENTAS_REGISTRAR,INVENTARIO_ENTRADA}'),
+                            'No puede otorgar un permiso que usted no tiene: INVENTARIO_ENTRADA');
+
+SELECT fn_set_permisos_rol(:admin, 'VENDEDOR', :'perm_ven'::text[]);
+SELECT fn_set_permisos_rol(:admin, 'ENCARGADO', :'perm_enc'::text[]);
+SELECT pg_temp.afirma((SELECT permisos = :'perm_enc'::text[] FROM v_roles_admin WHERE codigo = 'ENCARGADO')
+                  AND (SELECT permisos = :'perm_ven'::text[] FROM v_roles_admin WHERE codigo = 'VENDEDOR')
+                  AND NOT fn_tiene_permiso(:maria, 'ROLES_GESTIONAR'), 'los roles vuelven a sus permisos originales');
+
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

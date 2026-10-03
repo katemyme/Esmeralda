@@ -654,6 +654,17 @@ export interface VPreciosPerforacion {
   precios_especiales: number | null;
 }
 
+export interface VRolesAdmin {
+  codigo: string | null;
+  descripcion: string | null;
+  editable: boolean | null;
+  es_sistema: boolean | null;
+  id: number | null;
+  nombre: string | null;
+  permisos: string[] | null;
+  usuarios_activos: number | null;
+}
+
 export interface VStockActual {
   alerta_stock_bajo: boolean | null;
   cantidad: number | null;
@@ -888,6 +899,7 @@ export interface DB {
   v_mermas: VMermas;
   v_piezas_consumidas_paquete: VPiezasConsumidasPaquete;
   v_precios_perforacion: VPreciosPerforacion;
+  v_roles_admin: VRolesAdmin;
   v_stock_actual: VStockActual;
   v_turnos: VTurnos;
   v_usuarios_admin: VUsuariosAdmin;

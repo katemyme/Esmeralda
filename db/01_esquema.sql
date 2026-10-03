@@ -3190,6 +3190,60 @@ BEGIN
   RETURN n;
 END $$;
 
+-- ---------------------------------------------------------------------
+-- 9.4b Panel de administración: parámetros y permisos de los roles
+-- ---------------------------------------------------------------------
+-- Cambia el valor de un parámetro (NULL o vacío = sin valor, si el parámetro lo permite).
+-- El formato lo valida tg_parametro_validar según su tipo (NUMERO, HORA, OPCION, TEXTO).
+CREATE OR REPLACE FUNCTION fn_set_parametro(p_admin bigint, p_clave text, p_valor text)
+RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'PARAMETROS_GESTIONAR');
+  UPDATE parametro SET valor = p_valor WHERE clave = upper(trim(p_clave));
+  IF NOT FOUND THEN RAISE EXCEPTION 'El parámetro % no existe', p_clave; END IF;
+END $$;
+
+-- Deja al rol exactamente con los permisos de la lista (solo quita/agrega las diferencias →
+-- auditoría limpia). El rol ADMIN no se edita: fn_tiene_permiso le concede todo.
+-- Nadie puede otorgar un permiso que no tiene: así un rol no puede darse más acceso a sí mismo.
+CREATE OR REPLACE FUNCTION fn_set_permisos_rol(p_admin bigint, p_rol_codigo text, p_permisos text[])
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_rol      integer;
+  v_codigos  text[] := ARRAY(SELECT DISTINCT upper(trim(c)) FROM unnest(coalesce(p_permisos, '{}')) c);
+  v_rechazo  text;
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'ROLES_GESTIONAR');
+  SELECT id INTO v_rol FROM rol WHERE codigo = upper(trim(p_rol_codigo));
+  IF v_rol IS NULL THEN RAISE EXCEPTION 'Rol inexistente: %', p_rol_codigo; END IF;
+  IF upper(trim(p_rol_codigo)) = 'ADMIN' THEN
+    RAISE EXCEPTION 'El rol ADMIN siempre tiene todos los permisos: no se puede modificar';
+  END IF;
+
+  SELECT string_agg(c, ', ' ORDER BY c) INTO v_rechazo
+    FROM unnest(v_codigos) c
+   WHERE NOT EXISTS (SELECT 1 FROM permiso p WHERE p.codigo = c);
+  IF v_rechazo IS NOT NULL THEN RAISE EXCEPTION 'Permiso inexistente: %', v_rechazo; END IF;
+
+  SELECT string_agg(c, ', ' ORDER BY c) INTO v_rechazo
+    FROM unnest(v_codigos) c
+   WHERE NOT fn_tiene_permiso(p_admin, c)
+     AND NOT EXISTS (SELECT 1 FROM rol_permiso rp JOIN permiso p ON p.id = rp.permiso_id
+                      WHERE rp.rol_id = v_rol AND p.codigo = c);          -- los que el rol ya tenía se respetan
+  IF v_rechazo IS NOT NULL THEN
+    RAISE EXCEPTION 'No puede otorgar un permiso que usted no tiene: %', v_rechazo
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  DELETE FROM rol_permiso rp USING permiso p
+   WHERE p.id = rp.permiso_id AND rp.rol_id = v_rol AND p.codigo <> ALL (v_codigos);
+  INSERT INTO rol_permiso (rol_id, permiso_id)
+  SELECT v_rol, p.id FROM permiso p WHERE p.codigo = ANY (v_codigos)
+  ON CONFLICT DO NOTHING;
+END $$;
+
 -- =====================================================================
 -- 10. VISTAS DE REPORTES Y PANEL
 -- =====================================================================
@@ -3431,5 +3485,17 @@ SELECT u.id, u.nombre_completo, u.username, u.email, u.telefono,
          WHERE se.usuario_id = u.id AND se.revocada_at IS NULL AND se.expira_at > now()) AS sesiones_activas,
        u.created_at
   FROM usuario u JOIN rol r ON r.id = u.rol_id;
+
+-- Panel de administración: roles con sus permisos. El ADMIN los tiene todos (fn_tiene_permiso),
+-- por eso no es editable.
+CREATE OR REPLACE VIEW v_roles_admin AS
+SELECT r.id, r.codigo, r.nombre, r.descripcion, r.es_sistema,
+       r.codigo <> 'ADMIN' AS editable,
+       ARRAY(SELECT p.codigo::text FROM permiso p
+              WHERE r.codigo = 'ADMIN'
+                 OR EXISTS (SELECT 1 FROM rol_permiso rp WHERE rp.rol_id = r.id AND rp.permiso_id = p.id)
+              ORDER BY p.codigo) AS permisos,
+       (SELECT count(*) FROM usuario u WHERE u.rol_id = r.id AND u.activo) AS usuarios_activos
+  FROM rol r;
 
 COMMIT;

@@ -19,7 +19,7 @@ _Actualizado el 2026-10-02._
 
 - **Terminado:** esquema de base de datos v1.1 y los pasos **B1** y **B2** del backend (etiqueta `guardado-b2`).
 - **En curso:** **B3** (panel de administración). **Pendiente:** B4 a B7 y el frontend.
-- Pruebas en verde: 255 de base de datos y 99 del backend. Nada se ha subido a GitHub.
+- Pruebas en verde: 274 de base de datos y 99 del backend. Nada se ha subido a GitHub.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -49,7 +49,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      255 pruebas de reglas de negocio
+db/04_pruebas.sql      274 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
