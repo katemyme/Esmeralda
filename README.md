@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: B1 (base), B2 (login, sesiones, equipos) y B3 (panel de administración) listos |
+| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración) y B4 (catálogo) |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -124,3 +124,32 @@ a un usuario aplica de inmediato.
 | `GET /api/alertas` | `ALERTAS_VER` | `?estado=pendientes\|atendidas\|todas&tipo=&sucursal_id=&limite=&antes_de=` → alertas y `total_pendientes` |
 | `POST /api/alertas/:id/atender` | `ALERTAS_VER` | Marca la alerta como atendida |
 | `GET /api/sucursales` | (sesión) | Ubicaciones donde el usuario puede operar, con sus cajas (para los formularios) |
+
+### Catálogo
+
+Consultar pide `PRODUCTOS_VER` (lo tienen todos los roles). Cambiar el catálogo pide `PRODUCTOS_GESTIONAR`
+y tocar precios o costos, `PRECIOS_EDITAR`. Los montos se envían como número o texto con hasta 2 decimales
+y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tiene `REPORTES_COSTOS`
+(para los demás llega `null`).
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /api/categorias` · `POST` · `PUT /:id` · `PUT /:id/activa` | Categorías: `{ nombre, descripcion }`. "Perforaciones" es del sistema |
+| `GET /api/gamas` · `POST` · `PUT /:id` · `PUT /:id/activa` | Gamas de pieza: `{ nombre, modo_precio: TABLA/PIEZA, orden }`. Una gama en uso no cambia de modo |
+| `GET /api/productos` | `?buscar=&categoria_id=&tipo=&estado=activos\|inactivos\|todos&limite=&desplazamiento=` → `{ productos, total }`, cada producto con sus variantes. Busca por nombre, SKU o código de barras |
+| `GET /api/productos/:id` | Un producto con sus variantes |
+| `POST /api/productos` | `{ categoria_id, nombre, descripcion, variantes: [...] }`: crea el producto con sus variantes (todo o nada) |
+| `PUT /api/productos/:id` · `PUT /api/productos/:id/activo` | Edita o desactiva (no se desactiva con existencias) |
+| `POST /api/productos/:id/variantes` | `{ sku, nombre, precio_venta, costo, codigo_barras, gama_id, atributos, foto_url }` |
+| `PUT /api/variantes/:id` | Edita la variante (sin precio): `{ sku, nombre, codigo_barras, gama_id, atributos, foto_url }` |
+| `PUT /api/variantes/:id/precio` | `{ precio_venta, costo }`: lo que no se envía no cambia; queda en el historial de precios |
+| `PUT /api/variantes/:id/activo` | Desactiva o reactiva (no se desactiva con existencias) |
+| `GET /api/perforaciones` · `GET /:id` | Perforaciones con su precio de solo servicio, tabla por gama, precios especiales y piezas permitidas |
+| `POST /api/perforaciones` | `{ codigo, nombre, precio_servicio, piezas_por_paquete }`: crea también sus entradas `SRV-código` y `PAQ-código` |
+| `PUT /api/perforaciones/:id` · `/activa` · `/precio-servicio` | Nombre y piezas del paquete · activar o desactivar · precio de solo servicio |
+| `PUT /api/perforaciones/:id/precios-gama` | `{ gama_id, precio }`: tabla perforación × gama (`null` quita el precio) |
+| `PUT /api/perforaciones/:id/precios-especiales` | `{ variante_id o gama_id, precio, motivo }`: excepción que gana a la tabla (`null` la quita) |
+| `PUT /api/perforaciones/:id/piezas-permitidas` | `{ gama_id o categoria_id o variante_id, permitir }`: qué piezas admite el paquete |
+| `GET /api/perforaciones/:id/precio-paquete?piezas=12,15` | Precio del paquete con esas piezas y la regla aplicada (`ESPECIAL`, `TABLA_GAMA`, `SERVICIO_MAS_PIEZA`) |
+| `GET /api/promociones` · `POST` · `PUT /:id` · `PUT /:id/activa` | Promociones (`PROMOCIONES_GESTIONAR`): `{ nombre, tipo: PORCENTAJE/MONTO, valor, compra_minima, vigente_desde, vigente_hasta, descripcion }`; nacen inactivas |
+| `GET /api/promociones/disponibles?subtotal=` | Las que el POS puede aplicar hoy y cuánto rebajan (`VENTAS_PROMOCION`) |

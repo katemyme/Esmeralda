@@ -3,14 +3,14 @@ import { sql } from 'kysely';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import type { AlertaAdmin } from '../src/alertas/alertas.service';
-import { hashearPassword, verificarPassword } from '../src/autenticacion/seguridad';
+import { verificarPassword } from '../src/autenticacion/seguridad';
 import { BaseDatosService } from '../src/base-datos/base-datos.service';
 import type { EquipoAdmin } from '../src/equipos/datos-equipo';
 import type { ParametroAdmin } from '../src/parametros/parametros.service';
 import type { PermisoAdmin, RolAdmin } from '../src/roles/roles.service';
 import type { SucursalConCajas } from '../src/sucursales/sucursales.service';
 import type { UsuarioAdmin } from '../src/usuarios/usuarios.service';
-import { cookiePuesta, crearApp } from './utilidades';
+import { cookiePuesta, crearApp, crearUsuarioDePrueba, tokenDeAcceso } from './utilidades';
 
 // Recorrido completo de B3 (panel de administración) contra la base de pruebas. Las pruebas van en
 // orden y comparten estado. Usan actores propios (una administradora, una vendedora y un usuario
@@ -81,19 +81,14 @@ describe('Panel de administración', () => {
       sql`select c.id from caja c join sucursal s on s.id = c.sucursal_id where s.codigo = 'LAM'`,
     );
 
-    // La jefa: administradora con contraseña definitiva, creada con las funciones del panel
-    const hash = await hashearPassword(CLAVE_JEFA);
-    ids.jefa = await bd.transaccion(ids.adminSemilla, async (trx) => {
-      const { rows } = await sql<{ id: number }>`
-        select fn_crear_usuario(${ids.adminSemilla}, 'Jefa del panel', 'jefa.panel', ${hash}, 'ADMIN') as id`.execute(
-        trx,
-      );
-      return rows[0].id;
+    // La jefa: administradora con contraseña definitiva
+    ids.jefa = await crearUsuarioDePrueba(app, {
+      nombre: 'Jefa del panel',
+      username: 'jefa.panel',
+      password: CLAVE_JEFA,
+      rol: 'ADMIN',
     });
-    await bd.transaccion(ids.jefa, (trx) =>
-      sql`select fn_cambiar_password(${ids.jefa}, ${hash})`.execute(trx),
-    );
-    jefa.acceso = (await login('jefa.panel', CLAVE_JEFA).expect(200)).body.access_token;
+    jefa.acceso = await tokenDeAcceso(app, 'jefa.panel', CLAVE_JEFA);
 
     const roles = await bd.db
       .selectFrom('v_roles_admin')

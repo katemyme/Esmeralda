@@ -1,5 +1,14 @@
 import { HttpException } from '@nestjs/common';
-import { esquemaActivo, idEntero, idUuid, textoOpcional } from './esquemas';
+import {
+  esquemaActiva,
+  esquemaActivo,
+  idDeCuerpo,
+  idEntero,
+  idUuid,
+  monto,
+  montoPositivo,
+  textoOpcional,
+} from './esquemas';
 
 function errorDe(accion: () => unknown): unknown {
   try {
@@ -52,13 +61,52 @@ describe('textoOpcional', () => {
   });
 });
 
-describe('esquemaActivo', () => {
-  it('exige un booleano', () => {
+describe('esquemaActivo y esquemaActiva', () => {
+  it('exigen un booleano', () => {
     expect(esquemaActivo.parse({ activo: false })).toEqual({ activo: false });
     for (const malo of [{}, { activo: 'false' }, { activo: 0 }, { activo: null }]) {
       expect(esquemaActivo.safeParse(malo).error?.issues[0].message).toBe(
         'Indique "activo": true o false',
       );
+    }
+    expect(esquemaActiva.parse({ activa: true })).toEqual({ activa: true });
+    expect(esquemaActiva.safeParse({ activo: true }).error?.issues[0].message).toBe(
+      'Indique "activa": true o false',
+    );
+  });
+});
+
+describe('monto', () => {
+  const precio = monto('monto inválido');
+
+  it('acepta número o texto y lo deja como texto exacto', () => {
+    expect(precio.parse(650)).toBe('650');
+    expect(precio.parse(650.5)).toBe('650.5');
+    expect(precio.parse(' 1200.75 ')).toBe('1200.75');
+    expect(precio.parse(0)).toBe('0');
+  });
+
+  it('rechaza negativos, más de 2 decimales, notación científica y lo que no es un monto', () => {
+    for (const malo of [-1, 10.999, 0.1 + 0.2, 1e21, '1,50', 'abc', '', null, undefined, true]) {
+      expect(precio.safeParse(malo).error?.issues[0].message).toBe('monto inválido');
+    }
+  });
+
+  it('montoPositivo además exige que sea mayor que cero', () => {
+    const positivo = montoPositivo('debe ser mayor que 0');
+    expect(positivo.parse('0.01')).toBe('0.01');
+    for (const malo of [0, '0.00', -5]) {
+      expect(positivo.safeParse(malo).error?.issues[0].message).toBe('debe ser mayor que 0');
+    }
+  });
+});
+
+describe('idDeCuerpo', () => {
+  it('acepta solo enteros positivos', () => {
+    const id = idDeCuerpo('id inválido');
+    expect(id.parse(7)).toBe(7);
+    for (const malo of [0, -1, 1.5, '7', null, undefined]) {
+      expect(id.safeParse(malo).error?.issues[0].message).toBe('id inválido');
     }
   });
 });

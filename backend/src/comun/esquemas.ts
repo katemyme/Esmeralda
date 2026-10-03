@@ -37,3 +37,27 @@ export const esquemaActivo = z.object({
   activo: z.boolean({ error: 'Indique "activo": true o false' }),
 });
 export type DatosActivo = z.output<typeof esquemaActivo>;
+
+/** Lo mismo para lo que en la base se llama `activa` (categoría, gama, perforación, promoción). */
+export const esquemaActiva = z.object({
+  activa: z.boolean({ error: 'Indique "activa": true o false' }),
+});
+export type DatosActiva = z.output<typeof esquemaActiva>;
+
+/** Id que llega en el cuerpo (`"categoria_id": 3`). */
+export const idDeCuerpo = (mensaje: string) => z.number(mensaje).int(mensaje).positive(mensaje);
+
+/**
+ * Monto en córdobas que llega en el cuerpo: número o texto, de 0 en adelante y con 2 decimales
+ * como máximo. Sale como texto exacto ("650.50"): así viaja a la base (numeric) sin pasar por
+ * decimales binarios.
+ */
+export const monto = (mensaje: string) =>
+  z
+    .union([z.number(), z.string()], mensaje)
+    .transform((valor) => (typeof valor === 'number' ? String(valor) : valor.trim()))
+    .refine((texto) => /^\d{1,10}(\.\d{1,2})?$/.test(texto), mensaje);
+
+/** Monto mayor que cero (precios de la tabla de perforaciones, valor de una promoción). */
+export const montoPositivo = (mensaje: string) =>
+  monto(mensaje).refine((texto) => Number(texto) > 0, mensaje);

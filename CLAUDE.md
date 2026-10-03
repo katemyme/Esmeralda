@@ -17,12 +17,14 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 _Actualizado el 2026-10-02._
 
-- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`) y **B3**
-  del backend. B3 (panel de administración) está **pendiente de revisión del dueño**.
-- **Sigue:** **B4** (catálogo), solo cuando el dueño lo pida. **Pendiente:** B5 a B7 y el frontend.
-- Pruebas en verde: 347 de base de datos y 157 del backend. Nada se ha subido a GitHub.
+- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`), **B3**
+  (revisado y aprobado por el dueño) y **B4** del backend. B4 (catálogo) está **pendiente de revisión del dueño**.
+- **Sigue:** **B5** (inventario), solo cuando el dueño lo pida. **Pendiente:** B6, B7 y el frontend.
+- Pruebas en verde: 347 de base de datos y 233 del backend. Nada se ha subido a GitHub.
 - Fuera de B3 (decidir si entran más adelante): consultar la bitácora de cambios y accesos (`AUDITORIA_VER`),
   crear o editar sucursales y cajas, crear roles nuevos, desbloquear una cuenta sin cambiarle la contraseña.
+- Fuera de B4: subir fotos (hoy `foto_url` es solo una dirección web), consultar el historial de precios,
+  la carga masiva desde la plantilla Excel y la búsqueda del POS con existencias (`fn_buscar_variantes`, va en B6).
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -108,7 +110,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 | B1 ✅ | Proyecto base, conexión a PostgreSQL, configuración, transacción con `app.usuario_id` |
 | B2 ✅ | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
 | B3 ✅ | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
-| B4 | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
+| B4 ✅ | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 | Inventario: compras, envíos/recepción, mermas, conteos |
 | B6 | POS y caja: venta, cobro, apertura, cierre, ticket |
 | B7 | Reportes, exportación (Excel/PDF), tarea programada `fn_alertar_cajas_sin_cerrar` |
@@ -149,6 +151,20 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   administrador (`fn_exigir_gestion_usuario`), aunque otro rol reciba `USUARIOS_GESTIONAR`.
 - Vistas (`v_*`) en Kysely: los tipos generados marcan todas sus columnas como posiblemente nulas; se declara la
   fila real y se usa `.$castTo<Fila>()`.
+- Catálogo (B4): módulos `categorias/`, `gamas/`, `productos/` (productos y variantes), `perforaciones/` y
+  `promociones/`. Toda escritura pasa por una `fn_*` (`fn_guardar_categoria`, `fn_guardar_gama`,
+  `fn_guardar_producto`, `fn_crear_variante`, `fn_actualizar_variante`, `fn_set_precio_variante`,
+  `fn_actualizar_perforacion`, `fn_set_*_activ[oa]`...). Las perforaciones son productos de tipo SERVICIO y
+  PAQUETE: aparecen en `/api/productos`, pero solo se administran en `/api/perforaciones`. Reglas de la base: no
+  se desactiva un producto o variante con existencias; una gama con piezas o precios no cambia de modo de precio;
+  la categoría "Perforaciones" es del sistema.
+- Montos en la entrada: `monto()` / `montoPositivo()` de `src/comun/esquemas.ts` aceptan número o texto con hasta
+  2 decimales y entregan texto (`"650.5"`), que va a la base con `${valor}::numeric`. Los parámetros que pueden
+  ser null llevan su tipo en el SQL (`${id}::integer`, `${fecha}::date`).
+- El **costo** solo sale para quien tiene `REPORTES_COSTOS`: se enmascara en la propia consulta
+  (`case when (select fn_tiene_permiso(usuario, 'REPORTES_COSTOS')) then v.costo end`), no en TypeScript.
+- Lo que en la base se llama `activa` (categoría, gama, perforación, promoción) usa `esquemaActiva` y la ruta
+  `/activa`; lo que se llama `activo` (usuario, equipo, producto, variante), `esquemaActivo` y `/activo`.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
@@ -163,4 +179,5 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   `test/utilidades.ts` tiene `crearApp()` y `cookiePuesta()`. En SQL de prueba, una función que modifica datos
   y la lectura que la verifica van en sentencias distintas (una sentencia no ve sus propios cambios).
   Todos los archivos de prueba comparten la misma base y Jest no garantiza su orden: cada archivo e2e crea sus
-  propios usuarios y equipos y, si cambia permisos de roles o parámetros, los restaura en `afterAll`.
+  propios usuarios y equipos (`crearUsuarioDePrueba()`, `tokenDeAcceso()` y `registrarTablet()` de
+  `test/utilidades.ts`) y sus propios datos; si cambia permisos de roles o parámetros, los restaura en `afterAll`.
