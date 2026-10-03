@@ -2,7 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'kysely';
 import { generarToken, sha256 } from '../autenticacion/seguridad';
 import { BaseDatosService } from '../base-datos/base-datos.service';
-import { buscarEquipo, type DatosEquipo } from './datos-equipo';
+import { NoEncontrado } from '../comun/no-encontrado';
+import { buscarEquipo, listarEquipos, type DatosEquipo, type EquipoAdmin } from './datos-equipo';
 import type { DatosRegistroEquipo } from './esquemas';
 
 @Injectable()
@@ -30,6 +31,24 @@ export class EquiposService {
     const equipo = await buscarEquipo(this.bd.db, id);
     if (!equipo) throw new Error(`El equipo ${id} recién registrado no aparece`);
     return { token, equipo };
+  }
+
+  /** Todos los equipos registrados, para el panel de administración. */
+  listar(): Promise<EquipoAdmin[]> {
+    return listarEquipos(this.bd.db);
+  }
+
+  /**
+   * Activa o desactiva un equipo (fn_set_dispositivo_activo). Desactivarlo cierra las sesiones
+   * abiertas desde él y nadie puede volver a entrar desde ese equipo hasta reactivarlo.
+   */
+  async cambiarActivo(adminId: number, id: string, activo: boolean): Promise<EquipoAdmin> {
+    await this.bd.transaccion(adminId, (trx) =>
+      sql`select fn_set_dispositivo_activo(${adminId}, ${id}::uuid, ${activo})`.execute(trx),
+    );
+    const [equipo] = await listarEquipos(this.bd.db, id);
+    if (!equipo) throw new NoEncontrado(`El equipo ${id} no existe`);
+    return equipo;
   }
 
   /** El equipo registrado al que pertenece un token (null si no existe o está desactivado). */

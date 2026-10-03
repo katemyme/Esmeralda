@@ -17,16 +17,20 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 _Actualizado el 2026-10-02._
 
-- **Terminado:** esquema de base de datos v1.1 y los pasos **B1** y **B2** del backend (etiqueta `guardado-b2`).
-- **En curso:** **B3** (panel de administración). **Pendiente:** B4 a B7 y el frontend.
-- Pruebas en verde: 274 de base de datos y 99 del backend. Nada se ha subido a GitHub.
+- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`) y **B3**
+  del backend. B3 (panel de administración) está **pendiente de revisión del dueño**.
+- **Sigue:** **B4** (catálogo), solo cuando el dueño lo pida. **Pendiente:** B5 a B7 y el frontend.
+- Pruebas en verde: 281 de base de datos y 157 del backend. Nada se ha subido a GitHub.
+- Fuera de B3 (decidir si entran más adelante): consultar la bitácora de cambios y accesos (`AUDITORIA_VER`),
+  crear o editar sucursales y cajas, crear roles nuevos, desbloquear una cuenta sin cambiarle la contraseña.
 
 **Levantar el servidor** (desde `backend/`):
 
 ```
 npm install             solo la primera vez
 copy .env.example .env  solo la primera vez: poner DATABASE_URL y JWT_SECRETO (npm run secreto)
-npm run db:recrear      crea la base local "esmeralda" con esquema + seed + datos demo (borra la anterior)
+npm run db:recrear      crea la base local "esmeralda" con esquema + seed + datos demo (borra la anterior);
+                        hay que repetirlo cuando cambia db/01_esquema.sql
 npm run start:dev       API en http://localhost:3000/api  →  probar con http://localhost:3000/api/salud
 ```
 
@@ -49,7 +53,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      274 pruebas de reglas de negocio
+db/04_pruebas.sql      281 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -103,7 +107,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 |---|---|
 | B1 ✅ | Proyecto base, conexión a PostgreSQL, configuración, transacción con `app.usuario_id` |
 | B2 ✅ | Login, sesión renovable, bloqueo por intentos, cambio obligatorio de contraseña, registro de equipos |
-| B3 | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
+| B3 ✅ | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
 | B4 | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 | Inventario: compras, envíos/recepción, mermas, conteos |
 | B6 | POS y caja: venta, cobro, apertura, cierre, ticket |
@@ -128,9 +132,23 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   `{ id, sesionId, rol, debeCambiarPassword, equipo: { id, sucursalId, cajaId } | null }` → usar `id` como
   `usuarioId` de `transaccion()` y `equipo` para validar sucursal/caja (B6). Cookies httpOnly + SameSite=Strict:
   `esmeralda_sesion` (refresh, path `/api/auth`) y `esmeralda_equipo` (equipo registrado, path `/api`, 400 días).
+- Permisos: cada ruta que no sea de uso general lleva `@RequierePermiso('CODIGO')` (`src/autenticacion/permisos.ts`),
+  que llama a `fn_exigir_permiso` **antes** de validar los datos enviados (403 `PERMISO_DENEGADO`). El permiso se
+  consulta en la base en cada solicitud (el token solo lleva el rol): cambiar los permisos de un rol o desactivar
+  a un usuario aplica de inmediato. En las escrituras la `fn_*` lo valida otra vez dentro de la transacción.
 - Contraseñas: argon2id; se aceptan los hashes **bcrypt** del seed (`$2a$`, vía `crypt()`) y, como el seed obliga
   a cambiarla al entrar, la nueva queda en argon2id. La política (mín. 8, letras y números) vive en
-  `esquemas.ts` porque la base nunca ve el texto plano.
+  `esquemas.ts` porque la base nunca ve el texto plano. Al crear un usuario o resetear su contraseña, el backend
+  genera la **contraseña temporal** (`generarPasswordTemporal`, p. ej. `k7mx-9qdw-t3hp`) y la devuelve una sola vez.
+- Panel (B3): un módulo por recurso (`usuarios/`, `roles/`, `equipos/`, `parametros/`, `alertas/`, `sucursales/`),
+  cada uno con `*.controller.ts`, `*.service.ts` y `esquemas.ts`. Respuestas con el recurso envuelto
+  (`{ usuario }`, `{ usuarios }`). Ids de la ruta con `@Param('id', idEntero())` / `idUuid()` (`src/comun/esquemas.ts`);
+  recurso inexistente en una lectura → `throw new NoEncontrado('...')` (404). Editar parámetros y permisos de un rol
+  pasa por `fn_set_parametro` y `fn_set_permisos_rol` (el rol ADMIN no se edita; nadie otorga un permiso que no tiene).
+  Solo un administrador puede editar, desactivar, resetear la contraseña o cerrar las sesiones de otro
+  administrador (`fn_exigir_gestion_usuario`), aunque otro rol reciba `USUARIOS_GESTIONAR`.
+- Vistas (`v_*`) en Kysely: los tipos generados marcan todas sus columnas como posiblemente nulas; se declara la
+  fila real y se usa `.$castTo<Fila>()`.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
@@ -144,3 +162,5 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   `instanceof Error` falla con errores del núcleo de Node: revisar propiedades (`code`, `message`).
   `test/utilidades.ts` tiene `crearApp()` y `cookiePuesta()`. En SQL de prueba, una función que modifica datos
   y la lectura que la verifica van en sentencias distintas (una sentencia no ve sus propios cambios).
+  Todos los archivos de prueba comparten la misma base y Jest no garantiza su orden: cada archivo e2e crea sus
+  propios usuarios y equipos y, si cambia permisos de roles o parámetros, los restaura en `afterAll`.

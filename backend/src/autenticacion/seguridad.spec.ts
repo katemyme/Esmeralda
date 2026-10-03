@@ -1,5 +1,7 @@
 import bcrypt from 'bcryptjs';
+import { esquemaPasswordNueva } from './esquemas';
 import {
+  generarPasswordTemporal,
   generarToken,
   hashearPassword,
   hashParaUsuarioInexistente,
@@ -39,6 +41,16 @@ describe('contraseñas', () => {
     expect(await verificarPassword('x', '$argon2id$dañado')).toBe(false);
     expect(await verificarPassword('x', 'texto-plano')).toBe(false);
     expect(await verificarPassword('', '')).toBe(false);
+  });
+
+  it('la contraseña temporal es fácil de dictar, cumple la política y no se repite', () => {
+    const generadas = Array.from({ length: 200 }, () => generarPasswordTemporal());
+    for (const password of generadas) {
+      // tres grupos de 4, sin caracteres que se confunden (0/o, 1/l/i)
+      expect(password).toMatch(/^[a-hjkmnp-z2-9]{4}-[a-hjkmnp-z2-9]{4}-[a-hjkmnp-z2-9]{4}$/);
+      expect(esquemaPasswordNueva.safeParse(password).success).toBe(true);
+    }
+    expect(new Set(generadas).size).toBe(200);
   });
 
   it('el hash para usuarios inexistentes es argon2id y siempre el mismo', async () => {

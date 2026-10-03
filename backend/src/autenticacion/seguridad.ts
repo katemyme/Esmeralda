@@ -1,6 +1,6 @@
 import { argon2id, hash, verify } from 'argon2';
 import bcrypt from 'bcryptjs';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 
 /** Token aleatorio de 256 bits para sesiones y equipos (se entrega en una cookie). */
 export function generarToken(): string {
@@ -29,6 +29,26 @@ export async function verificarPassword(password: string, hashGuardado: string):
     // hash con formato dañado: se trata como contraseña incorrecta
   }
   return false;
+}
+
+// Sin 0/o ni 1/l/i: el admin la dicta o la anota sin confusiones
+const ALFABETO_TEMPORAL = 'abcdefghjkmnpqrstuvwxyz23456789';
+
+/**
+ * Contraseña temporal para un usuario nuevo o un reseteo, p. ej. "k7mx-9qdw-t3hp" (12 caracteres
+ * al azar, unos 59 bits). Se muestra una sola vez al admin; el usuario debe cambiarla al entrar.
+ */
+export function generarPasswordTemporal(): string {
+  for (;;) {
+    const caracteres = Array.from(
+      { length: 12 },
+      () => ALFABETO_TEMPORAL[randomInt(ALFABETO_TEMPORAL.length)],
+    ).join('');
+    // La política pide letras y números
+    if (/[a-z]/.test(caracteres) && /\d/.test(caracteres)) {
+      return caracteres.replace(/(.{4})(?=.)/g, '$1-');
+    }
+  }
 }
 
 let hashFalso: Promise<string> | undefined;

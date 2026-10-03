@@ -1,0 +1,39 @@
+import { z } from 'zod';
+import { ValidacionZod } from './validacion-zod.pipe';
+
+const ID_NO_VALIDO = 'El identificador de la ruta no es válido';
+
+/** `@Param('id', idEntero())`: id numérico de la ruta; si no lo es → 400 DATOS_INVALIDOS. */
+export const idEntero = (campo = 'id') =>
+  new ValidacionZod(
+    z
+      .string()
+      .regex(/^[1-9]\d{0,14}$/, ID_NO_VALIDO)
+      .transform(Number),
+    campo,
+  );
+
+/** `@Param('id', idUuid())`: id UUID de la ruta (equipos). */
+export const idUuid = (campo = 'id') => new ValidacionZod(z.uuid(ID_NO_VALIDO), campo);
+
+/** Número entero positivo que llega como texto en la consulta (`?limite=20`). */
+export const enteroDeConsulta = (mensaje: string) =>
+  z
+    .string(mensaje)
+    .regex(/^[1-9]\d{0,14}$/, mensaje)
+    .transform(Number);
+
+/** Texto opcional: ausente, null o vacío → null. */
+export const textoOpcional = (maximo: number, mensajeLargo: string) =>
+  z
+    .string()
+    .trim()
+    .max(maximo, mensajeLargo)
+    .nullish()
+    .transform((valor) => valor || null);
+
+/** Cuerpo de las rutas que activan o desactivan algo: `{ "activo": true }`. */
+export const esquemaActivo = z.object({
+  activo: z.boolean({ error: 'Indique "activo": true o false' }),
+});
+export type DatosActivo = z.output<typeof esquemaActivo>;

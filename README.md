@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: B1 (base) y B2 (login, sesiones, equipos) listos |
+| Backend (Node + TypeScript, NestJS) | En desarrollo: B1 (base), B2 (login, sesiones, equipos) y B3 (panel de administración) listos |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -99,3 +99,28 @@ Comprobar que funciona: abrir <http://localhost:3000/api/salud> → `{"estado":"
 
 Las demás rutas exigen `Authorization: Bearer <token de acceso>`. Los errores responden
 `{ codigo, mensaje }` en español (p. ej. `CREDENCIALES_INVALIDAS`, `CUENTA_BLOQUEADA`, `EQUIPO_NO_AUTORIZADO`).
+
+### Panel de administración
+
+Cada ruta exige un permiso (el admin los tiene todos); sin él responde 403 `PERMISO_DENEGADO`.
+El permiso se consulta en la base en cada solicitud: cambiar los permisos de un rol o desactivar
+a un usuario aplica de inmediato.
+
+| Ruta | Permiso | Qué hace |
+|---|---|---|
+| `GET /api/usuarios` y `GET /api/usuarios/:id` | `USUARIOS_VER` | Usuarios con rol, estado (ACTIVO, INACTIVO, BLOQUEADO), sucursales y sesiones abiertas |
+| `POST /api/usuarios` | `USUARIOS_GESTIONAR` | `{ nombre_completo, username, rol, sucursales, email, telefono }` → crea el usuario y devuelve su `password_temporal` (se muestra una sola vez) |
+| `PUT /api/usuarios/:id` | `USUARIOS_GESTIONAR` | `{ nombre_completo, rol, sucursales, email, telefono }` (se envían todos) |
+| `PUT /api/usuarios/:id/activo` | `USUARIOS_GESTIONAR` | `{ activo }`: desactivar cierra sus sesiones |
+| `POST /api/usuarios/:id/resetear-password` | `USUARIOS_GESTIONAR` | Nueva `password_temporal`; también desbloquea la cuenta |
+| `POST /api/usuarios/:id/cerrar-sesiones` | `USUARIOS_GESTIONAR` | Cierra las sesiones abiertas del usuario |
+| `GET /api/roles` | `USUARIOS_VER` | Roles con sus permisos (el ADMIN los tiene todos y no es editable) |
+| `GET /api/permisos` | `ROLES_GESTIONAR` | Catálogo de permisos por módulo |
+| `PUT /api/roles/:codigo/permisos` | `ROLES_GESTIONAR` | `{ permisos: [...] }`: la lista completa con la que queda el rol |
+| `GET /api/equipos` | `SUCURSALES_GESTIONAR` | Equipos registrados, con su último uso y sesiones abiertas |
+| `PUT /api/equipos/:id/activo` | `SUCURSALES_GESTIONAR` | `{ activo }`: desactivar un equipo cierra sus sesiones y ya nadie entra desde él |
+| `GET /api/parametros` | `PARAMETROS_GESTIONAR` | Parámetros generales con su tipo (número, hora, opción, texto) |
+| `PUT /api/parametros/:clave` | `PARAMETROS_GESTIONAR` | `{ valor }` (texto, número o `null` para dejarlo vacío) |
+| `GET /api/alertas` | `ALERTAS_VER` | `?estado=pendientes\|atendidas\|todas&tipo=&sucursal_id=&limite=&antes_de=` → alertas y `total_pendientes` |
+| `POST /api/alertas/:id/atender` | `ALERTAS_VER` | Marca la alerta como atendida |
+| `GET /api/sucursales` | (sesión) | Ubicaciones donde el usuario puede operar, con sus cajas (para los formularios) |
