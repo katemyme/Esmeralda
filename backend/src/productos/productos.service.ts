@@ -38,6 +38,45 @@ export interface ProductoCatalogo {
   variantes: VarianteCatalogo[];
 }
 
+/** Un cambio de precio de venta o de costo (lo registra la base en cada cambio). */
+export interface CambioPrecio {
+  id: number;
+  fecha: Date;
+  precio_anterior: string;
+  precio_nuevo: string;
+  /** null para quien no tiene el permiso REPORTES_COSTOS. */
+  costo_anterior: string | null;
+  costo_nuevo: string | null;
+  usuario: { id: number; nombre_completo: string } | null;
+}
+
+/** Un resultado de la búsqueda para la venta. */
+export interface VarianteEncontrada {
+  id: number;
+  sku: string;
+  codigo_barras: string | null;
+  producto: string;
+  variante: string;
+  categoria: string;
+  tipo: string;
+  /** null en los paquetes (se calcula con la pieza). */
+  precio: string | null;
+  /** Existencias en la sucursal; null en servicios y paquetes. */
+  stock: number | null;
+  gama: string | null;
+  foto_url: string | null;
+}
+
+/** Existencias de una variante en una ubicación. */
+export interface ExistenciaUbicacion {
+  sucursal_id: number;
+  sucursal: string;
+  tipo: string;
+  /** null en la bodega para quien solo puede saber si hay o no (parámetro BODEGA_VISIBILIDAD). */
+  cantidad: number | null;
+  disponible: boolean;
+}
+
 /** Para ILIKE: los comodines que escriba el usuario se buscan como texto. */
 function escaparLike(texto: string): string {
   return texto.replace(/[\\%_]/g, '\\$&');
@@ -189,6 +228,96 @@ export class ProductosService {
       sql`select fn_set_variante_activa(${adminId}, ${varianteId}, ${activa})`.execute(trx),
     );
     return this.productoDeVariante(adminId, varianteId);
+  }
+
+  /**
+   * Pone (o quita, con null) la foto de una variante. Devuelve también la dirección anterior
+   * para que quien llama borre ese archivo.
+   */
+  async ponerFoto(
+    adminId: number,
+    varianteId: number,
+    fotoUrl: string | null,
+  ): Promise<{ producto: ProductoCatalogo; anterior: string | null }> {
+    const anterior = await this.bd.transaccion(adminId, async (trx) => {
+      const { rows } = await sql<{ anterior: string | null }>`
+        select fn_set_foto_variante(${adminId}, ${varianteId}, ${fotoUrl}) as anterior`.execute(
+        trx,
+      );
+      return rows[0].anterior;
+    });
+    return { producto: await this.productoDeVariante(adminId, varianteId), anterior };
+  }
+
+  /** Cambios de precio y de costo de una variante, del más reciente al más antiguo. */
+  async historialPrecios(usuarioId: number, varianteId: number): Promise<CambioPrecio[]> {
+    await this.exigirVariante(varianteId);
+    const veCostos = sql<boolean>`(select fn_tiene_permiso(${usuarioId}, 'REPORTES_COSTOS'))`;
+    const filas = await this.bd.db
+      .selectFrom('historial_precio as h')
+      .leftJoin('usuario as u', 'u.id', 'h.usuario_id')
+      .select([
+        'h.id',
+        'h.fecha',
+        'h.precio_anterior',
+        'h.precio_nuevo',
+        sql<string | null>`case when ${veCostos} then h.costo_anterior end`.as('costo_anterior'),
+        sql<string | null>`case when ${veCostos} then h.costo_nuevo end`.as('costo_nuevo'),
+        'u.id as usuario_id',
+        'u.nombre_completo as usuario_nombre',
+      ])
+      .where('h.variante_id', '=', varianteId)
+      .orderBy('h.id', 'desc')
+      .limit(200)
+      .execute();
+    return filas.map((f) => ({
+      id: f.id,
+      fecha: f.fecha,
+      precio_anterior: f.precio_anterior,
+      precio_nuevo: f.precio_nuevo,
+      costo_anterior: f.costo_anterior,
+      costo_nuevo: f.costo_nuevo,
+      usuario:
+        f.usuario_id !== null && f.usuario_nombre !== null
+          ? { id: f.usuario_id, nombre_completo: f.usuario_nombre }
+          : null,
+    }));
+  }
+
+  /**
+   * Búsqueda para la venta (fn_buscar_variantes): por nombre, SKU o código de barras, solo lo
+   * activo, con el stock de la sucursal. El usuario debe poder operar en esa sucursal.
+   */
+  async buscarParaVenta(
+    usuarioId: number,
+    texto: string,
+    sucursalId: number,
+    limite: number,
+  ): Promise<VarianteEncontrada[]> {
+    await sql`select fn_exigir_sucursal(${usuarioId}, ${sucursalId})`.execute(this.bd.db);
+    const { rows } = await sql<VarianteEncontrada>`
+      select variante_id as id, sku, codigo_barras, producto, variante, categoria, tipo, precio,
+             stock, gama, foto_url
+        from fn_buscar_variantes(${texto}, ${sucursalId}, ${limite})`.execute(this.bd.db);
+    return rows;
+  }
+
+  /** Existencias de una variante en cada ubicación, según lo que el usuario puede ver (fn_consultar_stock). */
+  async existencias(usuarioId: number, varianteId: number): Promise<ExistenciaUbicacion[]> {
+    await this.exigirVariante(varianteId);
+    const { rows } = await sql<ExistenciaUbicacion>`
+      select sucursal_id, sucursal, tipo, cantidad, disponible
+        from fn_consultar_stock(${usuarioId}, ${varianteId})`.execute(this.bd.db);
+    return rows;
+  }
+
+  private async exigirVariante(varianteId: number): Promise<void> {
+    const variante = await this.bd.db
+      .selectFrom('variante')
+      .select('id')
+      .where('id', '=', varianteId)
+      .executeTakeFirst();
+    if (!variante) throw new NoEncontrado(`La variante ${varianteId} no existe`);
   }
 
   private async crearVariante(

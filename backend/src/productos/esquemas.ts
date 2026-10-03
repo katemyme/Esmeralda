@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { enteroDeConsulta, idDeCuerpo, monto, textoOpcional } from '../comun/esquemas';
+import {
+  desplazamientoDeConsulta,
+  enteroDeConsulta,
+  idDeCuerpo,
+  monto,
+  textoOpcional,
+} from '../comun/esquemas';
+import { esquemaFotoUrl } from '../fotos/esquemas';
 
 const MENSAJE_PRECIO = 'El precio debe ser un monto de 0 en adelante, con 2 decimales como máximo';
 const MENSAJE_COSTO = 'El costo debe ser un monto de 0 en adelante, con 2 decimales como máximo';
@@ -18,11 +25,7 @@ const codigoBarras = textoOpcional(40, 'El código de barras es demasiado largo'
   'El código de barras no lleva espacios',
 );
 
-// Solo http(s): la dirección termina en una <img> o un enlace del POS
-const fotoUrl = textoOpcional(300, 'La dirección de la foto es demasiado larga').refine(
-  (valor) => valor === null || z.url({ protocol: /^https?$/ }).safeParse(valor).success,
-  'La foto debe ser una dirección web (http o https)',
-);
+const fotoUrl = esquemaFotoUrl;
 
 const atributos = z
   .record(
@@ -128,10 +131,22 @@ export const esquemaFiltroProductos = z.object({
     .refine((n) => n <= 200, 'limite debe ser un número entre 1 y 200')
     .default(50),
   /** Paginación: cuántos productos saltar. */
-  desplazamiento: z
-    .string('desplazamiento debe ser un número de 0 en adelante')
-    .regex(/^\d{1,9}$/, 'desplazamiento debe ser un número de 0 en adelante')
-    .transform(Number)
-    .default(0),
+  desplazamiento: desplazamientoDeConsulta(),
 });
 export type FiltroProductos = z.output<typeof esquemaFiltroProductos>;
+
+/** `GET /api/variantes/buscar?texto=&sucursal_id=&limite=`: la búsqueda de la pantalla de venta. */
+export const esquemaBusquedaVenta = z.object({
+  /** Parte del nombre, el SKU o el código de barras (lo que escribe o escanea el vendedor). */
+  texto: z
+    .string('Escriba o escanee lo que busca (texto)')
+    .trim()
+    .min(1, 'Escriba o escanee lo que busca (texto)')
+    .max(80, 'El texto a buscar es demasiado largo'),
+  /** Si no se indica, la sucursal del equipo desde el que se inició la sesión. */
+  sucursal_id: enteroDeConsulta('sucursal_id debe ser el id de una sucursal').optional(),
+  limite: enteroDeConsulta('limite debe ser un número entre 1 y 50')
+    .refine((n) => n <= 50, 'limite debe ser un número entre 1 y 50')
+    .default(20),
+});
+export type BusquedaVenta = z.output<typeof esquemaBusquedaVenta>;

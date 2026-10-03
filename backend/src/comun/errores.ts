@@ -45,6 +45,10 @@ const SIN_BASE_DATOS: ErrorTraducido = {
   },
 };
 
+// Mensajes en inglés de multer/busboy cuando el formulario multipart no viene como se espera
+const FORMULARIO_MAL_ARMADO =
+  /^(Unexpected (file )?field|Too many (files|parts|fields)|Field (name|value) (missing|too long)|Multipart: |Unexpected end of form|Malformed part header)/;
+
 const CODIGOS_RED = new Set([
   'ECONNREFUSED',
   'ECONNRESET',
@@ -101,6 +105,11 @@ function traducirHttp(error: HttpException): ErrorTraducido {
   }
   if (estado === 400 && mensaje.startsWith('Failed to decode param')) {
     return respuesta(estado, codigo, 'La ruta tiene caracteres mal codificados');
+  }
+  // Archivos subidos (multer)
+  if (estado === 413) return respuesta(estado, codigo, 'El archivo es demasiado grande');
+  if (estado === 400 && FORMULARIO_MAL_ARMADO.test(mensaje)) {
+    return respuesta(estado, codigo, 'Adjunte un solo archivo, en el campo que indica la ruta');
   }
   return respuesta(estado, codigo, mensaje);
 }

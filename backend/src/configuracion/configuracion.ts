@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { z } from 'zod';
 
 // Mensajes de validación de Zod en español (aplica a toda la aplicación)
@@ -20,6 +21,7 @@ const esquemaEntorno = z.object({
     ),
   LOGIN_LIMITE_POR_MINUTO: z.coerce.number().int().min(1).max(10_000).default(10),
   TRUST_PROXY: z.string().default('false').transform(interpretarTrustProxy),
+  DIR_FOTOS: z.string().trim().min(1).default('almacen/fotos'),
 });
 
 /**
@@ -48,6 +50,8 @@ export interface Configuracion {
     cookiesSeguras: boolean;
   };
   trustProxy: boolean | number | string;
+  /** Carpeta (ruta absoluta) donde se guardan las fotos subidas de productos y mermas. */
+  dirFotos: string;
 }
 
 /** Token de inyección: `@Inject(CONFIGURACION) config: Configuracion`. */
@@ -72,6 +76,7 @@ export function cargarConfiguracion(entorno: NodeJS.ProcessEnv = process.env): C
       cookiesSeguras: e.NODE_ENV === 'production',
     },
     trustProxy: e.TRUST_PROXY,
+    dirFotos: resolve(e.DIR_FOTOS),
   };
 }
 

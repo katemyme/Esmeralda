@@ -11,6 +11,8 @@ export interface ParametroAdmin {
   tipo_valor: string;
   opciones: string[] | null;
   permite_vacio: boolean;
+  /** Valor más bajo que acepta un NUMERO (null: de 0 en adelante). */
+  minimo: string | null;
   descripcion: string;
   updated_at: Date;
 }
@@ -42,6 +44,7 @@ export class ParametrosService {
         'tipo_valor',
         'opciones',
         'permite_vacio',
+        'minimo',
         'descripcion',
         'updated_at',
       ]);

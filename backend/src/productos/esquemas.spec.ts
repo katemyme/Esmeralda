@@ -75,7 +75,7 @@ describe('esquemaCrearVariante', () => {
       gama_id: 'La gama se indica con su id (o null si la pieza no tiene gama)',
       atributos:
         'Los atributos van como un objeto de hasta 20 datos, p. ej. { "material": "titanio", "calibre": "16G" }',
-      foto_url: 'La foto debe ser una dirección web (http o https)',
+      foto_url: 'La foto debe ser una imagen subida al sistema o una dirección web (http o https)',
     });
   });
 

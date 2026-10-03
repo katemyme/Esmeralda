@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from 'node:path';
 import { cargarConfiguracion, describirBaseDatos } from './configuracion';
 
 const URL_VALIDA = 'postgres://postgres:secreta%40123@localhost:5432/esmeralda';
@@ -12,7 +13,14 @@ describe('cargarConfiguracion', () => {
       baseDatos: { url: URL_VALIDA, maxConexiones: 10 },
       autenticacion: { secretoJwt: SECRETO, limiteLoginPorMinuto: 10, cookiesSeguras: false },
       trustProxy: false,
+      dirFotos: resolve('almacen/fotos'),
     });
+  });
+
+  it('la carpeta de fotos queda como ruta absoluta', () => {
+    const { dirFotos } = cargarConfiguracion({ ...MINIMO, DIR_FOTOS: ' datos/fotos ' });
+    expect(dirFotos).toBe(resolve('datos/fotos'));
+    expect(isAbsolute(dirFotos)).toBe(true);
   });
 
   it('convierte los números que llegan como texto', () => {

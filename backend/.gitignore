@@ -3,3 +3,5 @@ coverage/
 *.tsbuildinfo
 # Configuración local con contraseñas: nunca se sube (ver .env.example)
 .env
+# Fotos subidas (productos y mermas): son datos, no código
+almacen/

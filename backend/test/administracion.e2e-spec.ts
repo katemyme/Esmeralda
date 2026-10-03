@@ -912,12 +912,14 @@ describe('Panel de administración', () => {
     it('GET /api/sucursales: el admin ve todas las ubicaciones con sus cajas', async () => {
       const { body } = await comoJefa('get', '/api/sucursales').expect(200);
       const sucursales = body.sucursales as SucursalConCajas[];
-      expect(sucursales.map((s) => s.codigo)).toEqual(['LAM', 'LBR', 'BOD']);
-      expect(sucursales[0]).toEqual({
+      // (otras pruebas pueden haber creado más sucursales: las del seed van primero)
+      expect(sucursales.slice(0, 3).map((s) => s.codigo)).toEqual(['LAM', 'LBR', 'BOD']);
+      expect(sucursales[0]).toMatchObject({
         id: ids.lam,
         codigo: 'LAM',
         nombre: 'Multicentro Las Américas',
         tipo: 'SUCURSAL',
+        direccion: 'Multicentro Las Américas, Managua',
         activa: true,
         cajas: [{ id: ids.cajaLam, nombre: 'Caja 1', activa: true }],
       });

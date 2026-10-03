@@ -114,6 +114,14 @@ export class UsuariosService {
     return { usuario: await this.buscar(id), password_temporal: passwordTemporal };
   }
 
+  /** Quita el bloqueo por contraseñas incorrectas sin cambiarle la contraseña. */
+  async desbloquear(adminId: number, id: number): Promise<UsuarioAdmin> {
+    await this.bd.transaccion(adminId, (trx) =>
+      sql`select fn_desbloquear_usuario(${adminId}, ${id})`.execute(trx),
+    );
+    return this.buscar(id);
+  }
+
   /** Cierra todas las sesiones abiertas del usuario. Devuelve cuántas eran. */
   async cerrarSesiones(adminId: number, id: number): Promise<number> {
     await this.buscar(id);

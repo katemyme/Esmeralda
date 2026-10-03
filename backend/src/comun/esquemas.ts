@@ -23,6 +23,24 @@ export const enteroDeConsulta = (mensaje: string) =>
     .regex(/^[1-9]\d{0,14}$/, mensaje)
     .transform(Number);
 
+/** `?limite=`: cuántas filas devolver (por defecto 50, hasta 200). */
+export const limiteDeConsulta = () =>
+  enteroDeConsulta('limite debe ser un número entre 1 y 200')
+    .refine((n) => n <= 200, 'limite debe ser un número entre 1 y 200')
+    .default(50);
+
+/** `?desplazamiento=`: paginación por posición, cuántas filas saltar (por defecto 0). */
+export const desplazamientoDeConsulta = () =>
+  z
+    .string('desplazamiento debe ser un número de 0 en adelante')
+    .regex(/^\d{1,9}$/, 'desplazamiento debe ser un número de 0 en adelante')
+    .transform(Number)
+    .default(0);
+
+/** `?desde=2026-10-01`: fecha AAAA-MM-DD en la consulta (día de Managua). */
+export const fechaDeConsulta = (campo: string) =>
+  z.iso.date(`${campo} debe ser una fecha con el formato AAAA-MM-DD`);
+
 /** Texto opcional: ausente, null o vacío → null. */
 export const textoOpcional = (maximo: number, mensajeLargo: string) =>
   z

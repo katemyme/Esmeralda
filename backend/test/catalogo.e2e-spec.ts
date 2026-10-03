@@ -1,11 +1,17 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { existsSync, readdirSync } from 'node:fs';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { BaseDatosService } from '../src/base-datos/base-datos.service';
 import type { CategoriaCatalogo } from '../src/categorias/categorias.service';
 import type { GamaCatalogo } from '../src/gamas/gamas.service';
 import type { PerforacionCatalogo } from '../src/perforaciones/perforaciones.service';
-import type { ProductoCatalogo } from '../src/productos/productos.service';
+import type {
+  CambioPrecio,
+  ExistenciaUbicacion,
+  ProductoCatalogo,
+  VarianteEncontrada,
+} from '../src/productos/productos.service';
 import type { PromocionAdmin, PromocionDisponible } from '../src/promociones/promociones.service';
 import { crearApp, crearUsuarioDePrueba, registrarTablet, tokenDeAcceso } from './utilidades';
 
@@ -13,7 +19,7 @@ import { crearApp, crearUsuarioDePrueba, registrarTablet, tokenDeAcceso } from '
 // comparten estado. Usan actores propios (una administradora y una vendedora) y crean sus propias
 // categorías, gamas, productos, perforación y promoción: de los datos demo solo leen.
 
-type Metodo = 'get' | 'post' | 'put';
+type Metodo = 'get' | 'post' | 'put' | 'delete';
 
 describe('Catálogo', () => {
   let app: NestExpressApplication;
@@ -1058,6 +1064,345 @@ describe('Catálogo', () => {
             mensaje: `Permiso denegado: se requiere ${permiso}`,
           });
       }
+    });
+  });
+
+  describe('fotos de las variantes', () => {
+    // Un PNG válido de 1 × 1 y un JPG mínimo (lo que se revisa es la firma del contenido)
+    const PNG = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const JPG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(40, 1)]);
+    const FORMATO = /^\/api\/fotos\/[A-Za-z0-9_-]{24}\.(png|jpg|webp)$/;
+    const fotos = { primera: '', segunda: '' };
+
+    function archivosGuardados(): string[] {
+      const carpeta = process.env.DIR_FOTOS ?? '';
+      return existsSync(carpeta) ? readdirSync(carpeta) : [];
+    }
+
+    function fotoDelDorado(producto: ProductoCatalogo): string | null | undefined {
+      return producto.variantes.find((v) => v.id === propio.relojDorado)?.foto_url;
+    }
+
+    it('POST /api/variantes/:id/foto sube la imagen y la deja como foto de la variante', async () => {
+      const antes = archivosGuardados().length;
+      const { body } = await comoJefa('post', `/api/variantes/${propio.relojDorado}/foto`)
+        .attach('foto', PNG, 'reloj.png')
+        .expect(200);
+      fotos.primera = fotoDelDorado(body.producto) ?? '';
+      expect(fotos.primera).toMatch(FORMATO);
+      expect(fotos.primera.endsWith('.png')).toBe(true);
+      expect(archivosGuardados()).toHaveLength(antes + 1);
+    });
+
+    it('GET /api/fotos/:archivo la sirve sin sesión (la usa una <img>), con caché larga', async () => {
+      const respuesta = await request(http).get(fotos.primera).expect(200);
+      expect(respuesta.headers['content-type']).toBe('image/png');
+      expect(respuesta.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+      expect(respuesta.headers['x-content-type-options']).toBe('nosniff');
+      expect(Buffer.compare(respuesta.body as Buffer, PNG)).toBe(0);
+    });
+
+    it('al subir otra foto, la anterior se borra del servidor', async () => {
+      const antes = archivosGuardados().length;
+      const { body } = await comoJefa('post', `/api/variantes/${propio.relojDorado}/foto`)
+        .attach('foto', JPG, 'cualquier-nombre.png') // el formato sale del contenido, no del nombre
+        .expect(200);
+      fotos.segunda = fotoDelDorado(body.producto) ?? '';
+      expect(fotos.segunda.endsWith('.jpg')).toBe(true);
+      expect(archivosGuardados()).toHaveLength(antes); // una entra, la otra sale
+      await request(http).get(fotos.primera).expect(404);
+      const nueva = await request(http).get(fotos.segunda).expect(200);
+      expect(nueva.headers['content-type']).toBe('image/jpeg');
+    });
+
+    it('solo imágenes JPG, PNG o WebP de hasta 5 MB, en el campo "foto"', async () => {
+      const ruta = `/api/variantes/${propio.relojDorado}/foto`;
+      const antes = archivosGuardados().length;
+      await comoJefa('post', ruta)
+        .attach('foto', Buffer.from('<html><script>alert(1)</script></html>'), 'foto.png')
+        .expect(400)
+        .expect({
+          codigo: 'FOTO_INVALIDA',
+          mensaje: 'La foto debe ser una imagen JPG, PNG o WebP',
+        });
+      await comoJefa('post', ruta)
+        .expect(400)
+        .expect({ codigo: 'FOTO_INVALIDA', mensaje: 'Adjunte la imagen en el campo "foto"' });
+      await comoJefa('post', ruta).attach('archivo', PNG, 'reloj.png').expect(400).expect({
+        codigo: 'SOLICITUD_INVALIDA',
+        mensaje: 'Adjunte un solo archivo, en el campo que indica la ruta',
+      });
+      await comoJefa('post', ruta)
+        .attach('foto', Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]), 'enorme.png')
+        .expect(413)
+        .expect({ codigo: 'SOLICITUD_MUY_GRANDE', mensaje: 'El archivo es demasiado grande' });
+      // nada de eso cambió la foto ni dejó archivos
+      expect(archivosGuardados()).toHaveLength(antes);
+      const { body } = await comoJefa('get', `/api/productos/${propio.reloj}`).expect(200);
+      expect(fotoDelDorado(body.producto)).toBe(fotos.segunda);
+    });
+
+    it('si la variante no existe, el archivo subido no queda suelto en el servidor', async () => {
+      const antes = archivosGuardados().length;
+      await comoJefa('post', '/api/variantes/999999/foto')
+        .attach('foto', PNG, 'reloj.png')
+        .expect(422)
+        .expect({ codigo: 'REGLA_NEGOCIO', mensaje: 'La variante 999999 no existe' });
+      expect(archivosGuardados()).toHaveLength(antes);
+    });
+
+    it('al editar la variante se conserva su foto subida', async () => {
+      const { body } = await comoJefa('put', `/api/variantes/${propio.relojDorado}`)
+        .send({
+          sku: 'REL-B4-02',
+          nombre: 'Dorado',
+          codigo_barras: '7509990000444',
+          gama_id: null,
+          atributos: { color: 'dorado' },
+          foto_url: fotos.segunda,
+        })
+        .expect(200);
+      expect(fotoDelDorado(body.producto)).toBe(fotos.segunda);
+      // una dirección local que no es de una foto subida no pasa
+      await comoJefa('put', `/api/variantes/${propio.relojDorado}`)
+        .send({ sku: 'REL-B4-02', gama_id: null, atributos: {}, foto_url: '/api/fotos/../.env' })
+        .expect(400);
+    });
+
+    it('POST /api/fotos sube una imagen suelta (p. ej. la de una merma)', async () => {
+      const { body } = await conSesion('post', '/api/fotos', vera.acceso)
+        .attach('foto', PNG, 'merma.png')
+        .expect(201);
+      expect(body.foto_url).toMatch(FORMATO);
+      await request(http).get(body.foto_url).expect(200);
+      await request(http).post('/api/fotos').attach('foto', PNG, 'sin-sesion.png').expect(401);
+    });
+
+    it('una vendedora no cambia la foto de una variante', async () => {
+      await conSesion('post', `/api/variantes/${propio.relojDorado}/foto`, vera.acceso)
+        .attach('foto', PNG, 'reloj.png')
+        .expect(403)
+        .expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: 'Permiso denegado: se requiere PRODUCTOS_GESTIONAR',
+        });
+      await conSesion('delete', `/api/variantes/${propio.relojDorado}/foto`, vera.acceso).expect(
+        403,
+      );
+    });
+
+    it('DELETE /api/variantes/:id/foto la quita y borra el archivo', async () => {
+      const antes = archivosGuardados().length;
+      const { body } = await comoJefa('delete', `/api/variantes/${propio.relojDorado}/foto`).expect(
+        200,
+      );
+      expect(fotoDelDorado(body.producto)).toBeNull();
+      expect(archivosGuardados()).toHaveLength(antes - 1);
+      await request(http).get(fotos.segunda).expect(404).expect({
+        codigo: 'NO_ENCONTRADO',
+        mensaje: 'La foto no existe',
+      });
+    });
+
+    it('un nombre que no es de una foto → 404, sin salir de la carpeta de fotos', async () => {
+      for (const nombre of [
+        '..%2F..%2Fpackage.json',
+        '.env',
+        'foto.png',
+        'x'.repeat(24) + '.svg',
+      ]) {
+        const respuesta = await request(http).get(`/api/fotos/${nombre}`).expect(404);
+        expect(respuesta.body.codigo).toBe('NO_ENCONTRADO');
+      }
+    });
+  });
+
+  describe('historial de precios', () => {
+    it('GET /api/variantes/:id/historial-precios: cada cambio con quién lo hizo', async () => {
+      const { body } = await comoJefa(
+        'get',
+        `/api/variantes/${propio.relojPlateado}/historial-precios`,
+      ).expect(200);
+      expect(body.historial).toEqual([
+        {
+          id: expect.any(Number),
+          fecha: expect.any(String),
+          precio_anterior: '950.50',
+          precio_nuevo: '950.50',
+          costo_anterior: '0.00',
+          costo_nuevo: '380.00',
+          usuario: { id: ids.jefa, nombre_completo: 'Jefa del catálogo' },
+        },
+        {
+          id: expect.any(Number),
+          fecha: expect.any(String),
+          precio_anterior: '900.00',
+          precio_nuevo: '950.50',
+          costo_anterior: '0.00',
+          costo_nuevo: '0.00',
+          usuario: { id: ids.jefa, nombre_completo: 'Jefa del catálogo' },
+        },
+      ]);
+    });
+
+    it('la vendedora ve los cambios de precio, pero no los costos', async () => {
+      const { body } = await conSesion(
+        'get',
+        `/api/variantes/${propio.relojPlateado}/historial-precios`,
+        vera.acceso,
+      ).expect(200);
+      expect(
+        (body.historial as CambioPrecio[]).map((h) => [
+          h.precio_anterior,
+          h.precio_nuevo,
+          h.costo_anterior,
+          h.costo_nuevo,
+        ]),
+      ).toEqual([
+        ['950.50', '950.50', null, null],
+        ['900.00', '950.50', null, null],
+      ]);
+    });
+
+    it('variante inexistente → 404', async () => {
+      await comoJefa('get', '/api/variantes/999999/historial-precios').expect(404).expect({
+        codigo: 'NO_ENCONTRADO',
+        mensaje: 'La variante 999999 no existe',
+      });
+    });
+  });
+
+  describe('búsqueda para la venta y existencias', () => {
+    const otras = { lbr: 0, bod: 0, vera: 0 };
+
+    async function buscar(acceso: string, consulta: string): Promise<VarianteEncontrada[]> {
+      return (await conSesion('get', `/api/variantes/buscar${consulta}`, acceso).expect(200)).body
+        .variantes;
+    }
+
+    beforeAll(async () => {
+      const sucursales = await bd.db.selectFrom('sucursal').select(['id', 'codigo']).execute();
+      otras.lbr = sucursales.find((s) => s.codigo === 'LBR')?.id ?? 0;
+      otras.bod = sucursales.find((s) => s.codigo === 'BOD')?.id ?? 0;
+      const fila = await bd.db
+        .selectFrom('usuario')
+        .select('id')
+        .where('username', '=', 'vera.catalogo')
+        .executeTakeFirstOrThrow();
+      otras.vera = fila.id;
+    });
+
+    it('GET /api/variantes/buscar: por nombre, con precio y stock de la sucursal del equipo', async () => {
+      // Vera entró desde una tablet de Las Américas: no hace falta indicar la sucursal
+      const encontradas = await buscar(vera.acceso, '?texto=labret');
+      expect(encontradas.map((v) => [v.sku, v.stock])).toEqual([
+        ['ACE-LAB-PDR', 10],
+        ['TIT-LAB-16-6', 20],
+        ['TIT-LAB-16-8', 15],
+      ]);
+      expect(encontradas[1]).toEqual({
+        id: demo.labret6,
+        sku: 'TIT-LAB-16-6',
+        codigo_barras: '7501000000011',
+        producto: 'Labret rosca interna',
+        variante: 'Titanio F-136 · 16G · 6 mm',
+        categoria: 'Piercing titanio',
+        tipo: 'PRODUCTO',
+        precio: '650.00',
+        stock: 20,
+        gama: 'Titanio',
+        foto_url: null,
+      });
+    });
+
+    it('por código de barras o SKU exactos, y las perforaciones con su precio', async () => {
+      expect((await buscar(vera.acceso, '?texto=7501000000011')).map((v) => v.sku)).toEqual([
+        'TIT-LAB-16-6',
+      ]);
+      expect((await buscar(vera.acceso, '?texto=tit-lab-16-8')).map((v) => v.sku)).toEqual([
+        'TIT-LAB-16-8',
+      ]);
+      const helix = await buscar(vera.acceso, `?texto=${encodeURIComponent('Hélix')}`);
+      expect(helix.map((v) => [v.sku, v.tipo, v.precio, v.stock])).toEqual([
+        ['SRV-HLX', 'SERVICIO', '350.00', null],
+        ['PAQ-HLX', 'PAQUETE', null, null], // el precio del paquete se calcula con la pieza
+      ]);
+      expect(await buscar(vera.acceso, '?texto=labret&limite=1')).toHaveLength(1);
+    });
+
+    it('sin equipo registrado hay que indicar la sucursal', async () => {
+      await comoJefa('get', '/api/variantes/buscar?texto=labret').expect(400).expect({
+        codigo: 'DATOS_INVALIDOS',
+        mensaje: 'Indique la sucursal (sucursal_id): esta sesión no es de un equipo registrado',
+      });
+      const enBrisas = await buscar(jefa.acceso, `?texto=TIT-LAB-16-6&sucursal_id=${otras.lbr}`);
+      expect(enBrisas.map((v) => v.stock)).toEqual([10]);
+      const sinTexto = await comoJefa(
+        'get',
+        `/api/variantes/buscar?sucursal_id=${otras.lbr}`,
+      ).expect(400);
+      expect(sinTexto.body.errores).toEqual([
+        { campo: 'texto', mensaje: 'Escriba o escanee lo que busca (texto)' },
+      ]);
+    });
+
+    it('una vendedora no busca con el stock de una ubicación que no es la suya', async () => {
+      await conSesion(
+        'get',
+        `/api/variantes/buscar?texto=labret&sucursal_id=${otras.bod}`,
+        vera.acceso,
+      )
+        .expect(403)
+        .expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: `El usuario ${otras.vera} no está asignado a la sucursal ${otras.bod}`,
+        });
+    });
+
+    it('GET /api/variantes/:id/existencias: cuánto hay en cada ubicación', async () => {
+      const { body } = await comoJefa('get', `/api/variantes/${demo.labret6}/existencias`).expect(
+        200,
+      );
+      const existencias = body.existencias as ExistenciaUbicacion[];
+      expect(existencias.filter((e) => e.sucursal_id !== otras.bod).slice(0, 2)).toEqual([
+        {
+          sucursal_id: ids.lam,
+          sucursal: 'Multicentro Las Américas',
+          tipo: 'SUCURSAL',
+          cantidad: 20,
+          disponible: true,
+        },
+        {
+          sucursal_id: otras.lbr,
+          sucursal: 'Multicentro Las Brisas',
+          tipo: 'SUCURSAL',
+          cantidad: 10,
+          disponible: true,
+        },
+      ]);
+      expect(existencias.find((e) => e.sucursal_id === otras.bod)).toMatchObject({
+        tipo: 'BODEGA',
+        cantidad: 10,
+        disponible: true,
+      });
+    });
+
+    it('de la bodega, la vendedora solo sabe si hay o no (parámetro BODEGA_VISIBILIDAD)', async () => {
+      const { body } = await conSesion(
+        'get',
+        `/api/variantes/${demo.labret6}/existencias`,
+        vera.acceso,
+      ).expect(200);
+      const existencias = body.existencias as ExistenciaUbicacion[];
+      expect(existencias.find((e) => e.sucursal_id === otras.bod)).toMatchObject({
+        cantidad: null,
+        disponible: true,
+      });
+      expect(existencias.find((e) => e.sucursal_id === otras.lbr)?.cantidad).toBe(10);
+      await comoJefa('get', '/api/variantes/999999/existencias').expect(404);
     });
   });
 

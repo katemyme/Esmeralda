@@ -76,6 +76,17 @@ export class UsuariosController {
     return this.usuarios.resetearPassword(admin.id, id);
   }
 
+  /** Desbloquea la cuenta (5 contraseñas incorrectas la bloquean 15 minutos) sin cambiar la contraseña. */
+  @Post(':id/desbloquear')
+  @RequierePermiso('USUARIOS_GESTIONAR')
+  @HttpCode(HttpStatus.OK)
+  async desbloquear(
+    @UsuarioActual() admin: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+  ): Promise<{ usuario: UsuarioAdmin }> {
+    return { usuario: await this.usuarios.desbloquear(admin.id, id) };
+  }
+
   @Post(':id/cerrar-sesiones')
   @RequierePermiso('USUARIOS_GESTIONAR')
   @HttpCode(HttpStatus.OK)
