@@ -13,6 +13,36 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 - Moneda base: córdobas (NIO). Pagos en NIO o USD. Fechas en `timestamptz`; reportes en `America/Managua`,
   semana de lunes a domingo.
 
+## Estado actual
+
+_Actualizado el 2026-10-02._
+
+- **Terminado:** esquema de base de datos v1.1 y los pasos **B1** y **B2** del backend (etiqueta `guardado-b2`).
+- **En curso:** **B3** (panel de administración). **Pendiente:** B4 a B7 y el frontend.
+- Pruebas en verde: 255 de base de datos y 99 del backend. Nada se ha subido a GitHub.
+
+**Levantar el servidor** (desde `backend/`):
+
+```
+npm install             solo la primera vez
+copy .env.example .env  solo la primera vez: poner DATABASE_URL y JWT_SECRETO (npm run secreto)
+npm run db:recrear      crea la base local "esmeralda" con esquema + seed + datos demo (borra la anterior)
+npm run start:dev       API en http://localhost:3000/api  →  probar con http://localhost:3000/api/salud
+```
+
+Usuarios de la base local: `admin` / `Esmeralda#2026` (temporal: pide cambiarla al entrar); demo `maria.lopez`
+(encargada), `ana.martinez` y `carlos.ruiz` (vendedores) / `Demo#2026`. Para detener el servidor: Ctrl+C.
+
+**Correr las pruebas:**
+
+```
+db\scripts\probar.cmd   desde la raíz: reglas de la base  →  *** TODAS LAS PRUEBAS PASARON ***
+npm run verificar       desde backend/: tipos + oxlint + Prettier + Jest (unitarias, integración y API)
+```
+
+Las dos usan bases propias que se borran y recrean en cada corrida (`esmeralda_test` y `esmeralda_api_test`);
+no tocan la base local `esmeralda`.
+
 ## Estructura
 
 ```
