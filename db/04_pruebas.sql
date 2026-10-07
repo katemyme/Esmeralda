@@ -550,6 +550,10 @@ SELECT nombre, tipo, valor, compra_minima, aplica, descuento FROM fn_promociones
 -- Idempotencia: la misma clave dos veces → una sola venta
 SELECT count(*) AS ventas_antes FROM venta \gset
 SELECT cantidad AS lbr_nei FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :nei \gset
+SELECT ultimo_numero_venta AS lbr_num FROM sucursal WHERE id = :lbr \gset
+-- El primer intento falla (pago insuficiente): no queda venta y su número de factura sigue libre
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":100}]', NULL, NULL, NULL, NULL, 'a1b2c3d4-0000-4000-8000-000000000001')$q$, :carlos, :turno_lbr, :nei), 'Pago insuficiente');
+SELECT pg_temp.afirma((SELECT ultimo_numero_venta FROM sucursal WHERE id = :lbr) = :lbr_num, 'la venta que falla no consume número de factura');
 SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :nei)::jsonb,
   '[{"metodo":"EFECTIVO","monto":520}]', NULL, NULL, NULL, NULL, 'a1b2c3d4-0000-4000-8000-000000000001') AS vi1 \gset
 SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :nei)::jsonb,
@@ -557,6 +561,17 @@ SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"canti
 SELECT pg_temp.afirma(:vi1 = :vi2, 'el doble clic devuelve la misma venta');
 SELECT pg_temp.afirma((SELECT count(*) FROM venta) = :ventas_antes + 1, 'solo se creó una venta');
 SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :lbr AND variante_id = :nei) = :lbr_nei - 1, 'el stock bajó una sola vez');
+SELECT pg_temp.afirma((SELECT numero FROM venta WHERE id = :vi1) = 'LBR-' || lpad((:lbr_num + 1)::text, 8, '0'), 'el reintento de la venta que falló toma el número siguiente, sin salto');
+SELECT pg_temp.afirma((SELECT ultimo_numero_venta FROM sucursal WHERE id = :lbr) = :lbr_num + 1, 'repetir la clave no consume otro número de factura');
+-- El número se toma en la misma transacción de la venta: si quien llama la deshace, vuelve a quedar libre
+BEGIN;
+SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1}]', :nei)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":520}]', NULL, NULL, NULL, NULL, 'a1b2c3d4-0000-4000-8000-000000000002') AS vi3 \gset
+SELECT pg_temp.afirma((SELECT numero FROM venta WHERE id = :vi3) = 'LBR-' || lpad((:lbr_num + 2)::text, 8, '0'), 'dentro de su transacción la venta ya tiene el número siguiente');
+ROLLBACK;
+SELECT pg_temp.afirma((SELECT ultimo_numero_venta FROM sucursal WHERE id = :lbr) = :lbr_num + 1
+                  AND NOT EXISTS (SELECT 1 FROM venta WHERE clave_idempotencia = 'a1b2c3d4-0000-4000-8000-000000000002'),
+                  'si la transacción se deshace, ni la venta ni su número quedan tomados');
 
 -- Reportes nuevos
 \echo 'Perforaciones: con pieza vs solo servicio'
@@ -1085,5 +1100,17 @@ SELECT fn_set_parametro(:admin, 'BODEGA_VISIBILIDAD', 'CANTIDAD');
 SELECT pg_temp.afirma(fn_ve_cantidad_bodega(:ana), 'con BODEGA_VISIBILIDAD = CANTIDAD la vendedora también la ve');
 SELECT fn_set_parametro(:admin, 'BODEGA_VISIBILIDAD', 'SI_NO');
 SELECT pg_temp.afirma((SELECT cantidad IS NULL AND disponible FROM fn_consultar_stock(:ana, :lab6) WHERE tipo = 'BODEGA'), 'fn_consultar_stock sigue aplicando la regla');
+
+\echo '\n=== 22. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+-- Después de todas las ventas de arriba (completadas, anuladas, rechazadas y repetidas con la misma clave)
+SELECT pg_temp.afirma((SELECT sum(ultimo_numero_venta) FROM sucursal) > 0
+                  AND NOT EXISTS (
+                        SELECT 1 FROM sucursal s
+                         WHERE (SELECT count(*) FROM venta v WHERE v.sucursal_id = s.id) <> s.ultimo_numero_venta
+                            OR EXISTS (SELECT 1 FROM generate_series(1, s.ultimo_numero_venta) n
+                                        WHERE NOT EXISTS (SELECT 1 FROM venta v
+                                                           WHERE v.sucursal_id = s.id
+                                                             AND v.numero = s.codigo || '-' || lpad(n::text, 8, '0')))),
+                  'en cada sucursal las facturas van del 1 al último número, sin saltos (las anuladas conservan el suyo)');
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'
