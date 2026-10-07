@@ -15,14 +15,18 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-02._
+_Actualizado el 2026-10-06._
 
-- **Terminado:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta `guardado-b2`), **B3**, **B4**
-  (aprobados por el dueño) y **B5** del backend. Con B5 se hizo también todo lo que había quedado fuera de B3 y
-  B4: sucursales y cajas, roles nuevos, desbloqueo, mínimo de parámetros, bitácora, fotos, historial de precios,
-  búsqueda para la venta, existencias y la carga inicial desde Excel. Está **pendiente de revisión del dueño**.
-- **Sigue:** **B6** (POS y caja), solo cuando el dueño lo pida. **Pendiente:** B7 y el frontend.
-- Pruebas en verde: 428 de base de datos y 336 del backend. Nada se ha subido a GitHub.
+- **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
+  `guardado-b2`), **B3**, **B4** y **B5** del backend. Con B5 se hizo también todo lo que había quedado fuera de
+  B3 y B4: sucursales y cajas, roles nuevos, desbloqueo, mínimo de parámetros, bitácora, fotos, historial de
+  precios, búsqueda para la venta, existencias y la carga inicial desde Excel. El dueño aprobó B5 el 2026-10-06
+  (reglas para desactivar sucursales y eliminar roles, visibilidad por sucursal, fotos públicas con nombre al
+  azar, carga inicial que no duplica; el aviso de exceljs se queda así) con dos ajustes ya hechos: la carga
+  inicial actualiza el precio de los productos que ya existen, y pruebas de que las facturas no dejan saltos.
+- **Sigue:** **B6** (POS y caja): primero se presenta el plan y se programa solo con el OK del dueño.
+  **Pendiente:** B7 y el frontend.
+- Pruebas en verde: 435 de base de datos y 339 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
   B7) y borrar las fotos sueltas que nunca se usaron.
@@ -56,7 +60,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      428 pruebas de reglas de negocio
+db/04_pruebas.sql      435 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -87,6 +91,9 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - El precio cobrado puede subir (máx. +50 %, parámetro), nunca bajar. La única rebaja es una
   **promoción** activa y vigente (una por venta, sobre toda la venta), creada por el admin.
 - Venta con `clave_idempotencia` (UUID del POS) para evitar duplicados.
+- Número de factura: correlativo por sucursal (`sucursal.ultimo_numero_venta`, `LAM-00000001`) que
+  `fn_registrar_venta` toma dentro de la misma transacción de la venta. No deja saltos si la venta falla o se
+  reintenta con la misma clave; no cambiarlo por una SEQUENCE (no se devuelve al deshacer).
 - Caja: un turno al día por sucursal, compartido. Arqueo ciego por denominación; retiro de efectivo;
   lo que queda es el fondo del día siguiente. Diferencia > C$100 → justificación + alerta.
 - Roles: ADMIN (todo), ENCARGADO (ventas, anulaciones, recibir, reportar mermas, contar, ver
@@ -105,7 +112,9 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     administran desde su pantalla. Una gama con piezas o precios no cambia de modo de precio.
   - `PRECIOS_EDITAR` permite cambiar precio **y costo** a mano (además del costo promedio de las compras).
   - Las duraciones de sesión tienen mínimo 1 (`parametro.minimo`).
-  - Carga inicial: solo crea lo que falta; el inventario inicial entra a la bodega y se reparte con envíos.
+  - Carga inicial: solo crea lo que falta; el inventario inicial entra a la bodega y se reparte con envíos. De
+    lo que ya existe solo cambia precios: tabla de paquetes, precios especiales y precio de venta de los
+    productos (el costo no: es el promedio de las compras).
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -193,7 +202,9 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 - Carga inicial (`carga-inicial/`): `plantilla.ts` lee el Excel (exceljs) sin depender de fórmulas calculadas;
   el servicio valida cada fila con el **mismo esquema Zod** de la API y la guarda con la **misma `fn_*`**, todo
   en una transacción con un `savepoint` por fila para juntar todos los errores. Simula por defecto
-  (`?aplicar=true` para guardar). Solo crea lo que falta; lo repetido dentro del archivo es error.
+  (`?aplicar=true` para guardar). Solo crea lo que falta; lo repetido dentro del archivo es error. A un producto
+  que ya existe le actualiza el precio de venta con `fn_set_precio_variante` (pide `PRECIOS_EDITAR`, queda en el
+  historial de precios y se cuenta en `resumen.precios_actualizados`).
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
