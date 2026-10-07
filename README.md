@@ -214,7 +214,7 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `GET /api/ventas` · `GET /api/ventas/:id` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, solo las propias: `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` |
 | `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
 | `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
-| `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio }`: registra o corrige el de hoy (los días anteriores no se editan) |
+| `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
 | `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
 
 - **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, hasta
@@ -230,6 +230,10 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   por método solo llegan con `CAJA_VER_DIFERENCIAS`; lo esperado y las diferencias, solo en `/api/turnos`.
 - **Ticket de venta.** La venta trae `ticket: { negocio, ruc, direccion, telefono, leyenda }` (parámetros
   `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA`, más los datos de la sucursal) para que la pantalla lo imprima.
+- **Tipo de cambio.** Si el valor se aleja del último registrado más que el parámetro `TIPO_CAMBIO_VARIACION_MAX`
+  (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
+  El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango
+  responde 422 aunque venga confirmado.
 
 ### Carga inicial desde Excel
 
@@ -239,7 +243,10 @@ y crea categorías, perforaciones con sus precios, productos, inventario inicial
 - Sin parámetros **simula**: responde qué se crearía, los avisos y los errores de cada hoja y fila, y no guarda nada.
 - Con `?aplicar=true` guarda todo en una sola transacción; si hay un solo error no guarda nada (422 con el informe).
 - Solo crea lo que falta: lo que ya existe se omite con un aviso, así el mismo archivo se puede volver a cargar.
-- Los precios sí quedan como diga el archivo: la tabla de paquetes, los precios especiales y el precio de venta de
-  los productos que ya existen (pide `PRECIOS_EDITAR`; el cambio queda en el historial de precios y el aviso de la
-  fila dice el precio anterior y el nuevo). El costo, el inventario y los demás datos de esos productos no cambian.
+- Los precios sí quedan como diga el archivo: la tabla de paquetes, los precios especiales, el precio de solo
+  servicio de las perforaciones que ya existen y el precio de venta de los productos que ya existen (pide
+  `PRECIOS_EDITAR`; el cambio queda en el historial de precios y el aviso de la fila dice el precio anterior y el
+  nuevo; se cuentan en `resumen.precios_servicio_actualizados` y `resumen.precios_actualizados`). El costo, el
+  inventario y los demás datos de esos productos y perforaciones no cambian.
+- Una perforación o un producto que ya existe y viene dos veces en el archivo es un error.
 - La respuesta trae las contraseñas temporales de los usuarios creados (se muestran una sola vez).

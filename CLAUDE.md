@@ -15,27 +15,32 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-06._
+_Actualizado el 2026-10-07._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
-  `guardado-b2`), **B3**, **B4** y **B5** del backend. Con B5 se hizo también todo lo que había quedado fuera de
+  `guardado-b2`), **B3**, **B4**, **B5** y **B6** del backend. Con B5 se hizo también todo lo que había quedado fuera de
   B3 y B4: sucursales y cajas, roles nuevos, desbloqueo, mínimo de parámetros, bitácora, fotos, historial de
   precios, búsqueda para la venta, existencias y la carga inicial desde Excel. El dueño aprobó B5 el 2026-10-06
   (reglas para desactivar sucursales y eliminar roles, visibilidad por sucursal, fotos públicas con nombre al
   azar, carga inicial que no duplica; el aviso de exceljs se queda así) con dos ajustes ya hechos: la carga
   inicial actualiza el precio de los productos que ya existen, y pruebas de que las facturas no dejan saltos.
-- **Terminado, pendiente de revisión del dueño:** **B6** (POS y caja). El dueño aprobó el plan y sus siete
-  decisiones el 2026-10-06 (están en «Decisiones de negocio clave»); se programó completo ese mismo día.
-- **Sigue:** **B7** (reportes), solo cuando el dueño lo pida. **Pendiente:** el frontend.
-- Pruebas en verde: 472 de base de datos y 402 del backend. Nada se ha subido a GitHub.
+- **B6 (POS y caja) aprobado el 2026-10-07:** el dueño aprobó las siete decisiones (están en «Decisiones de
+  negocio clave») y lo reportado, y respondió las preguntas abiertas: la carga inicial actualiza también el precio
+  de solo servicio de las perforaciones que ya existen (hecho); los envíos se quedan con su SEQUENCE (ahí los
+  saltos no importan); el RUC y la leyenda del ticket quedan vacíos y él los llena en el panel. Pidió además un
+  control del tipo de cambio (variación máxima con confirmación y rango del primero), ya hecho.
+- **Sigue:** **B7** (reportes). El plan se le presentó el 2026-10-07: **no se programa hasta que dé su OK** y
+  responda las decisiones que quedaron planteadas. **Pendiente:** el frontend (no empezarlo).
+- Pruebas en verde: 490 de base de datos y 409 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
   B7) y borrar las fotos sueltas que nunca se usaron.
 - Fuera de B6: devoluciones de ventas de un turno ya cerrado (fase 2), el ticket en PDF y la tarea programada
-  `fn_alertar_cajas_sin_cerrar` (los dos van con B7), un historial del tipo de cambio, y avisar cuando el tipo de
-  cambio que se registra se aleja mucho del anterior (hoy solo se exige que sea mayor que cero). Preguntas
-  abiertas al dueño: si la carga inicial debe actualizar también el precio de servicio de las perforaciones que
-  ya existen, y si el número de los envíos (`ENV-000001`, hoy una SEQUENCE) pasa a un correlativo sin saltos.
+  `fn_alertar_cajas_sin_cerrar` (los dos van con B7) y un historial del tipo de cambio. Quien confirma un tipo de
+  cambio fuera del límite queda en la bitácora, pero no genera una alerta (se le planteó al dueño con B7).
+- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-07: `fn_set_tipo_cambio` y el parámetro
+  `TIPO_CAMBIO_VARIACION_MAX`) la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
+  (borra lo que tenga: mirar antes si el dueño ya guardó datos propios).
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -66,7 +71,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      472 pruebas de reglas de negocio
+db/04_pruebas.sql      490 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -99,7 +104,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Venta con `clave_idempotencia` (UUID del POS) para evitar duplicados.
 - Número de factura: correlativo por sucursal (`sucursal.ultimo_numero_venta`, `LAM-00000001`) que
   `fn_registrar_venta` toma dentro de la misma transacción de la venta. No deja saltos si la venta falla o se
-  reintenta con la misma clave; no cambiarlo por una SEQUENCE (no se devuelve al deshacer).
+  reintenta con la misma clave; no cambiarlo por una SEQUENCE (no se devuelve al deshacer). Solo las facturas
+  van sin saltos: el número de los envíos (`ENV-000001`) se queda con su SEQUENCE (decisión del dueño, 2026-10-07).
 - Caja: un turno al día por sucursal, compartido. Arqueo ciego por denominación; retiro de efectivo;
   lo que queda es el fondo del día siguiente. Diferencia > C$100 → justificación + alerta.
 - Roles: ADMIN (todo), ENCARGADO (ventas, anulaciones, recibir, reportar mermas, contar, ver
@@ -119,8 +125,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - `PRECIOS_EDITAR` permite cambiar precio **y costo** a mano (además del costo promedio de las compras).
   - Las duraciones de sesión tienen mínimo 1 (`parametro.minimo`).
   - Carga inicial: solo crea lo que falta; el inventario inicial entra a la bodega y se reparte con envíos. De
-    lo que ya existe solo cambia precios: tabla de paquetes, precios especiales y precio de venta de los
-    productos (el costo no: es el promedio de las compras).
+    lo que ya existe solo cambia precios: tabla de paquetes, precios especiales, precio de solo servicio de las
+    perforaciones y precio de venta de los productos (el costo no: es el promedio de las compras).
 - POS y caja (B6; decisiones del dueño del 2026-10-06), todas en la base:
   - La sucursal, la caja y el turno **no los manda la pantalla**: salen del equipo registrado de la sesión
     (`fn_caja_de_sesion`, `fn_turno_de_sesion`). PC de caja → su caja. Tablet → la única caja abierta de su
@@ -137,9 +143,13 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     método solo con `CAJA_VER_DIFERENCIAS`. En un cierre forzado (sin conteo) el ticket reducido no trae montos.
   - **Tipo de cambio:** solo se registra el de hoy y se puede corregir durante el día (`fn_set_tipo_cambio`); cada
     venta guarda el suyo, así que el cambio vale para las ventas siguientes. Los días anteriores no se editan.
+    Control contra errores de dedo (pedido del dueño, 2026-10-07): si el valor se aleja del **último registrado**
+    (el vigente, sea de hoy o de un día anterior) más que el parámetro `TIPO_CAMBIO_VARIACION_MAX` (5 %; justo
+    el 5 % pasa), se rechaza salvo confirmación explícita. Si no hay ninguno anterior, solo entra entre 20 y 60
+    (fijo en la función; ahí la confirmación no cuenta).
   - **Ticket de venta:** la API entrega los datos y la pantalla lo imprime (el PDF va con B7). Encabezado y pie
-    con los parámetros `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA` (el dueño aún no ha dado el RUC ni la
-    leyenda: están vacíos).
+    con los parámetros `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA` (el RUC y la leyenda están vacíos: el
+    dueño los llena en el panel).
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -229,7 +239,9 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   en una transacción con un `savepoint` por fila para juntar todos los errores. Simula por defecto
   (`?aplicar=true` para guardar). Solo crea lo que falta; lo repetido dentro del archivo es error. A un producto
   que ya existe le actualiza el precio de venta con `fn_set_precio_variante` (pide `PRECIOS_EDITAR`, queda en el
-  historial de precios y se cuenta en `resumen.precios_actualizados`).
+  historial de precios y se cuenta en `resumen.precios_actualizados`); a una perforación que ya existe, igual
+  con su precio de solo servicio (`resumen.precios_servicio_actualizados`). Un producto o una perforación que
+  ya existe y viene dos veces en el archivo es un error (no se sabría qué precio vale).
 - POS y caja (B6): módulos `caja/` (rutas `/api/caja/turno...`, `/api/turnos...`, `/api/metodos-pago`,
   `/api/denominaciones`), `ventas/` y `tipo-cambio/`. Ningún esquema de entrada lleva sucursal ni turno: los
   servicios reciben el `UsuarioAutenticado` completo y resuelven la caja con `caja/sesion-caja.ts`
@@ -246,16 +258,20 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
     (`CAJA_VER_DIFERENCIAS`). Qué trae el ticket de cierre lo decide la base (`fn_ticket_cierre(turno, completo)`).
   - Las funciones que devuelven JSON (`fn_ticket_cierre`) entregan los montos como número: el servicio los pasa a
     texto con 2 decimales, como el resto de la API.
+  - `PUT /api/tipo-cambio` acepta `confirmar` (solo `true` cuenta). Cuando la base pide la confirmación lanza el
+    SQLSTATE `ESM02`, que `FiltroErrores` traduce a 409 `CONFIRMACION_REQUERIDA` con el mensaje de la base: la
+    pantalla pregunta y reenvía con `confirmar: true`. Sirve para cualquier otra función que pida confirmar.
   - `test/pos.e2e-spec.ts` trabaja en una sucursal propia (`PVE`) con su caja, su PC de caja y su tablet; usa una
     pieza de gama Titanio (las otras pruebas cuentan las piezas y los precios de las gamas de acero) y al final
-    deja el tipo de cambio como estaba. Hace `app.listen(0)` porque envía dos solicitudes a la vez.
+    deja el tipo de cambio como estaba (una prueba borra los registrados mientras dura y los repone: vale porque
+    Jest corre con `--runInBand`). Hace `app.listen(0)` porque envía dos solicitudes a la vez.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
 - Tipos al leer: `bigint` → number, `date` → texto `AAAA-MM-DD`, `numeric` → texto (montos exactos),
   `timestamptz` → Date. Configurado en `tipos-pg.ts` y `.kysely-codegenrc.json` (deben coincidir).
 - Errores: `FiltroErrores` responde `{ codigo, mensaje }` en español. Los `RAISE EXCEPTION` de la base se
-  reenvían tal cual (P0001 → 422, 42501 → 403, 23001 → 409); las violaciones de restricción generadas por
+  reenvían tal cual (P0001 → 422, 42501 → 403, 23001 → 409, ESM02 → 409 `CONFIRMACION_REQUERIDA`); las violaciones de restricción generadas por
   PostgreSQL se reemplazan por texto genérico + `restriccion`. Error propio: `new HttpException({ codigo, mensaje }, estado)`.
 - Pruebas: `src/**/*.spec.ts` (unitarias e integración) y `test/**/*.e2e-spec.ts` (supertest). Usan la base
   `esmeralda_api_test` (o `TEST_DATABASE_URL`), recreada desde `db/01..03` en cada corrida. Dentro de Jest
