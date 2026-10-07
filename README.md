@@ -203,4 +203,7 @@ y crea categorías, perforaciones con sus precios, productos, inventario inicial
 - Sin parámetros **simula**: responde qué se crearía, los avisos y los errores de cada hoja y fila, y no guarda nada.
 - Con `?aplicar=true` guarda todo en una sola transacción; si hay un solo error no guarda nada (422 con el informe).
 - Solo crea lo que falta: lo que ya existe se omite con un aviso, así el mismo archivo se puede volver a cargar.
+- Los precios sí quedan como diga el archivo: la tabla de paquetes, los precios especiales y el precio de venta de
+  los productos que ya existen (pide `PRECIOS_EDITAR`; el cambio queda en el historial de precios y el aviso de la
+  fila dice el precio anterior y el nuevo). El costo, el inventario y los demás datos de esos productos no cambian.
 - La respuesta trae las contraseñas temporales de los usuarios creados (se muestran una sola vez).

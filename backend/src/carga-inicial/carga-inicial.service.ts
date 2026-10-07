@@ -23,7 +23,7 @@ export interface ResultadoCarga {
   /** true solo si se pidió aplicar y no hubo ningún error: entonces todo quedó guardado. */
   aplicada: boolean;
   simulacion: boolean;
-  /** Lo que se creó (o se crearía, en una simulación). */
+  /** Lo que se creó o se actualizó (o se haría, en una simulación). */
   resumen: {
     categorias: number;
     perforaciones: number;
@@ -31,6 +31,8 @@ export interface ResultadoCarga {
     precios_especiales: number;
     productos: number;
     variantes: number;
+    /** Productos que ya existían y cuyo precio de venta cambió con esta carga. */
+    precios_actualizados: number;
     piezas_en_inventario: number;
     envios: number;
     proveedores: number;
@@ -47,6 +49,14 @@ export interface ResultadoCarga {
 
 /** Para deshacer la transacción al final de una simulación o cuando hubo errores. */
 class Deshacer extends Error {}
+
+/** Una variante que ya estaba en el sistema, con su precio y el que trae la plantilla. */
+interface VarianteExistente {
+  id: number;
+  tipo: string;
+  precio: string;
+  precio_nuevo: string;
+}
 
 // Restricciones de la base con un mensaje más claro que el genérico
 const RESTRICCIONES: Record<string, string> = {
@@ -89,7 +99,9 @@ function entero(celda: string | number | null): number | null | 'invalido' {
  * valida con el mismo esquema que usa la API y se guarda con la misma función fn_* de la base,
  * todo dentro de una sola transacción: si hay un error, o si es una simulación, no queda nada.
  * Solo crea lo que falta: lo que ya existe se omite con un aviso (así el mismo archivo se puede
- * volver a cargar sin duplicar nada); la tabla de precios y los precios especiales sí se actualizan.
+ * volver a cargar sin duplicar nada). Los precios sí quedan como diga el archivo: la tabla de
+ * precios, los precios especiales y el precio de venta de los productos que ya existen (su costo
+ * no: es el promedio de las compras).
  */
 @Injectable()
 export class CargaInicialService {
@@ -130,6 +142,7 @@ class Carga {
     precios_especiales: 0,
     productos: 0,
     variantes: 0,
+    precios_actualizados: 0,
     piezas_en_inventario: 0,
     envios: 0,
     proveedores: 0,
@@ -145,6 +158,8 @@ class Carga {
   private readonly skuOmitidos = new Map<string, string>();
   /** SKU creados en esta carga → id de la variante. */
   private readonly skuCreados = new Map<string, number>();
+  /** SKU que ya existían y ya salieron en una fila de Productos de este archivo. */
+  private readonly skuExistentes = new Set<string>();
   /** Lo creado en esta carga, para distinguir "ya existía" de "está dos veces en la plantilla". */
   private readonly creados = new Set<string>();
 
@@ -404,14 +419,21 @@ class Carga {
         );
         continue;
       }
-      if (this.skuCreados.has(valida.sku)) {
+      if (this.skuCreados.has(valida.sku) || this.skuExistentes.has(valida.sku)) {
         this.error('Productos', fila, `El SKU ${valida.sku} está repetido en la plantilla`);
         continue;
       }
-      const existente = await this.unId(sql`select id from variante where sku = ${valida.sku}`);
+      const existente = (
+        await sql<VarianteExistente>`
+          select v.id, p.tipo, v.precio_venta as precio,
+                 ${valida.precio_venta}::numeric(12,2) as precio_nuevo
+            from variante v join producto p on p.id = v.producto_id
+           where v.sku = ${valida.sku}`.execute(this.trx)
+      ).rows[0];
       if (existente) {
-        this.aviso('Productos', fila, `El SKU ${valida.sku} ya existe: no se modificó`);
+        this.skuExistentes.add(valida.sku);
         this.skuOmitidos.set(valida.sku, 'ya existía en el sistema');
+        await this.actualizarPrecio(fila, valida.sku, existente);
         continue;
       }
       const minimos: [number, number][] = [];
@@ -469,6 +491,37 @@ class Carga {
       this.resumen.variantes++;
       this.skuCreados.set(valida.sku, creada.variante);
     }
+  }
+
+  /**
+   * Un producto que ya existe no se vuelve a crear, pero su precio de venta queda como diga el
+   * archivo (el cambio pasa por fn_set_precio_variante y queda en el historial de precios). El
+   * costo y los demás datos no se tocan.
+   */
+  private async actualizarPrecio(
+    fila: number,
+    sku: string,
+    variante: VarianteExistente,
+  ): Promise<void> {
+    if (variante.tipo !== 'PRODUCTO') {
+      this.aviso('Productos', fila, `El SKU ${sku} es de una perforación: no se modificó`);
+      return;
+    }
+    if (variante.precio === variante.precio_nuevo) {
+      this.aviso('Productos', fila, `El SKU ${sku} ya existe: no se modificó`);
+      return;
+    }
+    const actualizado = await this.intentar('Productos', fila, () =>
+      sql`select fn_set_precio_variante(${this.adminId}, ${variante.id},
+                 ${variante.precio_nuevo}::numeric)`.execute(this.trx),
+    );
+    if (!actualizado) return;
+    this.resumen.precios_actualizados++;
+    this.aviso(
+      'Productos',
+      fila,
+      `El SKU ${sku} ya existe: se actualizó su precio de C$ ${variante.precio} a C$ ${variante.precio_nuevo} (lo demás no se modificó)`,
+    );
   }
 
   // -------------------------------------------------------------- PreciosEspeciales

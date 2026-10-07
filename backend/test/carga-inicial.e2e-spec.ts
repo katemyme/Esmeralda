@@ -170,6 +170,15 @@ const datosConErrores: Llenar = (hoja) => {
   escribir(hoja('Promociones'), 4, ['Imposible CI', 'PORCENTAJE', 150]);
 };
 
+/** La plantilla válida con otro precio (columna J) y otro costo (K) para la barra CI-TIT-01 (fila 3). */
+function conPrecioDeBarra(precio: number, costo?: number): Promise<Buffer> {
+  return plantilla(datosValidos, (hoja) => {
+    const fila = hoja('Productos').getRow(3);
+    fila.getCell(10).value = precio;
+    if (costo !== undefined) fila.getCell(11).value = costo;
+  });
+}
+
 function ubicadas(observaciones: Observacion[]): string[] {
   return observaciones.map((o) => `${o.hoja}:${o.fila ?? '-'}`);
 }
@@ -240,6 +249,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         precios_especiales: 1,
         productos: 2,
         variantes: 3,
+        precios_actualizados: 0,
         piezas_en_inventario: 23,
         envios: 2, // uno a cada sucursal
         proveedores: 1,
@@ -495,6 +505,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
           // los precios sí quedan como diga el archivo
           precios_paquete: 3,
           precios_especiales: 1,
+          precios_actualizados: 0, // los de los productos no cambiaron
         },
         usuarios: [],
         errores: [],
@@ -517,6 +528,116 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         (existencias.existencias as ExistenciaUbicacion[]).find((e) => e.sucursal_id === ids.bod)
           ?.cantidad,
       ).toBe(10);
+    });
+
+    it('si el archivo trae otro precio para un producto que ya existe, lo actualiza', async () => {
+      const guardada = async () =>
+        (await productosCI())[0].variantes.find((v) => v.sku === 'CI-TIT-01');
+      const conOtroPrecio = await conPrecioDeBarra(750, 999);
+
+      // la simulación lo anuncia y no lo guarda
+      const simulada = (await cargar(conOtroPrecio).expect(200)).body as ResultadoCarga;
+      expect(simulada).toMatchObject({
+        aplicada: false,
+        resumen: { variantes: 0, precios_actualizados: 1 },
+        errores: [],
+      });
+      expect((await guardada())?.precio_venta).toBe('700.00');
+
+      const aplicada = (await cargar(conOtroPrecio, '?aplicar=true').expect(200))
+        .body as ResultadoCarga;
+      expect(aplicada).toMatchObject({
+        aplicada: true,
+        resumen: {
+          productos: 0,
+          variantes: 0,
+          precios_actualizados: 1,
+          piezas_en_inventario: 0,
+          envios: 0,
+        },
+        errores: [],
+      });
+      expect(aplicada.avisos.filter((a) => a.hoja === 'Productos').map((a) => a.mensaje)).toEqual([
+        'Fila de ejemplo de la plantilla: se omitió',
+        'El SKU CI-TIT-01 ya existe: se actualizó su precio de C$ 700.00 a C$ 750.00 (lo demás no se modificó)',
+        'El SKU CI-TIT-02 ya existe: no se modificó',
+        'El SKU CI-REL-01 ya existe: no se modificó',
+      ]);
+
+      // cambió solo el precio: el costo de la plantilla (999) no se aplica y el inventario no se repite
+      const titanio = await guardada();
+      expect(titanio).toMatchObject({ precio_venta: '750.00', costo: '250.00' });
+      const { body: precios } = await comoJefa(
+        `/api/variantes/${titanio?.id}/historial-precios`,
+      ).expect(200);
+      expect(precios.historial[0]).toMatchObject({
+        precio_anterior: '700.00',
+        precio_nuevo: '750.00',
+        costo_anterior: '250.00',
+        costo_nuevo: '250.00',
+      });
+      const { body: existencias } = await comoJefa(
+        `/api/variantes/${titanio?.id}/existencias`,
+      ).expect(200);
+      expect(
+        (existencias.existencias as ExistenciaUbicacion[]).find((e) => e.sucursal_id === ids.bod)
+          ?.cantidad,
+      ).toBe(10);
+
+      // con el precio ya igual, el mismo archivo no vuelve a cambiar nada
+      const otraVez = (await cargar(conOtroPrecio, '?aplicar=true').expect(200))
+        .body as ResultadoCarga;
+      expect(otraVez.resumen.precios_actualizados).toBe(0);
+    });
+
+    it('un producto que ya existe, repetido en el archivo, es un error', async () => {
+      const repetido = await plantilla(datosValidos, (hoja) =>
+        escribir(hoja('Productos'), 6, [
+          'CI-TIT-01',
+          null,
+          'Barras CI',
+          'Barra CI',
+          'x',
+          null,
+          null,
+          null,
+          null,
+          800,
+        ]),
+      );
+      const { body } = await cargar(repetido).expect(200);
+      expect((body as ResultadoCarga).errores).toEqual([
+        { hoja: 'Productos', fila: 6, mensaje: 'El SKU CI-TIT-01 está repetido en la plantilla' },
+      ]);
+    });
+
+    it('cambiar un precio con la carga pide PRECIOS_EDITAR, igual que en el catálogo', async () => {
+      const { permisos } = await bd.db
+        .selectFrom('v_roles_admin')
+        .select('permisos')
+        .where('codigo', '=', 'VENDEDOR')
+        .$castTo<{ permisos: string[] }>()
+        .executeTakeFirstOrThrow();
+      const ponerPermisos = (lista: string[]) =>
+        request(http)
+          .put('/api/roles/VENDEDOR/permisos')
+          .set('Authorization', `Bearer ${jefa.acceso}`)
+          .send({ permisos: lista })
+          .expect(200);
+      // La vendedora puede administrar el catálogo, pero no los precios
+      await ponerPermisos([...permisos, 'PRODUCTOS_GESTIONAR']);
+      try {
+        const { body } = await cargar(await conPrecioDeBarra(800), '', vera.acceso).expect(200);
+        const resultado = body as ResultadoCarga;
+        expect(resultado.errores).toContainEqual({
+          hoja: 'Productos',
+          fila: 3,
+          mensaje: 'Permiso denegado: se requiere PRECIOS_EDITAR',
+        });
+        expect(resultado.resumen.precios_actualizados).toBe(0);
+      } finally {
+        await ponerPermisos(permisos); // las otras pruebas esperan los permisos del seed
+      }
     });
   });
 
