@@ -224,6 +224,16 @@ export interface HistorialPrecio {
   variante_id: number;
 }
 
+export interface InventarioCierreMensual {
+  categoria_id: number;
+  mes: string;
+  sucursal_id: number;
+  tomada_at: Timestamp;
+  unidades: number;
+  valor_costo: Numeric;
+  valor_venta: Numeric;
+}
+
 export interface Merma {
   cantidad: number;
   comentario: string | null;
@@ -404,6 +414,14 @@ export interface Sucursal {
   tipo: Generated<string>;
   ultimo_numero_venta: Generated<number>;
   updated_at: Generated<Timestamp>;
+}
+
+export interface TicketImpresion {
+  id: Generated<number>;
+  impreso_at: Generated<Timestamp>;
+  turno_id: number | null;
+  usuario_id: number;
+  venta_id: number | null;
 }
 
 export interface TipoCambio {
@@ -887,6 +905,7 @@ export interface DB {
   envio_detalle: EnvioDetalle;
   gama: Gama;
   historial_precio: HistorialPrecio;
+  inventario_cierre_mensual: InventarioCierreMensual;
   merma: Merma;
   metodo_pago: MetodoPago;
   movimiento_inventario: MovimientoInventario;
@@ -904,6 +923,7 @@ export interface DB {
   sesion: Sesion;
   stock_sucursal: StockSucursal;
   sucursal: Sucursal;
+  ticket_impresion: TicketImpresion;
   tipo_cambio: TipoCambio;
   turno_caja: TurnoCaja;
   usuario: Usuario;

@@ -1231,8 +1231,90 @@ ROLLBACK;
 SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 38, 'después de la prueba sigue el tipo de cambio que había');
 
 SELECT fn_set_tipo_cambio(:admin, :tc_antes, true);
+-- Solo deja alerta el valor que estaba fuera del límite y se guardó porque alguien lo confirmó (el 40)
+SELECT pg_temp.afirma((SELECT count(*) = 1
+                          AND bool_and((detalle->>'usd_a_nio')::numeric = 40 AND (detalle->>'anterior')::numeric = 36.6244
+                                       AND (detalle->>'variacion_pct')::numeric = 9.22 AND (detalle->>'usuario_id')::bigint = :admin
+                                       AND titulo LIKE 'Tipo de cambio 40.0000 confirmado por %: se aleja más de 5 % del anterior (36.6244)')
+                         FROM v_alertas_pendientes WHERE tipo = 'TIPO_CAMBIO_FUERA_LIMITE'),
+                      'confirmar un tipo de cambio fuera del límite deja una alerta al administrador (los que están dentro, no)');
 
-\echo '\n=== 23. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 23. REPORTES (backend B7): VENTAS DE UN REPORTE, IMPRESIÓN DE TICKETS Y FOTO MENSUAL DEL INVENTARIO'
+-- Rita solo tiene REPORTES_VER (sin CAJA_VER_DIFERENCIAS): un rol nuevo, de la sucursal POS
+SELECT fn_crear_rol(:admin, 'ANALISTA', 'Analista de ventas');
+SELECT fn_set_permisos_rol(:admin, 'ANALISTA', ARRAY['REPORTES_VER']);
+SELECT fn_crear_usuario(:admin, 'Rita Reportes', 'rita.reportes', 'hash-de-prueba', 'ANALISTA', ARRAY[:pos]) AS rita \gset
+-- Hasta aquí la sucursal POS tiene dos ventas, las dos en turnos ya cerrados. Se abre otro turno con dos ventas, una anulada
+SELECT fn_abrir_turno(:paula, :caja_pos1, 500 + :aro_precio, 0) AS turno_rep \gset
+SELECT fn_registrar_venta(:paula, :turno_rep, format('[{"variante_id":%s,"cantidad":1}]', :aro)::jsonb, format('[{"metodo":"EFECTIVO","monto":%s}]', :aro_precio)::jsonb) AS v_rep \gset
+SELECT fn_registrar_venta(:paula, :turno_rep, format('[{"variante_id":%s,"cantidad":1}]', :aro)::jsonb, format('[{"metodo":"EFECTIVO","monto":%s}]', :aro_precio)::jsonb) AS v_rep_anulada \gset
+SELECT fn_anular_venta(:admin, :v_rep_anulada, 'Venta de prueba anulada para el reporte');
+
+SELECT pg_temp.afirma((SELECT count(*) = 3 AND bool_or(x = :v_rep) FROM fn_ventas_reporte(:admin, :'hoy', :'hoy', :pos) x),
+                      'reportes: quien ve las diferencias de caja ve también las ventas del turno abierto');
+SELECT pg_temp.afirma((SELECT count(*) = 2 AND NOT bool_or(x = :v_rep) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy', :pos) x),
+                      'reportes: sin CAJA_VER_DIFERENCIAS no entran las ventas de un turno todavía abierto');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy')) = 2, 'reportes: sin indicar sucursal, solo entran las suyas');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy', :lam)) = 0, 'reportes: de una sucursal ajena no entra nada');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:paula, :'hoy', :'hoy', :pos)) = 0, 'reportes: sin REPORTES_VER no entra ninguna venta');
+SELECT pg_temp.afirma((SELECT count(*) > 0 AND bool_and(fn_puede_operar_sucursal(:maria, v.sucursal_id)) AND NOT bool_or(v.sucursal_id = :pos)
+                         FROM fn_ventas_reporte(:maria, :'hoy'::date - 1, :'hoy') x JOIN venta v ON v.id = x),
+                      'reportes: la encargada ve las ventas de sus sucursales, y solo esas');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:admin, :'hoy'::date - 30, :'hoy'::date - 1, :pos)) = 0, 'reportes: el rango es por día de Managua');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(x = :v_rep_anulada) FROM fn_ventas_reporte(:admin, :'hoy', :'hoy', :pos, 'ANULADA') x),
+                      'reportes: las anuladas se piden aparte (no cuentan como venta)');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy', :pos, 'ANULADA')) = 0, 'reportes: tampoco las anuladas de un turno abierto');
+SELECT fn_cierre_forzado(:admin, :turno_rep, 'Se cierra el turno de la prueba de reportes');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy', :pos)) = 3
+                  AND (SELECT count(*) FROM fn_ventas_reporte(:rita, :'hoy', :'hoy', :pos, 'ANULADA')) = 1,
+                      'reportes: cerrado el turno, sus ventas ya entran para todos');
+
+-- Impresión de tickets: la primera es el original; desde la segunda, copia
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:paula, :v_pos) = 1, 'ticket de venta: la primera impresión es el original');
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:paula, :v_pos) = 2, 'ticket de venta: la segunda ya es copia');
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:admin, :v_pos) = 3, 'ticket de venta: sigue siendo copia aunque la imprima otra persona');
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:admin, :v_rep) = 1, 'ticket de venta: cada venta lleva su propia cuenta');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_venta(%s, %s)', :carlos, :v_pos), 'No puede imprimir el ticket de la venta POS-00000001');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_venta(%s, %s)', :rita, :v_pos), 'No puede imprimir el ticket de la venta');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_venta(%s, 999999)', :admin), 'La venta 999999 no existe');
+SELECT pg_temp.afirma(fn_registrar_impresion_cierre(:paula, :turno_pos) = 1, 'ticket de cierre: la primera impresión es el original');
+SELECT pg_temp.afirma(fn_registrar_impresion_cierre(:admin, :turno_pos) = 2, 'ticket de cierre: la siguiente es copia');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_cierre(%s, %s)', :carlos, :turno_pos), 'No puede imprimir el ticket de cierre');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_cierre(%s, %s)', :rita, :turno_pos), 'No puede imprimir el ticket de cierre');
+SELECT fn_abrir_turno(:paula, :caja_pos1, 0, 0) AS turno_rep2 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_cierre(%s, %s)', :paula, :turno_rep2), 'sigue abierto');
+SELECT fn_cierre_forzado(:admin, :turno_rep2, 'Se cierra el turno de la prueba de impresión');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_cierre(%s, 999999)', :admin), 'El turno 999999 no existe');
+SELECT pg_temp.afirma((SELECT count(*) = 4 AND count(DISTINCT usuario_id) = 2 FROM ticket_impresion WHERE venta_id IN (:v_pos, :v_rep)), 'queda quién imprimió cada ticket (las impresiones rechazadas no)');
+SELECT pg_temp.espera_error('DELETE FROM ticket_impresion', 'solo inserción');
+SELECT pg_temp.espera_error(format('INSERT INTO ticket_impresion (venta_id, turno_id, usuario_id) VALUES (%s, %s, %s)', :v_pos, :turno_pos, :admin), 'ck_impresion_de');
+
+-- Foto mensual del inventario valorizado: las cantidades salen del kardex
+SELECT pg_temp.afirma(NOT EXISTS (
+                        SELECT 1 FROM (SELECT sucursal_id, variante_id, sum(cantidad) AS cantidad FROM movimiento_inventario GROUP BY 1, 2) k
+                          FULL JOIN stock_sucursal s USING (sucursal_id, variante_id)
+                         WHERE coalesce(k.cantidad, 0) <> coalesce(s.cantidad, 0)),
+                      'las existencias de cada pieza son la suma de sus movimientos (por eso la foto puede salir del kardex)');
+SELECT date_trunc('month', :'hoy'::date)::date AS mes_actual \gset
+SELECT (date_trunc('month', :'hoy'::date) - interval '1 month')::date AS mes_anterior \gset
+-- Una entrada con fecha de hace 40 días: es lo único que había en la sucursal POS al cierre del mes anterior
+INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante, motivo, usuario_id, fecha)
+VALUES (:pos, :cad, 'ENTRADA', 3, 0, 'Entrada con fecha de hace 40 días (prueba de la foto mensual)', :admin, now() - interval '40 days');
+SELECT pg_temp.afirma(fn_foto_inventario_mensual() >= 1, 'la tarea guarda la foto del mes que acaba de cerrar');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND sum(unidades) = 3
+                          AND sum(valor_costo) = 3 * (SELECT costo FROM variante WHERE id = :cad)
+                          AND sum(valor_venta) = 3 * (SELECT precio_venta FROM variante WHERE id = :cad)
+                         FROM inventario_cierre_mensual WHERE mes = :'mes_anterior' AND sucursal_id = :pos),
+                      'la foto trae lo que había al cambiar de mes (los movimientos posteriores no entran), a costo y a precio de venta');
+SELECT pg_temp.afirma(fn_foto_inventario_mensual() = 0 AND fn_foto_inventario_mensual(now() + interval '10 minutes') = 0, 'la foto de un mes se toma una sola vez');
+SELECT pg_temp.afirma(fn_foto_inventario_mensual(now() + interval '1 month') >= 1, 'al cambiar de mes se toma la foto del mes que termina');
+SELECT pg_temp.afirma((SELECT sum(unidades) FROM inventario_cierre_mensual WHERE mes = :'mes_actual') = (SELECT sum(unidades) FROM v_inventario_valorizado)
+                  AND (SELECT sum(valor_costo) FROM inventario_cierre_mensual WHERE mes = :'mes_actual') = (SELECT sum(valor_costo) FROM v_inventario_valorizado)
+                  AND (SELECT sum(valor_venta) FROM inventario_cierre_mensual WHERE mes = :'mes_actual') = (SELECT sum(valor_venta) FROM v_inventario_valorizado),
+                      'con todos los movimientos, la foto coincide con el inventario valorizado de hoy');
+SELECT pg_temp.espera_error(format('INSERT INTO inventario_cierre_mensual VALUES (%L, %s, 1, 1, 1, 1, now())', :'mes_actual'::date + 1, :pos), 'inventario_cierre_mensual_mes_check');
+
+\echo '\n=== 24. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 -- Después de todas las ventas de arriba (completadas, anuladas, rechazadas y repetidas con la misma clave)
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_venta) FROM sucursal) > 0
                   AND NOT EXISTS (

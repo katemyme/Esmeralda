@@ -559,7 +559,7 @@ CREATE TRIGGER tg_compra_gasto_proteger BEFORE INSERT OR UPDATE OR DELETE ON com
 -- ---------------------------------------------------------------------
 CREATE TABLE alerta (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  tipo          varchar(30)  NOT NULL CHECK (tipo ~ '^[A-Z_]+$'),   -- MARGEN_BAJO, ENVIO_DIFERENCIA, CAJA_DIFERENCIA...
+  tipo          varchar(30)  NOT NULL CHECK (tipo ~ '^[A-Z_]+$'),   -- MARGEN_BAJO, ENVIO_DIFERENCIA, CAJA_DIFERENCIA, TIPO_CAMBIO_FUERA_LIMITE...
   titulo        varchar(200) NOT NULL,
   detalle       jsonb        NOT NULL DEFAULT '{}'::jsonb,
   sucursal_id   integer      REFERENCES sucursal(id),
@@ -1361,6 +1361,7 @@ END $$;
 -- más que el parámetro TIPO_CAMBIO_VARIACION_MAX (%), solo se guarda con p_confirmado; sin él falla
 -- con SQLSTATE ESM02 (la API responde 409 CONFIRMACION_REQUERIDA). El primero que se registra no
 -- tiene con qué compararse: debe estar entre 20 y 60, y ahí la confirmación no cuenta.
+-- Un valor fuera del límite que se guarda porque alguien lo confirmó deja una alerta al administrador.
 CREATE OR REPLACE FUNCTION fn_set_tipo_cambio(p_usuario bigint, p_usd_a_nio numeric, p_confirmado boolean DEFAULT false)
 RETURNS date
 LANGUAGE plpgsql AS $$
@@ -1369,6 +1370,7 @@ DECLARE
   v_nuevo   numeric := round(p_usd_a_nio, 4);
   v_ultimo  numeric;
   v_max     numeric := coalesce(fn_parametro_num('TIPO_CAMBIO_VARIACION_MAX'), 0);
+  v_fuera   boolean;
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'TIPO_CAMBIO_GESTIONAR');
   IF v_nuevo IS NULL OR v_nuevo <= 0 THEN
@@ -1376,11 +1378,12 @@ BEGIN
   END IF;
 
   SELECT usd_a_nio INTO v_ultimo FROM tipo_cambio WHERE fecha <= v_hoy ORDER BY fecha DESC LIMIT 1;
+  v_fuera := v_ultimo IS NOT NULL AND abs(v_nuevo - v_ultimo) * 100 > v_ultimo * v_max;
   IF v_ultimo IS NULL THEN
     IF v_nuevo NOT BETWEEN 20 AND 60 THEN
       RAISE EXCEPTION 'Es el primer tipo de cambio que se registra: debe estar entre 20 y 60 córdobas por dólar (recibido: %)', v_nuevo;
     END IF;
-  ELSIF abs(v_nuevo - v_ultimo) * 100 > v_ultimo * v_max AND NOT coalesce(p_confirmado, false) THEN
+  ELSIF v_fuera AND NOT coalesce(p_confirmado, false) THEN
     RAISE EXCEPTION 'El tipo de cambio % se aleja más de % %% del último registrado (%). Si es correcto, confírmelo.',
           v_nuevo, v_max, v_ultimo
           USING ERRCODE = 'ESM02';
@@ -1389,6 +1392,16 @@ BEGIN
   INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
   VALUES (v_hoy, v_nuevo, p_usuario)
   ON CONFLICT (fecha) DO UPDATE SET usd_a_nio = EXCLUDED.usd_a_nio, usuario_id = EXCLUDED.usuario_id;
+
+  IF v_fuera THEN
+    INSERT INTO alerta (tipo, titulo, detalle)
+    VALUES ('TIPO_CAMBIO_FUERA_LIMITE',
+            format('Tipo de cambio %s confirmado por %s: se aleja más de %s %% del anterior (%s)',
+                   v_nuevo, (SELECT nombre_completo FROM usuario WHERE id = p_usuario), v_max, v_ultimo),
+            jsonb_build_object('fecha', v_hoy, 'usd_a_nio', v_nuevo, 'anterior', v_ultimo,
+                               'variacion_pct', round((v_nuevo - v_ultimo) * 100 / v_ultimo, 2),
+                               'maximo_pct', v_max, 'usuario_id', p_usuario));
+  END IF;
   RETURN v_hoy;
 END $$;
 
@@ -4232,5 +4245,124 @@ SELECT p.id, p.nombre, p.descripcion, p.tipo, p.valor, p.compra_minima, p.vigent
        p.created_at, p.updated_at
   FROM promocion p
  CROSS JOIN (SELECT (now() AT TIME ZONE 'America/Managua')::date AS hoy) h;
+
+-- =====================================================================
+-- 11. REPORTES, IMPRESIÓN DE TICKETS Y FOTO MENSUAL DEL INVENTARIO (backend B7)
+-- =====================================================================
+
+-- Ventas que un usuario puede ver en los reportes de un rango de días (de Managua):
+--   · pide REPORTES_VER y solo entran las sucursales que puede operar;
+--   · sin CAJA_VER_DIFERENCIAS no entran las de un turno todavía abierto: con lo vendido o lo
+--     cobrado en ese turno se deduciría lo esperado en caja, y el arqueo es a ciegas.
+-- Todos los reportes de ventas y de cobros parten de aquí: la regla está en un solo lugar.
+CREATE OR REPLACE FUNCTION fn_ventas_reporte(
+  p_usuario bigint, p_desde date, p_hasta date, p_sucursal integer DEFAULT NULL, p_estado text DEFAULT 'COMPLETADA'
+) RETURNS SETOF bigint
+LANGUAGE sql STABLE AS $$
+  SELECT v.id
+    FROM venta v
+    JOIN turno_caja t ON t.id = v.turno_id
+   WHERE v.estado = p_estado
+     AND v.fecha >= p_desde::timestamp AT TIME ZONE 'America/Managua'
+     AND v.fecha <  (p_hasta + 1)::timestamp AT TIME ZONE 'America/Managua'
+     AND (p_sucursal IS NULL OR v.sucursal_id = p_sucursal)
+     AND (SELECT fn_tiene_permiso(p_usuario, 'REPORTES_VER'))
+     AND fn_puede_operar_sucursal(p_usuario, v.sucursal_id)
+     AND (t.estado = 'CERRADO' OR (SELECT fn_tiene_permiso(p_usuario, 'CAJA_VER_DIFERENCIAS')))
+$$;
+
+-- Cada vez que se imprime un ticket (de venta o de cierre de caja). La primera impresión es el
+-- original; las siguientes llevan la palabra COPIA. Solo inserción: queda quién reimprimió y cuándo.
+CREATE TABLE ticket_impresion (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  venta_id    bigint      REFERENCES venta(id),
+  turno_id    bigint      REFERENCES turno_caja(id),
+  usuario_id  bigint      NOT NULL REFERENCES usuario(id),
+  impreso_at  timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ck_impresion_de CHECK ((venta_id IS NULL) <> (turno_id IS NULL))
+);
+CREATE INDEX ix_impresion_venta ON ticket_impresion (venta_id) WHERE venta_id IS NOT NULL;
+CREATE INDEX ix_impresion_turno ON ticket_impresion (turno_id) WHERE turno_id IS NOT NULL;
+CREATE TRIGGER tg_impresion_inmutable BEFORE UPDATE OR DELETE ON ticket_impresion
+  FOR EACH ROW EXECUTE FUNCTION fn_bloquear_modificacion();
+
+-- Anota la impresión del ticket de una venta y devuelve cuál es (1 = original, 2 en adelante = copia).
+-- Lo imprime quien puede ver la venta: su vendedor, o quien ve todas las de esa sucursal.
+CREATE OR REPLACE FUNCTION fn_registrar_impresion_venta(p_usuario bigint, p_venta bigint) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v venta%ROWTYPE; n integer;
+BEGIN
+  SELECT * INTO v FROM venta WHERE id = p_venta FOR UPDATE;      -- de una en una: un solo original
+  IF v.id IS NULL THEN RAISE EXCEPTION 'La venta % no existe', p_venta; END IF;
+  IF NOT ((v.vendedor_id = p_usuario AND fn_tiene_permiso(p_usuario, 'VENTAS_VER_PROPIAS'))
+          OR (fn_tiene_permiso(p_usuario, 'VENTAS_VER_TODAS') AND fn_puede_operar_sucursal(p_usuario, v.sucursal_id))) THEN
+    RAISE EXCEPTION 'No puede imprimir el ticket de la venta %', v.numero
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  INSERT INTO ticket_impresion (venta_id, usuario_id) VALUES (p_venta, p_usuario);
+  SELECT count(*) INTO n FROM ticket_impresion WHERE venta_id = p_venta;
+  RETURN n;
+END $$;
+
+-- Lo mismo para el ticket de cierre de un turno ya cerrado.
+CREATE OR REPLACE FUNCTION fn_registrar_impresion_cierre(p_usuario bigint, p_turno bigint) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE v_estado text; v_sucursal integer; n integer;
+BEGIN
+  SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
+    FROM turno_caja t JOIN caja c ON c.id = t.caja_id
+   WHERE t.id = p_turno
+     FOR UPDATE OF t;
+  IF NOT FOUND THEN RAISE EXCEPTION 'El turno % no existe', p_turno; END IF;
+  IF NOT ((fn_tiene_permiso(p_usuario, 'CAJA_CERRAR') OR fn_tiene_permiso(p_usuario, 'CAJA_VER_DIFERENCIAS'))
+          AND fn_puede_operar_sucursal(p_usuario, v_sucursal)) THEN
+    RAISE EXCEPTION 'No puede imprimir el ticket de cierre del turno %', p_turno
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF v_estado <> 'CERRADO' THEN
+    RAISE EXCEPTION 'El turno % sigue abierto: el ticket sale al cerrarlo', p_turno;
+  END IF;
+  INSERT INTO ticket_impresion (turno_id, usuario_id) VALUES (p_turno, p_usuario);
+  SELECT count(*) INTO n FROM ticket_impresion WHERE turno_id = p_turno;
+  RETURN n;
+END $$;
+
+-- Foto del inventario valorizado al cierre de cada mes, por ubicación y categoría.
+-- `mes` es el primer día del mes que se cierra.
+CREATE TABLE inventario_cierre_mensual (
+  mes           date          NOT NULL CHECK (mes = date_trunc('month', mes)::date),
+  sucursal_id   integer       NOT NULL REFERENCES sucursal(id),
+  categoria_id  integer       NOT NULL REFERENCES categoria(id),
+  unidades      integer       NOT NULL,
+  valor_costo   numeric(14,2) NOT NULL,
+  valor_venta   numeric(14,2) NOT NULL,
+  tomada_at     timestamptz   NOT NULL,
+  PRIMARY KEY (mes, sucursal_id, categoria_id)
+);
+
+-- Para ejecutar periódicamente (tarea programada del backend): la primera vez que corre en un mes
+-- nuevo guarda la foto del mes que acaba de cerrar; después no hace nada. Las cantidades salen del
+-- kardex (suma de los movimientos anteriores al cambio de mes), así que son las del cierre aunque
+-- la tarea corra tarde; el costo y el precio son los vigentes al tomarla (tomada_at).
+CREATE OR REPLACE FUNCTION fn_foto_inventario_mensual(p_ahora timestamptz DEFAULT now()) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_mes   date := (date_trunc('month', p_ahora AT TIME ZONE 'America/Managua') - interval '1 month')::date;
+  v_corte timestamptz := (v_mes + interval '1 month') AT TIME ZONE 'America/Managua';
+  n integer;
+BEGIN
+  IF EXISTS (SELECT 1 FROM inventario_cierre_mensual WHERE mes = v_mes) THEN RETURN 0; END IF;
+  INSERT INTO inventario_cierre_mensual (mes, sucursal_id, categoria_id, unidades, valor_costo, valor_venta, tomada_at)
+  SELECT v_mes, m.sucursal_id, p.categoria_id, sum(m.cantidad),
+         round(sum(m.cantidad * va.costo), 2), round(sum(m.cantidad * va.precio_venta), 2), p_ahora
+    FROM movimiento_inventario m
+    JOIN variante va ON va.id = m.variante_id
+    JOIN producto p  ON p.id = va.producto_id
+   WHERE m.fecha < v_corte
+   GROUP BY m.sucursal_id, p.categoria_id
+  HAVING sum(m.cantidad) <> 0;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
 
 COMMIT;
