@@ -29,8 +29,8 @@ _Actualizado el 2026-10-07._
   de solo servicio de las perforaciones que ya existen (hecho); los envíos se quedan con su SEQUENCE (ahí los
   saltos no importan); el RUC y la leyenda del ticket quedan vacíos y él los llena en el panel. Pidió además un
   control del tipo de cambio (variación máxima con confirmación y rango del primero), ya hecho.
-- **Sigue:** **B7** (reportes). El plan se le presentó el 2026-10-07: **no se programa hasta que dé su OK** y
-  responda las decisiones que quedaron planteadas. **Pendiente:** el frontend (no empezarlo).
+- **En curso:** **B7** (reportes). El dueño aprobó el plan y sus decisiones el 2026-10-07 (están en «Decisiones de
+  negocio clave», «Reportes»). **Pendiente:** el frontend (no empezarlo).
 - Pruebas en verde: 490 de base de datos y 409 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
@@ -150,6 +150,20 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Ticket de venta:** la API entrega los datos y la pantalla lo imprime (el PDF va con B7). Encabezado y pie
     con los parámetros `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA` (el RUC y la leyenda están vacíos: el
     dueño los llena en el panel).
+- Reportes (B7; decisiones del dueño del 2026-10-07):
+  - **Solo el administrador ve costos:** costo, margen e inventario valorizado piden `REPORTES_COSTOS`, que solo
+    tiene el ADMIN. El encargado ve ventas, cobros, cierres y mermas en cantidades, de sus sucursales. El
+    vendedor no ve reportes. No hay permisos nuevos.
+  - **Arqueo ciego en los reportes:** sin `CAJA_VER_DIFERENCIAS`, los reportes de ventas y cobros no incluyen
+    las ventas de un turno todavía abierto (con ellas se deduciría lo esperado en caja).
+  - **Inventario valorizado:** la foto de hoy y, además, una foto automática al cierre de cada mes.
+  - **Mermas:** suman solo las aprobadas, con el costo del momento en que se aprobaron; las pendientes y las
+    rechazadas se listan aparte.
+  - **Tickets en PDF:** papel de 80 mm; la reimpresión lleva la palabra «COPIA».
+  - **Alertas:** una nueva cuando alguien confirma un tipo de cambio fuera del límite. El stock bajo el mínimo
+    no es alerta: es el reporte «por reponer». Las alertas siguen solo en el panel (correo y WhatsApp, fuera).
+  - **Reportes extra incluidos:** productos más vendidos, perforaciones con pieza contra solo servicio, ventas
+    por gama, promociones y sobreprecios.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
