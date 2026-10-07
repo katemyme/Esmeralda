@@ -598,13 +598,22 @@ SELECT metodo, moneda, monto_esperado FROM fn_resumen_turno(:turno_lbr);
 SELECT format('[{"moneda":"NIO","valor":1,"cantidad":%s}]', floor(:lbr_nio) - 500) AS conteo_corto \gset
 SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[{"moneda":"NIO","valor":3,"cantidad":1}]')$q$, :carlos, :turno_lbr), 'Denominación o cantidad inválida');
 SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 999999)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'más efectivo del contado');
-SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 0)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'escriba una justificación');
-SELECT pg_temp.afirma((SELECT estado FROM turno_caja WHERE id = :turno_lbr) = 'ABIERTO' AND NOT EXISTS (SELECT 1 FROM cierre_denominacion WHERE turno_id = :turno_lbr), 'sin justificación no se cierra ni se guarda nada');
+-- Primer conteo que no cuadra y sin justificación: la caja no se cierra y no se dice cuánto falta
+SELECT fn_cerrar_turno(:carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)::jsonb, 0) AS intento1 \gset
+SELECT pg_temp.afirma(:'intento1'::jsonb = '{"cerrado": false}', 'el primer conteo que no cuadra no cierra la caja y no dice montos');
+SELECT pg_temp.afirma((SELECT estado = 'ABIERTO' AND intentos_cierre = 1 FROM turno_caja WHERE id = :turno_lbr)
+                  AND NOT EXISTS (SELECT 1 FROM cierre_denominacion WHERE turno_id = :turno_lbr)
+                  AND NOT EXISTS (SELECT 1 FROM cierre_caja_detalle WHERE turno_id = :turno_lbr), 'del conteo que no cuadró solo queda anotado el intento');
+-- Hay un solo reconteo: desde el segundo conteo la justificación es obligatoria, cuadre o no
+SELECT format('[{"moneda":"NIO","valor":1,"cantidad":%s}]', floor(:lbr_nio)) AS conteo_bueno \gset
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 0)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'Ya se hizo un reconteo');
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 0)$q$, :carlos, :turno_lbr, :'conteo_bueno', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'Ya se hizo un reconteo');
+SELECT pg_temp.afirma((SELECT estado = 'ABIERTO' AND intentos_cierre = 1 FROM turno_caja WHERE id = :turno_lbr), 'sin justificación el segundo conteo ni se mira: responde igual cuadre o no');
 SELECT fn_cerrar_turno(:carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)::jsonb,
                        floor(:lbr_nio) - 800, 0, 'Se pagó al técnico del aire acondicionado sin registrar el egreso') AS ticket2 \gset
-SELECT pg_temp.afirma((:'ticket2'::jsonb->>'fondo_siguiente_nio')::numeric = 300, 'queda C$300 de fondo en Las Brisas');
+SELECT pg_temp.afirma((:'ticket2'::jsonb->>'cerrado')::boolean AND (:'ticket2'::jsonb->>'fondo_siguiente_nio')::numeric = 300, 'con la justificación se cierra con lo contado: queda C$300 de fondo en Las Brisas');
 SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'CAJA_DIFERENCIA' AND (detalle->>'turno_id')::bigint = :turno_lbr
-                               AND (detalle->>'diferencia_total_nio')::numeric <= -500), 'diferencia mayor a C$100: alerta al admin con la justificación');
+                               AND (detalle->>'diferencia_total_nio')::numeric <= -500 AND (detalle->>'hubo_reconteo')::boolean), 'diferencia mayor a C$100: alerta al admin con la justificación');
 SELECT pg_temp.afirma((SELECT justificacion_diferencia IS NOT NULL AND retiro_nio = floor(:lbr_nio) - 800 FROM turno_caja WHERE id = :turno_lbr), 'justificación y retiro guardados');
 
 -- Apertura siguiente: se sugiere el fondo y se registra cualquier diferencia
@@ -1101,7 +1110,85 @@ SELECT pg_temp.afirma(fn_ve_cantidad_bodega(:ana), 'con BODEGA_VISIBILIDAD = CAN
 SELECT fn_set_parametro(:admin, 'BODEGA_VISIBILIDAD', 'SI_NO');
 SELECT pg_temp.afirma((SELECT cantidad IS NULL AND disponible FROM fn_consultar_stock(:ana, :lab6) WHERE tipo = 'BODEGA'), 'fn_consultar_stock sigue aplicando la regla');
 
-\echo '\n=== 22. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 22. POS Y CAJA (backend B6): CAJA Y TURNO DE LA SESIÓN, TICKET DE CIERRE Y TIPO DE CAMBIO'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT fn_guardar_sucursal(:admin, NULL, 'pos', 'Sucursal POS') AS pos \gset
+SELECT fn_crear_caja(:admin, :pos, 'Caja 1') AS caja_pos1 \gset
+SELECT fn_crear_usuario(:admin, 'Paula Pos', 'paula.pos', 'hash-de-prueba', 'VENDEDOR', ARRAY[:pos]) AS paula \gset
+SELECT fn_registrar_dispositivo(:admin, 'PC Caja 1 POS', 'CAJA', :pos, encode(sha256('pos-pc-1'), 'hex'), :caja_pos1) AS pc_pos \gset
+SELECT fn_registrar_dispositivo(:admin, 'Tablet POS', 'TABLET', :pos, encode(sha256('pos-tablet'), 'hex')) AS tab_pos \gset
+
+-- La caja no la manda la pantalla: sale del equipo registrado
+SELECT pg_temp.afirma(fn_caja_de_sesion(:paula, :'pc_pos') = :caja_pos1 AND fn_caja_de_sesion(:paula, :'pc_pos', NULL, true) = :caja_pos1, 'PC de caja: su caja, para vender y para abrir');
+SELECT pg_temp.afirma(fn_caja_de_sesion(:paula, :'tab_pos', NULL, true) = :caja_pos1, 'tablet: abre la única caja de su sucursal');
+SELECT pg_temp.afirma(fn_caja_de_sesion(:paula, :'tab_pos') IS NULL AND fn_turno_de_sesion(:paula, :'tab_pos') IS NULL, 'tablet sin turno abierto en la sucursal: no hay caja ni turno');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, %L, %s)', :paula, :'tab_pos', :caja_pos1), 'Solo el administrador puede elegir la caja');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, %L, %s)', :paula, :'pc_pos', :caja_lam), 'no se puede elegir otra');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, NULL)', :paula), 'equipo registrado y activo');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, %L)', :ana, :'pc_pos'), 'equipo registrado y activo');
+-- El administrador: sin caja en su equipo tiene que indicarla; en una PC de caja usa la del equipo
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, NULL)', :admin), 'Indique la caja');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, NULL, 999999)', :admin), 'La caja 999999 no existe');
+SELECT pg_temp.afirma(fn_caja_de_sesion(:admin, NULL, :caja_pos1) = :caja_pos1 AND fn_caja_de_sesion(:admin, :'tab_pos', :caja_lam) = :caja_lam, 'el admin, sin caja en su equipo, elige la caja');
+SELECT pg_temp.afirma(fn_caja_de_sesion(:admin, :'pc_pos') = :caja_pos1, 'el admin en una PC de caja usa la caja de ese equipo');
+
+-- El turno: el abierto de esa caja
+SELECT fn_abrir_turno(:paula, fn_caja_de_sesion(:paula, :'tab_pos', NULL, true), 500, 0) AS turno_pos \gset
+SELECT pg_temp.afirma(fn_turno_de_sesion(:paula, :'pc_pos') = :turno_pos AND fn_turno_de_sesion(:paula, :'tab_pos') = :turno_pos
+                  AND fn_turno_de_sesion(:admin, NULL, :caja_pos1) = :turno_pos, 'la PC, la tablet y el admin llegan al mismo turno abierto');
+SELECT fn_set_dispositivo_activo(:admin, :'tab_pos', false);
+SELECT pg_temp.espera_error(format('SELECT fn_turno_de_sesion(%s, %L)', :paula, :'tab_pos'), 'equipo registrado y activo');
+SELECT fn_set_dispositivo_activo(:admin, :'tab_pos', true);
+-- Con dos cajas en la sucursal, la tablet no decide: se trabaja desde la PC de la caja
+SELECT fn_crear_caja(:admin, :pos, 'Caja 2') AS caja_pos2 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, %L, NULL, true)', :paula, :'tab_pos'), 'más de una caja: abra el turno desde la PC');
+SELECT pg_temp.afirma(fn_turno_de_sesion(:paula, :'tab_pos') = :turno_pos, 'con una sola caja abierta la tablet sigue vendiendo en ella');
+SELECT fn_abrir_turno(:admin, :caja_pos2, 0, 0) AS turno_pos2 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_turno_de_sesion(%s, %L)', :paula, :'tab_pos'), 'más de una caja abierta');
+SELECT pg_temp.afirma(fn_turno_de_sesion(:paula, :'pc_pos') = :turno_pos, 'la PC de caja sigue con la suya');
+SELECT fn_cerrar_turno(:admin, :turno_pos2, '[]') AS ticket_vacio \gset
+SELECT pg_temp.afirma((:'ticket_vacio'::jsonb->>'cerrado')::boolean AND fn_turno_de_sesion(:paula, :'tab_pos') = :turno_pos, 'cerrada la segunda caja, la tablet vuelve a tener un solo turno');
+
+-- Ticket de cierre: quien cierra recibe solo lo que contó, lo que retiró y el fondo
+SELECT precio_venta AS aro_precio FROM variante WHERE id = :aro \gset
+SELECT fn_movimiento_inventario(:admin, :pos, :aro, 'AJUSTE_POSITIVO', 5, 'Existencias para las pruebas del POS');
+SELECT fn_registrar_venta(:paula, fn_turno_de_sesion(:paula, :'pc_pos'), format('[{"variante_id":%s,"cantidad":1}]', :aro)::jsonb,
+  format('[{"metodo":"EFECTIVO","monto":%s}]', :aro_precio)::jsonb) AS v_pos \gset
+SELECT pg_temp.afirma((SELECT numero = 'POS-00000001' AND turno_id = :turno_pos FROM venta WHERE id = :v_pos), 'la venta entra al turno de la caja del equipo, con el correlativo de su sucursal');
+SELECT fn_cerrar_turno(:paula, :turno_pos, format('[{"moneda":"NIO","valor":1,"cantidad":%s}]', floor(500 + :aro_precio))::jsonb, '[]', floor(:aro_precio)) AS ticket_pos \gset
+SELECT pg_temp.afirma(jsonb_array_length(:'ticket_pos'::jsonb->'contado') = 1 AND (:'ticket_pos'::jsonb->'contado'->0->>'monto')::numeric = floor(500 + :aro_precio)
+                  AND (:'ticket_pos'::jsonb->>'retiro_nio')::numeric = floor(:aro_precio) AND (:'ticket_pos'::jsonb->>'fondo_siguiente_nio')::numeric = 500,
+                  'ticket de quien cierra: lo que contó, lo que retiró y el fondo que dejó');
+SELECT pg_temp.afirma(NOT (:'ticket_pos'::jsonb ?| ARRAY['ventas','anuladas','total_vendido','descuentos_promociones','cobros'])
+                  AND :'ticket_pos'::jsonb::text NOT ILIKE '%esperado%' AND :'ticket_pos'::jsonb::text NOT ILIKE '%diferencia%',
+                  'ese ticket no trae lo vendido ni lo cobrado por método (con eso se deduciría lo esperado)');
+SELECT pg_temp.afirma(fn_ticket_cierre(:turno_pos) = :'ticket_pos'::jsonb - 'cerrado', 'reimprimirlo da el mismo ticket');
+SELECT pg_temp.afirma((fn_ticket_cierre(:turno_pos, true)->>'total_vendido')::numeric = :aro_precio AND (fn_ticket_cierre(:turno_pos, true)->>'ventas')::integer = 1
+                  AND jsonb_array_length(fn_ticket_cierre(:turno_pos, true)->'cobros') = 1, 'el ticket completo (CAJA_VER_DIFERENCIAS) agrega las ventas y lo cobrado');
+-- Cierre forzado: no hubo conteo, se asumió lo esperado; el ticket reducido no puede traer montos
+SELECT fn_abrir_turno(:paula, :caja_pos1, 500, 0) AS turno_pos3 \gset
+SELECT fn_registrar_venta(:paula, :turno_pos3, format('[{"variante_id":%s,"cantidad":1}]', :aro)::jsonb, format('[{"metodo":"EFECTIVO","monto":%s}]', :aro_precio)::jsonb);
+SELECT fn_cierre_forzado(:admin, :turno_pos3, 'Nadie cerró la caja de pruebas') AS ticket_forzado \gset
+SELECT pg_temp.afirma(:'ticket_forzado'::jsonb ? 'cobros' AND (:'ticket_forzado'::jsonb->>'fondo_siguiente_nio')::numeric = 500 + :aro_precio, 'cierre forzado: el admin recibe el ticket completo');
+SELECT pg_temp.afirma((fn_ticket_cierre(:turno_pos3)->>'cierre_forzado')::boolean
+                  AND NOT (fn_ticket_cierre(:turno_pos3) ?| ARRAY['contado','retiro_nio','fondo_siguiente_nio','cobros','total_vendido']),
+                  'cierre forzado: el ticket reducido no trae montos');
+
+-- Tipo de cambio del día
+SELECT fn_tipo_cambio_vigente() AS tc_antes \gset
+SELECT (now() AT TIME ZONE 'America/Managua')::date AS hoy \gset
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 36.9)', :paula), 'TIPO_CAMBIO_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 0)', :admin), 'mayor que cero');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, NULL)', :admin), 'mayor que cero');
+SELECT fn_set_tipo_cambio(:maria, 36.95);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 36.95 AND (SELECT usuario_id = :maria FROM tipo_cambio WHERE fecha = :'hoy'), 'la encargada registra el tipo de cambio de hoy');
+SELECT fn_set_tipo_cambio(:admin, 36.62435);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 36.6244 AND (SELECT count(*) = 1 AND bool_and(usuario_id = :admin) FROM tipo_cambio WHERE fecha = :'hoy'), 'corregirlo el mismo día reemplaza el valor (4 decimales)');
+SELECT pg_temp.afirma((SELECT tipo_cambio FROM venta WHERE id = :v_pos) = :tc_antes, 'las ventas ya hechas conservan el tipo de cambio con que se cobraron');
+SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'tipo_cambio' AND accion = 'UPDATE' AND usuario_id = :admin) >= 1, 'el cambio queda en la bitácora');
+SELECT fn_set_tipo_cambio(:admin, :tc_antes);
+
+\echo '\n=== 23. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 -- Después de todas las ventas de arriba (completadas, anuladas, rechazadas y repetidas con la misma clave)
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_venta) FROM sucursal) > 0
                   AND NOT EXISTS (

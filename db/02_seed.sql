@@ -118,7 +118,13 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false, 1,
    'Horas que dura una sesión iniciada en un equipo registrado (caja, tablet); luego se pide usuario y contraseña de nuevo.'),
   ('SESION_DIAS_SIN_EQUIPO', '7', 'NUMERO', NULL, false, 1,
-   'Días que dura una sesión iniciada fuera de un equipo registrado (solo el administrador puede entrar así).');
+   'Días que dura una sesión iniciada fuera de un equipo registrado (solo el administrador puede entrar así).'),
+  ('NEGOCIO_NOMBRE', 'Esmeralda Experience', 'TEXTO', NULL, false, NULL,
+   'Nombre del negocio en el encabezado del ticket de venta.'),
+  ('NEGOCIO_RUC', NULL, 'TEXTO', NULL, true, NULL,
+   'Número RUC que sale en el ticket de venta. Vacío = no se imprime.'),
+  ('TICKET_LEYENDA', NULL, 'TEXTO', NULL, true, NULL,
+   'Texto al pie del ticket de venta (p. ej. la política de cambios). Vacío = sin leyenda.');
 
 -- ---------------------------------------------------------------------
 -- Gamas de pieza para paquetes de perforación

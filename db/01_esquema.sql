@@ -786,6 +786,8 @@ CREATE TABLE turno_caja (
   justificacion_diferencia varchar(500),
   cierre_forzado         boolean       NOT NULL DEFAULT false,
   observaciones          varchar(500),
+  -- Conteos de cierre que no cuadraron y no se cerraron (arqueo ciego: solo se permite un reconteo)
+  intentos_cierre        smallint      NOT NULL DEFAULT 0 CHECK (intentos_cierre >= 0),
   CONSTRAINT ck_turno_cierre CHECK (
     (estado = 'ABIERTO' AND fecha_cierre IS NULL AND usuario_cierre_id IS NULL AND fondo_siguiente_nio IS NULL) OR
     (estado = 'CERRADO' AND fecha_cierre IS NOT NULL AND usuario_cierre_id IS NOT NULL
@@ -1352,6 +1354,23 @@ BEGIN
   RETURN v;
 END $$;
 
+-- Tipo de cambio de hoy (día de Managua). Se puede corregir durante el día: cada venta guarda el
+-- tipo de cambio con que se cobró, así que el nuevo valor solo afecta a las ventas siguientes.
+-- Los días anteriores no se editan.
+CREATE OR REPLACE FUNCTION fn_set_tipo_cambio(p_usuario bigint, p_usd_a_nio numeric) RETURNS date
+LANGUAGE plpgsql AS $$
+DECLARE v_hoy date := (now() AT TIME ZONE 'America/Managua')::date;
+BEGIN
+  PERFORM fn_exigir_permiso(p_usuario, 'TIPO_CAMBIO_GESTIONAR');
+  IF p_usd_a_nio IS NULL OR round(p_usd_a_nio, 4) <= 0 THEN
+    RAISE EXCEPTION 'El tipo de cambio debe ser mayor que cero';
+  END IF;
+  INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
+  VALUES (v_hoy, round(p_usd_a_nio, 4), p_usuario)
+  ON CONFLICT (fecha) DO UPDATE SET usd_a_nio = EXCLUDED.usd_a_nio, usuario_id = EXCLUDED.usuario_id;
+  RETURN v_hoy;
+END $$;
+
 -- ---------------------------------------------------------------------
 -- 9.1 Inventario
 -- ---------------------------------------------------------------------
@@ -1505,9 +1524,14 @@ $$;
 --                   [{"moneda":"NIO","valor":1000,"cantidad":3}, {"moneda":"USD","valor":20,"cantidad":2}, ...]
 --   p_no_efectivo:  totales de vouchers / transferencias [{"metodo":"TARJETA","monto":3100}, ...]
 --   p_retiro_nio/usd: efectivo que se retira; lo que queda es el fondo del día siguiente
---   p_justificacion: obligatoria solo si la diferencia total supera CAJA_TOLERANCIA_DIFERENCIA_NIO.
+--   p_justificacion: obligatoria si la diferencia total supera CAJA_TOLERANCIA_DIFERENCIA_NIO.
 --                    Quien cierra no ve montos: solo se le pide explicar.
--- Devuelve el ticket de cierre (sin diferencias).
+-- Solo hay UN reconteo (con más, probando conteos se podría adivinar el monto esperado):
+--   · Primer conteo que no cuadra y sin justificación → la caja NO se cierra: se anota el intento
+--     (intentos_cierre) y se devuelve {"cerrado": false}. No es un error, para que el intento quede guardado.
+--   · Desde el segundo conteo la justificación es obligatoria, cuadre o no, y la caja se cierra
+--     con lo contado.
+-- Al cerrar devuelve el ticket de cierre (fn_ticket_cierre) con "cerrado": true.
 CREATE OR REPLACE FUNCTION fn_cerrar_turno(
   p_usuario        bigint,
   p_turno          bigint,
@@ -1522,6 +1546,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
   v_t record; v_sucursal integer; v_contado_nio numeric; v_contado_usd numeric;
   v_dif_total numeric; v_tol numeric; v_invalida text;
+  v_justificada boolean := coalesce(length(trim(p_justificacion)), 0) >= 10;
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'CAJA_CERRAR');
   SELECT t.*, c.sucursal_id AS suc INTO v_t
@@ -1533,6 +1558,12 @@ BEGIN
   v_sucursal := v_t.suc;
   PERFORM fn_exigir_sucursal(p_usuario, v_sucursal);
 
+  -- Ya hubo un reconteo: se pide la justificación antes de mirar el conteo, para no decir si cuadra
+  IF v_t.intentos_cierre > 0 AND NOT v_justificada THEN
+    RAISE EXCEPTION 'Ya se hizo un reconteo: escriba una justificación (mínimo 10 caracteres) y la caja se cerrará con lo contado'
+          USING ERRCODE = 'check_violation';
+  END IF;
+
   -- Conteo por denominación
   SELECT string_agg(format('%s %s', x->>'moneda', x->>'valor'), ', ') INTO v_invalida
     FROM jsonb_array_elements(coalesce(p_efectivo, '[]'::jsonb)) x
@@ -1541,54 +1572,60 @@ BEGIN
       OR coalesce((x->>'cantidad')::integer, -1) < 0;
   IF v_invalida IS NOT NULL THEN RAISE EXCEPTION 'Denominación o cantidad inválida: %', v_invalida; END IF;
 
-  INSERT INTO cierre_denominacion (turno_id, moneda, valor, cantidad)
-  SELECT p_turno, upper(x->>'moneda'), (x->>'valor')::numeric, sum((x->>'cantidad')::integer)
-    FROM jsonb_array_elements(coalesce(p_efectivo, '[]'::jsonb)) x
-   GROUP BY 2, 3;
+  BEGIN   -- si el conteo no cuadra y hay que recontar, lo guardado en este bloque se deshace
+    INSERT INTO cierre_denominacion (turno_id, moneda, valor, cantidad)
+    SELECT p_turno, upper(x->>'moneda'), (x->>'valor')::numeric, sum((x->>'cantidad')::integer)
+      FROM jsonb_array_elements(coalesce(p_efectivo, '[]'::jsonb)) x
+     GROUP BY 2, 3;
 
-  SELECT coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'NIO'), 0),
-         coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'USD'), 0)
-    INTO v_contado_nio, v_contado_usd
-    FROM cierre_denominacion WHERE turno_id = p_turno;
+    SELECT coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'NIO'), 0),
+           coalesce(sum(valor * cantidad) FILTER (WHERE moneda = 'USD'), 0)
+      INTO v_contado_nio, v_contado_usd
+      FROM cierre_denominacion WHERE turno_id = p_turno;
 
-  IF coalesce(p_retiro_nio, 0) > v_contado_nio OR coalesce(p_retiro_usd, 0) > v_contado_usd THEN
-    RAISE EXCEPTION 'No se puede retirar más efectivo del contado (C$ %, US$ %)', v_contado_nio, v_contado_usd;
-  END IF;
+    IF coalesce(p_retiro_nio, 0) > v_contado_nio OR coalesce(p_retiro_usd, 0) > v_contado_usd THEN
+      RAISE EXCEPTION 'No se puede retirar más efectivo del contado (C$ %, US$ %)', v_contado_nio, v_contado_usd;
+    END IF;
 
-  -- Esperado vs contado por método y moneda
-  INSERT INTO cierre_caja_detalle (turno_id, metodo_pago_id, moneda, monto_esperado, monto_contado)
-  SELECT p_turno,
-         coalesce(e.metodo_pago_id, c.metodo_pago_id),
-         coalesce(e.moneda, c.moneda),
-         coalesce(e.monto_esperado, 0),
-         coalesce(c.monto, 0)
-    FROM fn_resumen_turno(p_turno) e
-    FULL JOIN (
-      SELECT (SELECT id FROM metodo_pago WHERE es_efectivo) AS metodo_pago_id, 'NIO'::char(3) AS moneda, v_contado_nio AS monto
-      UNION ALL
-      SELECT (SELECT id FROM metodo_pago WHERE es_efectivo), 'USD'::char(3), v_contado_usd
-      UNION ALL
-      SELECT m.id, 'NIO'::char(3), sum((x->>'monto')::numeric)
-        FROM jsonb_array_elements(coalesce(p_no_efectivo, '[]'::jsonb)) x
-        JOIN metodo_pago m ON m.codigo = upper(x->>'metodo') AND NOT m.es_efectivo
-       GROUP BY m.id
-    ) c ON c.metodo_pago_id = e.metodo_pago_id AND c.moneda = e.moneda
-   WHERE coalesce(e.monto_esperado, 0) <> 0 OR coalesce(c.monto, 0) <> 0;
+    -- Esperado vs contado por método y moneda
+    INSERT INTO cierre_caja_detalle (turno_id, metodo_pago_id, moneda, monto_esperado, monto_contado)
+    SELECT p_turno,
+           coalesce(e.metodo_pago_id, c.metodo_pago_id),
+           coalesce(e.moneda, c.moneda),
+           coalesce(e.monto_esperado, 0),
+           coalesce(c.monto, 0)
+      FROM fn_resumen_turno(p_turno) e
+      FULL JOIN (
+        SELECT (SELECT id FROM metodo_pago WHERE es_efectivo) AS metodo_pago_id, 'NIO'::char(3) AS moneda, v_contado_nio AS monto
+        UNION ALL
+        SELECT (SELECT id FROM metodo_pago WHERE es_efectivo), 'USD'::char(3), v_contado_usd
+        UNION ALL
+        SELECT m.id, 'NIO'::char(3), sum((x->>'monto')::numeric)
+          FROM jsonb_array_elements(coalesce(p_no_efectivo, '[]'::jsonb)) x
+          JOIN metodo_pago m ON m.codigo = upper(x->>'metodo') AND NOT m.es_efectivo
+         GROUP BY m.id
+      ) c ON c.metodo_pago_id = e.metodo_pago_id AND c.moneda = e.moneda
+     WHERE coalesce(e.monto_esperado, 0) <> 0 OR coalesce(c.monto, 0) <> 0;
 
-  SELECT coalesce(sum(CASE WHEN moneda = 'USD' THEN diferencia * fn_tipo_cambio_vigente() ELSE diferencia END), 0)
-    INTO v_dif_total FROM cierre_caja_detalle WHERE turno_id = p_turno;
-  v_tol := coalesce(fn_parametro_num('CAJA_TOLERANCIA_DIFERENCIA_NIO'), 0);
+    SELECT coalesce(sum(CASE WHEN moneda = 'USD' THEN diferencia * fn_tipo_cambio_vigente() ELSE diferencia END), 0)
+      INTO v_dif_total FROM cierre_caja_detalle WHERE turno_id = p_turno;
+    v_tol := coalesce(fn_parametro_num('CAJA_TOLERANCIA_DIFERENCIA_NIO'), 0);
+
+    IF abs(v_dif_total) > v_tol AND NOT v_justificada THEN
+      RAISE EXCEPTION 'reconteo' USING ERRCODE = 'ESM01';
+    END IF;
+  EXCEPTION WHEN SQLSTATE 'ESM01' THEN
+    UPDATE turno_caja SET intentos_cierre = intentos_cierre + 1 WHERE id = p_turno;
+    RETURN jsonb_build_object('cerrado', false);
+  END;
 
   IF abs(v_dif_total) > v_tol THEN
-    IF coalesce(length(trim(p_justificacion)), 0) < 10 THEN
-      RAISE EXCEPTION 'El conteo no cuadra con lo registrado. Revise el conteo o escriba una justificación (mínimo 10 caracteres)'
-            USING ERRCODE = 'check_violation';
-    END IF;
     INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
     VALUES ('CAJA_DIFERENCIA',
             format('Cierre con diferencia de C$ %s en %s', round(v_dif_total, 2), (SELECT nombre FROM sucursal WHERE id = v_sucursal)),
             jsonb_build_object('turno_id', p_turno, 'diferencia_total_nio', round(v_dif_total, 2),
-                               'tolerancia_nio', v_tol, 'cerrado_por', p_usuario, 'justificacion', p_justificacion),
+                               'tolerancia_nio', v_tol, 'cerrado_por', p_usuario, 'justificacion', p_justificacion,
+                               'hubo_reconteo', v_t.intentos_cierre > 0),
             v_sucursal);
   END IF;
 
@@ -1604,7 +1641,8 @@ BEGIN
   UPDATE alerta SET atendida_por = p_usuario, atendida_at = now()
    WHERE tipo = 'CAJA_SIN_CERRAR' AND (detalle->>'turno_id')::bigint = p_turno AND atendida_at IS NULL;
 
-  RETURN fn_ticket_cierre(p_turno);
+  RETURN fn_ticket_cierre(p_turno, fn_tiene_permiso(p_usuario, 'CAJA_VER_DIFERENCIAS'))
+         || jsonb_build_object('cerrado', true);
 END $$;
 
 -- Cierre forzado por el admin (nadie cerró). No hay conteo: se asume lo esperado, y la
@@ -1638,7 +1676,7 @@ BEGIN
 
   UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
    WHERE tipo = 'CAJA_SIN_CERRAR' AND (detalle->>'turno_id')::bigint = p_turno AND atendida_at IS NULL;
-  RETURN fn_ticket_cierre(p_turno);
+  RETURN fn_ticket_cierre(p_turno, true);
 END $$;
 
 -- Para ejecutar periódicamente (tarea programada del backend, p. ej. cada 15 min):
@@ -1665,8 +1703,12 @@ BEGIN
   RETURN n;
 END $$;
 
--- Ticket de cierre (se imprime; no muestra montos esperados ni diferencias)
-CREATE OR REPLACE FUNCTION fn_ticket_cierre(p_turno bigint)
+-- Ticket de cierre (se imprime). Nunca muestra montos esperados ni diferencias.
+--   · Quien cierra recibe solo lo que contó, lo que retiró y el fondo que dejó: con lo vendido o lo
+--     cobrado por método podría deducir cuánto se esperaba.
+--   · p_completo (para quien tiene CAJA_VER_DIFERENCIAS) agrega las ventas y lo cobrado por método.
+--   En un cierre forzado no hubo conteo (se asumió lo esperado): el ticket reducido no trae montos.
+CREATE OR REPLACE FUNCTION fn_ticket_cierre(p_turno bigint, p_completo boolean DEFAULT false)
 RETURNS jsonb
 LANGUAGE sql STABLE AS $$
   SELECT jsonb_build_object(
@@ -1677,7 +1719,15 @@ LANGUAGE sql STABLE AS $$
     'apertura', t.fecha_apertura,
     'cerrado_por', uc.nombre_completo,
     'cierre', t.fecha_cierre,
-    'cierre_forzado', t.cierre_forzado,
+    'cierre_forzado', t.cierre_forzado)
+  || CASE WHEN t.cierre_forzado AND NOT p_completo THEN '{}'::jsonb ELSE jsonb_build_object(
+    'contado', (SELECT coalesce(jsonb_agg(jsonb_build_object('metodo', m.nombre, 'moneda', d.moneda, 'monto', d.monto_contado)
+                                         ORDER BY m.id, d.moneda), '[]'::jsonb)
+                  FROM cierre_caja_detalle d JOIN metodo_pago m ON m.id = d.metodo_pago_id
+                 WHERE d.turno_id = t.id AND d.monto_contado <> 0),
+    'retiro_nio', t.retiro_nio, 'retiro_usd', t.retiro_usd,
+    'fondo_siguiente_nio', t.fondo_siguiente_nio, 'fondo_siguiente_usd', t.fondo_siguiente_usd) END
+  || CASE WHEN NOT p_completo THEN '{}'::jsonb ELSE jsonb_build_object(
     'ventas', (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA'),
     'anuladas', (SELECT count(*) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'ANULADA'),
     'total_vendido', (SELECT coalesce(sum(total), 0) FROM venta v WHERE v.turno_id = t.id AND v.estado = 'COMPLETADA'),
@@ -1686,15 +1736,88 @@ LANGUAGE sql STABLE AS $$
                  FROM (SELECT m.nombre AS metodo, vp.moneda, sum(vp.monto) AS monto
                          FROM venta_pago vp JOIN venta v ON v.id = vp.venta_id AND v.estado = 'COMPLETADA'
                          JOIN metodo_pago m ON m.id = vp.metodo_pago_id
-                        WHERE v.turno_id = t.id GROUP BY m.nombre, vp.moneda) q),
-    'retiro_nio', t.retiro_nio, 'retiro_usd', t.retiro_usd,
-    'fondo_siguiente_nio', t.fondo_siguiente_nio, 'fondo_siguiente_usd', t.fondo_siguiente_usd)
+                        WHERE v.turno_id = t.id GROUP BY m.nombre, vp.moneda) q)) END
   FROM turno_caja t
   JOIN caja c ON c.id = t.caja_id
   JOIN sucursal s ON s.id = c.sucursal_id
   JOIN usuario ua ON ua.id = t.usuario_apertura_id
   LEFT JOIN usuario uc ON uc.id = t.usuario_cierre_id
   WHERE t.id = p_turno
+$$;
+
+-- ---------------------------------------------------------------------
+-- 9.2b Caja y turno de una sesión (POS)
+--   La caja con la que alguien trabaja NO la manda la pantalla: sale del equipo registrado en el
+--   que inició sesión.
+--     · PC de caja            → su caja.
+--     · Tablet o celular      → para vender, mover efectivo o cerrar: la única caja de su sucursal
+--                               con turno abierto (NULL si ninguna); para abrir (p_abrir): la única
+--                               caja activa de su sucursal.
+--     · Sin equipo registrado → solo el administrador entra así, y tiene que indicar la caja.
+--   Elegir la caja (p_caja) es solo para el administrador, y solo si su equipo no tiene una propia.
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_caja_de_sesion(
+  p_usuario bigint, p_dispositivo uuid, p_caja integer DEFAULT NULL, p_abrir boolean DEFAULT false
+) RETURNS integer
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+  d        dispositivo%ROWTYPE;
+  v_admin  boolean := fn_equipo_autorizado(p_usuario, NULL);   -- solo el admin entra sin equipo
+  v_cajas  integer[];
+  v_suc    text;
+BEGIN
+  IF NOT fn_equipo_autorizado(p_usuario, p_dispositivo) THEN
+    RAISE EXCEPTION 'Esta operación se hace desde un equipo registrado y activo de la sucursal'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  SELECT * INTO d FROM dispositivo WHERE id = p_dispositivo;
+
+  IF d.caja_id IS NOT NULL THEN
+    IF p_caja IS NOT NULL AND p_caja <> d.caja_id THEN
+      RAISE EXCEPTION 'Este equipo trabaja con su propia caja: no se puede elegir otra';
+    END IF;
+    RETURN d.caja_id;
+  END IF;
+
+  IF p_caja IS NOT NULL THEN
+    IF NOT v_admin THEN
+      RAISE EXCEPTION 'Solo el administrador puede elegir la caja' USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM caja WHERE id = p_caja) THEN
+      RAISE EXCEPTION 'La caja % no existe', p_caja;
+    END IF;
+    RETURN p_caja;
+  END IF;
+
+  IF d.id IS NULL THEN
+    RAISE EXCEPTION 'Indique la caja: esta sesión no es de un equipo registrado';
+  END IF;
+
+  -- Tablet o celular: la caja de su sucursal
+  SELECT nombre INTO v_suc FROM sucursal WHERE id = d.sucursal_id;
+  IF p_abrir THEN
+    SELECT array_agg(id) INTO v_cajas FROM caja WHERE sucursal_id = d.sucursal_id AND activa;
+    IF v_cajas IS NULL THEN RAISE EXCEPTION '% no tiene una caja activa', v_suc; END IF;
+    IF cardinality(v_cajas) > 1 THEN
+      RAISE EXCEPTION '% tiene más de una caja: abra el turno desde la PC de la caja', v_suc;
+    END IF;
+  ELSE
+    SELECT array_agg(c.id) INTO v_cajas
+      FROM caja c JOIN turno_caja t ON t.caja_id = c.id AND t.estado = 'ABIERTO'
+     WHERE c.sucursal_id = d.sucursal_id;
+    IF cardinality(v_cajas) > 1 THEN
+      RAISE EXCEPTION '% tiene más de una caja abierta: haga esta operación desde la PC de la caja', v_suc;
+    END IF;
+  END IF;
+  RETURN v_cajas[1];   -- NULL: ninguna caja de la sucursal tiene turno abierto
+END $$;
+
+-- Turno abierto con el que trabaja una sesión (NULL si su caja no tiene turno abierto)
+CREATE OR REPLACE FUNCTION fn_turno_de_sesion(p_usuario bigint, p_dispositivo uuid, p_caja integer DEFAULT NULL)
+RETURNS bigint
+LANGUAGE sql STABLE AS $$
+  SELECT t.id FROM turno_caja t
+   WHERE t.caja_id = (SELECT fn_caja_de_sesion(p_usuario, p_dispositivo, p_caja)) AND t.estado = 'ABIERTO'
 $$;
 
 -- ---------------------------------------------------------------------

@@ -426,6 +426,7 @@ export interface TurnoCaja {
   fondo_siguiente_nio: Numeric | null;
   fondo_siguiente_usd: Numeric | null;
   id: Generated<number>;
+  intentos_cierre: Generated<number>;
   justificacion_diferencia: string | null;
   monto_inicial_nio: Generated<Numeric>;
   monto_inicial_usd: Generated<Numeric>;
