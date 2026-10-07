@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   Res,
+  StreamableFile,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
@@ -82,5 +83,26 @@ export class VentasController {
     @Body(new ValidacionZod(esquemaMotivo)) datos: DatosMotivo,
   ): Promise<{ venta: VentaDetalle }> {
     return { venta: await this.ventas.anular(usuario.id, id, datos.motivo) };
+  }
+
+  /**
+   * El ticket en PDF para la impresora de 80 mm. La primera vez es el original; las siguientes
+   * salen con la palabra COPIA (la cabecera `X-Ticket-Impresion` dice cuál es: 1, 2, 3…).
+   */
+  @Post(':id/imprimir')
+  @RequierePermiso('VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS')
+  @HttpCode(HttpStatus.OK)
+  async imprimir(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+    @Res({ passthrough: true }) respuesta: Response,
+  ): Promise<StreamableFile> {
+    const { pdf, numero, impresion } = await this.ventas.imprimir(usuario.id, id);
+    respuesta.setHeader('X-Ticket-Impresion', String(impresion));
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: `inline; filename="ticket-${numero}.pdf"`,
+      length: pdf.length,
+    });
   }
 }

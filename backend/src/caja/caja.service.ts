@@ -5,6 +5,7 @@ import { BaseDatosService } from '../base-datos/base-datos.service';
 import { donde } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
+import { ticketPdf } from '../exportacion/ticket-pdf';
 import type {
   DatosAbrirTurno,
   DatosCerrarTurno,
@@ -12,6 +13,7 @@ import type {
   FiltroTurnos,
 } from './esquemas';
 import { cajaParaAbrir, exigirTurno, turnoDeSesion } from './sesion-caja';
+import { renglonesTicketCierre } from './ticket-cierre';
 
 interface UsuarioReferido {
   id: number;
@@ -423,6 +425,29 @@ export class CajaService {
       );
     }
     return aTicket(rows[0].ticket);
+  }
+
+  /**
+   * El ticket de cierre en PDF (rollo de 80 mm), con lo mismo que `ticket()`: reducido o completo
+   * según el permiso. Cada impresión queda anotada (fn_registrar_impresion_cierre): la primera es
+   * el original y las siguientes salen como COPIA.
+   */
+  async imprimirTicket(
+    usuarioId: number,
+    turnoId: number,
+  ): Promise<{ pdf: Buffer; impresion: number }> {
+    const ticket = await this.ticket(usuarioId, turnoId); // 404 si es ajeno; 409 si sigue abierto
+    return this.bd.transaccion(usuarioId, async (trx) => {
+      const { rows } = await sql<{ impresion: number; negocio: string | null }>`
+        select fn_registrar_impresion_cierre(${usuarioId}, ${turnoId}) as impresion,
+               fn_parametro_txt('NEGOCIO_NOMBRE') as negocio`.execute(trx);
+      const { impresion, negocio } = rows[0];
+      const pdf = await ticketPdf(
+        renglonesTicketCierre(ticket, impresion, negocio),
+        `Cierre de caja, turno ${turnoId}`,
+      );
+      return { pdf, impresion };
+    });
   }
 
   async listarTurnos(usuarioId: number, filtro: FiltroTurnos): Promise<TurnoResumen[]> {

@@ -1,4 +1,16 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+  Res,
+  StreamableFile,
+} from '@nestjs/common';
+import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
 import { RequierePermiso } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
@@ -130,6 +142,27 @@ export class TurnosController {
     @Param('id', idEntero()) id: number,
   ): Promise<{ ticket: TicketCierre }> {
     return { ticket: await this.caja.ticket(usuario.id, id) };
+  }
+
+  /**
+   * El ticket de cierre en PDF para la impresora de 80 mm (reducido sin CAJA_VER_DIFERENCIAS). La
+   * primera vez es el original; las siguientes salen con la palabra COPIA (`X-Ticket-Impresion`).
+   */
+  @Post(':id/imprimir')
+  @RequierePermiso('CAJA_CERRAR', 'CAJA_VER_DIFERENCIAS')
+  @HttpCode(HttpStatus.OK)
+  async imprimir(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+    @Res({ passthrough: true }) respuesta: Response,
+  ): Promise<StreamableFile> {
+    const { pdf, impresion } = await this.caja.imprimirTicket(usuario.id, id);
+    respuesta.setHeader('X-Ticket-Impresion', String(impresion));
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: `inline; filename="cierre-turno-${id}.pdf"`,
+      length: pdf.length,
+    });
   }
 
   /** `{ motivo }`: cierra sin arqueo un turno que nadie cerró (se asume lo esperado). */

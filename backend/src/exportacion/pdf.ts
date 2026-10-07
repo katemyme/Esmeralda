@@ -22,6 +22,9 @@ const PESO: Record<TipoColumna, number> = {
   si_no: 0.9,
 };
 
+/** Puntos por unidad de peso, como máximo: una columna de montos no pasa de 105 puntos. */
+const ANCHO_MAXIMO_POR_PESO = 70;
+
 const A_LA_DERECHA = new Set<TipoColumna>(['entero', 'monto', 'porcentaje']);
 
 /** Junta lo que el documento va escribiendo y lo entrega cuando termina. */
@@ -35,12 +38,33 @@ export function aBuffer(doc: Documento): Promise<Buffer> {
   });
 }
 
+/**
+ * Ancho de cada columna. Se reparte el ancho de la página según el tipo de cada una, con dos
+ * cuidados: una tabla de pocas columnas no se estira de lado a lado, y ninguna columna queda más
+ * angosta que la palabra más larga de su título (para que no se parta a media palabra).
+ */
+function anchosDeColumna(doc: Documento, seccion: Seccion, disponible: number, letra: number) {
+  const pesoTotal = seccion.columnas.reduce((suma, c) => suma + PESO[c.tipo], 0);
+  const unidad = Math.min(disponible / pesoTotal, ANCHO_MAXIMO_POR_PESO);
+  const anchos = seccion.columnas.map((c) => PESO[c.tipo] * unidad);
+
+  doc.font('Helvetica-Bold').fontSize(letra);
+  const minimos = seccion.columnas.map(
+    (c) => Math.max(...c.titulo.split(' ').map((p) => doc.widthOfString(p))) + 2 * RELLENO + 1,
+  );
+  const falta = anchos.reduce((suma, a, i) => suma + Math.max(0, minimos[i] - a), 0);
+  const sobra = anchos.map((a, i) => Math.max(0, a - minimos[i]));
+  const sobraTotal = sobra.reduce((suma, s) => suma + s, 0);
+  if (falta === 0 || sobraTotal < falta) return anchos;
+  // Lo que les falta a unas sale de las demás, en proporción a lo que les sobra
+  return anchos.map((a, i) => (a < minimos[i] ? minimos[i] : a - (sobra[i] * falta) / sobraTotal));
+}
+
 function dibujarTabla(doc: Documento, seccion: Seccion): void {
   const x0 = MARGEN;
-  const ancho = doc.page.width - 2 * MARGEN;
-  const pesoTotal = seccion.columnas.reduce((suma, c) => suma + PESO[c.tipo], 0);
-  const anchos = seccion.columnas.map((c) => (PESO[c.tipo] / pesoTotal) * ancho);
   const letra = seccion.columnas.length > 11 ? 6.5 : seccion.columnas.length > 8 ? 7.5 : 8.5;
+  const anchos = anchosDeColumna(doc, seccion, doc.page.width - 2 * MARGEN, letra);
+  const ancho = anchos.reduce((suma, a) => suma + a, 0);
   const titulos = seccion.columnas.map((c) => c.titulo);
 
   const fila = (textos: string[], opciones: { negrita?: boolean; fondo?: boolean } = {}) => {

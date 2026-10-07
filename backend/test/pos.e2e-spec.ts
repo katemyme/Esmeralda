@@ -17,7 +17,13 @@ import type { Existencia } from '../src/inventario/inventario.service';
 import type { PerforacionCatalogo } from '../src/perforaciones/perforaciones.service';
 import type { ProductoCatalogo } from '../src/productos/productos.service';
 import type { VentaDetalle, VentaResumen } from '../src/ventas/ventas.service';
-import { cookiePuesta, crearApp, crearUsuarioDePrueba, tokenDeAcceso } from './utilidades';
+import {
+  comoBytes,
+  cookiePuesta,
+  crearApp,
+  crearUsuarioDePrueba,
+  tokenDeAcceso,
+} from './utilidades';
 
 // Recorrido completo de B6 (POS y caja) en una sucursal propia: se abre la caja, se vende de todas
 // las formas, se anula, se cierra a ciegas con un reconteo y se revisa el historial. Las pruebas
@@ -229,10 +235,12 @@ describe('POS y caja', () => {
       ['get', '/api/turnos/1'],
       ['get', '/api/turnos/1/ticket'],
       ['post', '/api/turnos/1/cierre-forzado'],
+      ['post', '/api/turnos/1/imprimir'],
       ['get', '/api/ventas'],
       ['get', '/api/ventas/1'],
       ['post', '/api/ventas'],
       ['post', '/api/ventas/1/anular'],
+      ['post', '/api/ventas/1/imprimir'],
       ['get', '/api/tipo-cambio'],
       ['put', '/api/tipo-cambio'],
       ['get', '/api/metodos-pago'],
@@ -905,6 +913,48 @@ describe('POS y caja', () => {
       const propia = await conSesion('get', `/api/ventas/${venta.a}`, vera.acceso).expect(200);
       expect(propia.body.venta.numero).toBe('PVE-00000001');
     });
+
+    it('POST /api/ventas/:id/imprimir: el ticket en PDF de 80 mm; la primera vez el original y después copia', async () => {
+      const imprimir = (acceso: string, id: number) =>
+        conSesion('post', `/api/ventas/${id}/imprimir`, acceso).buffer(true).parse(comoBytes);
+
+      const original = await imprimir(vera.acceso, venta.a).expect(200);
+      expect(original.headers['content-type']).toBe('application/pdf');
+      expect(original.headers['content-disposition']).toBe(
+        'inline; filename="ticket-PVE-00000001.pdf"',
+      );
+      expect(original.headers['x-ticket-impresion']).toBe('1');
+      const pdf = (original.body as Buffer).toString('latin1');
+      expect(pdf.startsWith('%PDF-')).toBe(true);
+      // una sola página de 80 mm (226.77 puntos) de ancho
+      expect(pdf).toMatch(/\/MediaBox \[0 0 226\.77\d* \d+(\.\d+)?\]/);
+      expect(pdf.match(/\/Type \/Page\b/g)).toHaveLength(1);
+
+      // desde la segunda impresión es copia, la pida quien la pida
+      const copia = await imprimir(enzo.acceso, venta.a).expect(200);
+      expect(copia.headers['x-ticket-impresion']).toBe('2');
+      expect((await imprimir(jefa.acceso, venta.a).expect(200)).headers['x-ticket-impresion']).toBe(
+        '3',
+      );
+      // cada venta lleva su cuenta
+      expect((await imprimir(vera.acceso, venta.b).expect(200)).headers['x-ticket-impresion']).toBe(
+        '1',
+      );
+
+      // quien no puede ver la venta no la imprime, y su intento no cuenta
+      await conSesion('post', `/api/ventas/${venta.a}/imprimir`, lola.acceso)
+        .expect(404)
+        .expect({ codigo: 'NO_ENCONTRADO', mensaje: `La venta ${venta.a} no existe` });
+      await conSesion('post', `/api/ventas/${venta.jefa}/imprimir`, vera.acceso).expect(404);
+      await comoJefa('post', '/api/ventas/abc/imprimir').expect(400);
+      const impresiones = await bd.db
+        .selectFrom('ticket_impresion')
+        .select(['usuario_id'])
+        .where('venta_id', '=', venta.a)
+        .orderBy('id')
+        .execute();
+      expect(impresiones.map((i) => i.usuario_id)).toEqual([ids.vera, ids.enzo, ids.jefa]);
+    });
   });
 
   describe('anular una venta', () => {
@@ -1288,6 +1338,35 @@ describe('POS y caja', () => {
         .expect(noExiste);
       await comoJefa('get', '/api/turnos/999999').expect(404);
     });
+
+    it('POST /api/turnos/:id/imprimir: el ticket de cierre en PDF; la reimpresión es copia', async () => {
+      const imprimir = (acceso: string) =>
+        conSesion('post', `/api/turnos/${propio.turno}/imprimir`, acceso)
+          .buffer(true)
+          .parse(comoBytes);
+
+      // la vendedora que cerró imprime el suyo (el reducido)
+      const original = await imprimir(vera.acceso).expect(200);
+      expect(original.headers['content-type']).toBe('application/pdf');
+      expect(original.headers['content-disposition']).toBe(
+        `inline; filename="cierre-turno-${propio.turno}.pdf"`,
+      );
+      expect(original.headers['x-ticket-impresion']).toBe('1');
+      const reducido = original.body as Buffer;
+      expect(reducido.toString('latin1')).toMatch(/\/MediaBox \[0 0 226\.77\d* \d+(\.\d+)?\]/);
+
+      // el encargado recibe el completo (más largo: lleva lo vendido y lo cobrado), ya como copia
+      const copia = await imprimir(enzo.acceso).expect(200);
+      expect(copia.headers['x-ticket-impresion']).toBe('2');
+      const alto = (pdf: Buffer) =>
+        Number(/\/MediaBox \[0 0 [\d.]+ ([\d.]+)\]/.exec(pdf.toString('latin1'))?.[1]);
+      expect(alto(copia.body as Buffer)).toBeGreaterThan(alto(reducido));
+
+      await conSesion('post', `/api/turnos/${propio.turno}/imprimir`, lola.acceso)
+        .expect(404)
+        .expect({ codigo: 'NO_ENCONTRADO', mensaje: `El turno ${propio.turno} no existe` });
+      await comoJefa('post', '/api/turnos/999999/imprimir').expect(404);
+    });
   });
 
   describe('apertura siguiente y cierre forzado', () => {
@@ -1331,12 +1410,16 @@ describe('POS y caja', () => {
           },
         ],
       });
+      const sigueAbierto = {
+        codigo: 'TURNO_ABIERTO',
+        mensaje: 'El turno sigue abierto: el ticket sale al cerrarlo',
+      };
       await conSesion('get', `/api/turnos/${propio.turno2}/ticket`, enzo.acceso)
         .expect(409)
-        .expect({
-          codigo: 'TURNO_ABIERTO',
-          mensaje: 'El turno sigue abierto: el ticket sale al cerrarlo',
-        });
+        .expect(sigueAbierto);
+      await conSesion('post', `/api/turnos/${propio.turno2}/imprimir`, enzo.acceso)
+        .expect(409)
+        .expect(sigueAbierto);
     });
 
     it('POST /api/turnos/:id/cierre-forzado: el administrador cierra sin arqueo', async () => {
