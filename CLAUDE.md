@@ -29,18 +29,27 @@ _Actualizado el 2026-10-07._
   de solo servicio de las perforaciones que ya existen (hecho); los envíos se quedan con su SEQUENCE (ahí los
   saltos no importan); el RUC y la leyenda del ticket quedan vacíos y él los llena en el panel. Pidió además un
   control del tipo de cambio (variación máxima con confirmación y rango del primero), ya hecho.
-- **En curso:** **B7** (reportes). El dueño aprobó el plan y sus decisiones el 2026-10-07 (están en «Decisiones de
-  negocio clave», «Reportes»). **Pendiente:** el frontend (no empezarlo).
-- Pruebas en verde: 490 de base de datos y 409 del backend. Nada se ha subido a GitHub.
+- **Terminado, pendiente de revisión del dueño:** **B7** (reportes, exportación a Excel y PDF, tickets en PDF y
+  tareas programadas). El dueño aprobó el plan y sus decisiones el 2026-10-07 (están en «Decisiones de negocio
+  clave», «Reportes»); se programó completo ese mismo día. Con B7 el backend queda completo.
+- **Sigue:** el frontend, solo cuando el dueño lo pida (no empezarlo).
+- Pruebas en verde: 524 de base de datos y 472 del backend. Nada se ha subido a GitHub.
+- Por confirmar con el dueño: la **foto mensual del inventario**. Su respuesta sobre ese punto fue ambigua («no,
+  así está bien») y se leyó como «sí, también la foto mensual»: está hecha. Si no la quería, se quita sin tocar
+  lo demás (la tabla `inventario_cierre_mensual`, `fn_foto_inventario_mensual`, su llamada en `TareasService` y
+  `?mes=` en el reporte).
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
-  redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
-  B7) y borrar las fotos sueltas que nunca se usaron.
-- Fuera de B6: devoluciones de ventas de un turno ya cerrado (fase 2), el ticket en PDF y la tarea programada
-  `fn_alertar_cajas_sin_cerrar` (los dos van con B7) y un historial del tipo de cambio. Quien confirma un tipo de
-  cambio fuera del límite queda en la bitácora, pero no genera una alerta (se le planteó al dueño con B7).
-- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-07: `fn_set_tipo_cambio` y el parámetro
-  `TIPO_CAMBIO_VARIACION_MAX`) la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
-  (borra lo que tenga: mirar antes si el dueño ya guardó datos propios).
+  redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
+- Fuera de B6: devoluciones de ventas de un turno ya cerrado (fase 2) y un historial del tipo de cambio.
+- Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); reportes de
+  compras por proveedor y de piezas consumidas en paquetes (las vistas existen, no tienen ruta); inventario
+  valorizado a una fecha cualquiera (solo hoy y el cierre de cada mes); la foto de un mes si el servidor estuvo
+  apagado durante todo el mes siguiente (solo se toma la del mes anterior); comparar con el periodo anterior y
+  gráficas (eso es del frontend); en los PDF, los caracteres fuera del alfabeto latino (fuentes estándar).
+- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-07: el control del tipo de cambio y todo
+  lo de B7, con dos tablas nuevas) la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
+  (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
+  ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -71,7 +80,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      490 pruebas de reglas de negocio
+db/04_pruebas.sql      524 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -159,9 +168,14 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Inventario valorizado:** la foto de hoy y, además, una foto automática al cierre de cada mes.
   - **Mermas:** suman solo las aprobadas, con el costo del momento en que se aprobaron; las pendientes y las
     rechazadas se listan aparte.
-  - **Tickets en PDF:** papel de 80 mm; la reimpresión lleva la palabra «COPIA».
-  - **Alertas:** una nueva cuando alguien confirma un tipo de cambio fuera del límite. El stock bajo el mínimo
-    no es alerta: es el reporte «por reponer». Las alertas siguen solo en el panel (correo y WhatsApp, fuera).
+  - **Tickets en PDF:** papel de 80 mm; la reimpresión lleva la palabra «COPIA». Cada impresión se anota en
+    `ticket_impresion` (`fn_registrar_impresion_venta` / `_cierre`): la primera es el original, la pida quien
+    la pida; vale igual para el ticket de cierre.
+  - **Alertas:** una nueva cuando alguien confirma un tipo de cambio fuera del límite
+    (`TIPO_CAMBIO_FUERA_LIMITE`, la crea `fn_set_tipo_cambio`). El stock bajo el mínimo no es alerta: es el
+    reporte «por reponer». Las alertas siguen solo en el panel (correo y WhatsApp, fuera).
+  - **Foto mensual:** las cantidades salen del kardex (suma de movimientos anteriores al cambio de mes), así
+    que son las del cierre aunque la tarea corra tarde; el costo y el precio son los del momento en que se toma.
   - **Reportes extra incluidos:** productos más vendidos, perforaciones con pieza contra solo servicio, ventas
     por gama, promociones y sobreprecios.
 
@@ -171,7 +185,7 @@ Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseñ
 ## Etapa actual: backend (`backend/`)
 
 Stack: Node 22.12+ (desarrollo en Node 24) + TypeScript, **NestJS**, **Kysely** + `pg` (consultas tipadas; llama a las `fn_*`),
-Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + refresh en cookie httpOnly
+Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (reportes y tickets en PDF), argon2id para contraseñas, JWT de acceso (15 min) + refresh en cookie httpOnly
 (hash SHA-256 en tabla `sesion`), pruebas con Jest + supertest contra una BD de prueba.
 
 | Paso | Contenido |
@@ -182,7 +196,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 | B4 ✅ | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 ✅ | Inventario: compras, envíos/recepción, mermas, conteos (y carga inicial desde Excel) |
 | B6 ✅ | POS y caja: venta, cobro, apertura, cierre, ticket |
-| B7 | Reportes, exportación (Excel/PDF), tarea programada `fn_alertar_cajas_sin_cerrar` |
+| B7 ✅ | Reportes, exportación (Excel/PDF), tickets en PDF, tareas programadas (`fn_alertar_cajas_sin_cerrar`, foto mensual) |
 
 ### Convenciones del backend
 
@@ -195,8 +209,9 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 - Configuración: variables de entorno validadas con Zod en `src/configuracion/configuracion.ts`
   (`backend/.env`, no se sube; plantilla en `.env.example`). `DATABASE_URL` lleva la contraseña
   (codificada, `@` → `%40`): `pg` 8.23 marcó como obsoleto leer `pgpass.conf`. `JWT_SECRETO` (≥ 32 caracteres,
-  `npm run secreto`), `LOGIN_LIMITE_POR_MINUTO` (por IP), `TRUST_PROXY` (detrás de nginx/Caddy) y `DIR_FOTOS`
-  (carpeta de las fotos subidas; en el servidor debe entrar en los respaldos).
+  `npm run secreto`), `LOGIN_LIMITE_POR_MINUTO` (por IP), `TRUST_PROXY` (detrás de nginx/Caddy), `DIR_FOTOS`
+  (carpeta de las fotos subidas; en el servidor debe entrar en los respaldos) y `TAREAS_PROGRAMADAS` (por
+  defecto `true`; las pruebas la ponen en `false`).
 - API: rutas bajo `/api`; JSON en **snake_case** (igual que la base: `debe_cambiar_password`, `sucursal_id`).
   Entrada validada con `@Body(new ValidacionZod(esquema))` → 400 `DATOS_INVALIDOS` con `errores` por campo.
 - Autenticación (`src/autenticacion/`): toda ruta exige `Authorization: Bearer <JWT>` salvo `@Publica()`;
@@ -279,6 +294,38 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
     pieza de gama Titanio (las otras pruebas cuentan las piezas y los precios de las gamas de acero) y al final
     deja el tipo de cambio como estaba (una prueba borra los registrados mientras dura y los repone: vale porque
     Jest corre con `--runInBand`). Hace `app.listen(0)` porque envía dos solicitudes a la vez.
+- Reportes (B7): módulos `reportes/` (rutas `/api/reportes/...`), `exportacion/` y `tareas/`.
+  - Todos los reportes devuelven un `Reporte` (`reportes/reporte.ts`): secciones con `columnas`, `filas` y
+    `totales`. Esa misma estructura sale como JSON, como Excel (`exportacion/excel.ts`, una hoja por sección) y
+    como PDF (`exportacion/pdf.ts`, pdfkit, tamaño carta; horizontal con más de 7 columnas), según `?formato=`.
+    Un reporte nuevo es un método en `ReportesService` y su ruta: la exportación ya la tiene.
+  - Las ventas de un reporte salen **siempre** de `fn_ventas_reporte` (`this.lineas(c)` para las líneas,
+    `this.ventasDelReporte(c)` para los ids): ahí están el alcance por sucursal y la regla del turno abierto.
+    No consultar `venta` ni `v_ventas_linea` directo, ni usar las vistas ya agrupadas por día
+    (`v_ventas_diarias`, `v_cobros_metodo_diario`…): no dejan filtrar por venta.
+  - Las columnas de costo se declaran con `costo: true`: la consulta las deja en null sin `REPORTES_COSTOS`
+    (`veCostos()`) y `seccion()` las quita del reporte. `visible: false` quita una columna por otra razón (la
+    cantidad en bodega). Los totales solo llevan columnas numéricas; en las consultas con `grouping sets` la
+    fila de totales llega con `es_total = 1` y la separa `separar()`.
+  - Rango (`reportes/periodo.ts`): `?periodo=dia|semana|mes` + `fecha`, o `desde` + `hasta` (hasta 366 días);
+    sin nada, hoy. Días de Managua; la semana empieza el lunes. Una sucursal ajena responde 404.
+  - En Excel los números van como números y las fechas como fechas (`horaDeManaguaEnUtc`: la hora de Managua
+    escrita como si fuera UTC, porque Excel no maneja zonas). En los PDF se usan las fuentes estándar de pdfkit
+    (Helvetica): solo caracteres latinos.
+  - Tickets en PDF: el contenido se arma como una lista de renglones (`ventas/ticket-venta.ts`,
+    `caja/ticket-cierre.ts`) y `exportacion/ticket-pdf.ts` la dibuja en una página de 80 mm de ancho y del alto
+    de su contenido (primero mide en un documento aparte). `POST /api/ventas/:id/imprimir` y
+    `POST /api/turnos/:id/imprimir` anotan la impresión dentro de la misma transacción que arma el PDF y
+    devuelven cuál es en `X-Ticket-Impresion`. El ticket de cierre imprime lo que entrega `fn_ticket_cierre`:
+    no decide nada por su cuenta.
+  - `TareasService` corre `fn_alertar_cajas_sin_cerrar` y `fn_foto_inventario_mensual` al arrancar y cada 15
+    minutos (un `setInterval`, sin dependencias). En las pruebas no corre solo: llamar a `ejecutar(ahora)`.
+  - Pruebas: `test/reportes.e2e-spec.ts` trabaja en la sucursal `RPT` (las ventas antiguas se insertan directo
+    en la base, porque la API siempre vende «ahora»; crea el rol `ANALISTA_RPT` y lo elimina en `afterAll`) y
+    `test/tareas.e2e-spec.ts` en la sucursal `TAR`. `comoBytes` (`test/utilidades.ts`) lee un archivo
+    descargado. Las pruebas de PDF solo revisan su estructura (tamaño de página, número de páginas); el
+    contenido se prueba en los renglones y en el Excel. Para ver cómo queda un PDF, generarlo a un archivo
+    temporal y abrirlo.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

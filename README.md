@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial) y B6 (POS y caja). Falta B7 (reportes) |
+| Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja) y B7 (reportes, exportación y tareas programadas) |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -208,11 +208,13 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `GET` · `POST /api/caja/turno/movimientos` | `CAJA_MOVIMIENTOS` | Ingresos y egresos de efectivo: `{ tipo, moneda, monto, motivo }` |
 | `POST /api/caja/turno/cerrar` | `CAJA_CERRAR` | Arqueo ciego: `{ efectivo: [{ moneda, valor, cantidad }], no_efectivo: [{ metodo, monto }], retiro_nio, retiro_usd, justificacion, observaciones }` → ticket de cierre |
 | `GET /api/turnos` · `GET /api/turnos/:id` | `CAJA_VER_DIFERENCIAS` | Historial con lo esperado, lo contado y las diferencias: `?sucursal_id=&estado=&desde=&hasta=&limite=&antes_de=` |
-| `GET /api/turnos/:id/ticket` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | Reimprimir el ticket de cierre |
+| `GET /api/turnos/:id/ticket` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | Los datos del ticket de cierre |
+| `POST /api/turnos/:id/imprimir` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | El ticket de cierre en PDF de 80 mm |
 | `POST /api/turnos/:id/cierre-forzado` | `CAJA_CIERRE_FORZADO` | `{ motivo }`: el admin cierra sin arqueo un turno que nadie cerró |
 | `POST /api/ventas` | `VENTAS_REGISTRAR` | `{ clave_idempotencia, items: [{ variante_id, cantidad, precio, piezas }], pagos: [{ metodo, moneda, monto, referencia }], promocion_id, cliente_nombre, cliente_telefono, notas }` → la venta, con lo que va en el ticket |
 | `GET /api/ventas` · `GET /api/ventas/:id` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, solo las propias: `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` |
 | `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
+| `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF de 80 mm |
 | `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
 | `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
 | `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
@@ -230,10 +232,60 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   por método solo llegan con `CAJA_VER_DIFERENCIAS`; lo esperado y las diferencias, solo en `/api/turnos`.
 - **Ticket de venta.** La venta trae `ticket: { negocio, ruc, direccion, telefono, leyenda }` (parámetros
   `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA`, más los datos de la sucursal) para que la pantalla lo imprima.
+- **Tickets en PDF.** `POST /api/ventas/:id/imprimir` y `POST /api/turnos/:id/imprimir` devuelven el ticket como
+  PDF de una sola página de 80 mm de ancho (impresora térmica). Cada impresión queda anotada: la primera es el
+  original y las siguientes llevan la palabra **COPIA**; la cabecera `X-Ticket-Impresion` dice cuál es (1, 2, 3…).
+  El de cierre sale reducido o completo según el permiso, igual que su versión en datos.
 - **Tipo de cambio.** Si el valor se aleja del último registrado más que el parámetro `TIPO_CAMBIO_VARIACION_MAX`
   (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
   El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango
   responde 422 aunque venga confirmado.
+
+### Reportes
+
+Todos responden lo mismo: `{ reporte: { clave, titulo, desde, hasta, sucursal, generado_at, notas, secciones } }`,
+donde cada sección es una tabla: `{ clave, titulo, columnas: [{ clave, titulo, tipo }], filas, totales }`. Con
+`?formato=xlsx` o `?formato=pdf` entregan el mismo reporte como archivo (pide el mismo permiso).
+
+| Ruta | Permiso | Qué trae |
+|---|---|---|
+| `GET /api/reportes/ventas` | `REPORTES_VER` | Ventas, unidades, descuentos, venta neta, sobreprecio y ticket promedio, una fila por día, semana o mes (`?agrupar=dia\|semana\|mes`) |
+| `GET /api/reportes/ventas-por-vendedor` | `REPORTES_VER` | Lo mismo por persona, con las ventas que se le anularon |
+| `GET /api/reportes/ventas-por-sucursal` | `REPORTES_VER` | Lo mismo por sucursal |
+| `GET /api/reportes/cobros` | `REPORTES_VER` | Lo cobrado por método de pago y moneda (el vuelto ya restado); los dólares, con su equivalente |
+| `GET /api/reportes/productos` | `REPORTES_VER` | Los más vendidos (`?limite=`, por defecto 20) |
+| `GET /api/reportes/perforaciones` | `REPORTES_VER` | Cada perforación: con pieza (paquete) contra solo servicio |
+| `GET /api/reportes/gamas` | `REPORTES_VER` | Paquetes vendidos según la gama de la pieza |
+| `GET /api/reportes/promociones` | `REPORTES_VER` | Ventas, rebaja y cobrado con cada promoción |
+| `GET /api/reportes/sobreprecios` | `REPORTES_VER` | Cada línea cobrada por encima del precio establecido |
+| `GET /api/reportes/cierres` | `CAJA_VER_DIFERENCIAS` | Turnos cerrados en el rango: esperado, contado, diferencia, reconteo, cierre forzado y justificación |
+| `GET /api/reportes/mermas` | `REPORTES_VER` | Mermas aprobadas (al costo de cuando se aprobaron); pendientes y rechazadas, aparte |
+| `GET /api/reportes/inventario-valorizado` | `REPORTES_COSTOS` | Unidades, valor a costo y a precio de venta por ubicación y categoría: el de hoy o, con `?mes=AAAA-MM`, la foto del cierre de ese mes (`/meses` lista los que tienen foto) |
+| `GET /api/reportes/por-reponer` | `REPORTES_VER` | Lo que está en su stock mínimo o por debajo |
+
+- **Rango.** `?periodo=dia|semana|mes` y, si se quiere, `&fecha=AAAA-MM-DD` (un día de ese periodo): el reporte
+  diario, el semanal (de lunes a domingo) y el mensual. O `?desde=&hasta=` para un rango cualquiera de hasta 366
+  días. Sin nada, el día de hoy. Los días son los de Managua. Además `?sucursal_id=`.
+- **Qué ve cada quien.** Solo sus sucursales (una ajena responde 404). El costo, el margen y el valor a costo solo
+  salen con `REPORTES_COSTOS` (solo el administrador): sin él esas columnas no existen, ni en el JSON ni en el
+  archivo. El vendedor no tiene `REPORTES_VER`.
+- **Arqueo ciego.** Sin `CAJA_VER_DIFERENCIAS`, los reportes de ventas y de cobros no incluyen las ventas de un
+  turno que sigue abierto (con ellas se deduciría lo esperado en caja); el reporte lo avisa en `notas`.
+- **Montos y fechas.** Como en el resto de la API: los montos son texto con 2 decimales y las fechas con hora,
+  instantes ISO. En Excel van como números y fechas; el PDF es tamaño carta (horizontal si la tabla es ancha).
+
+### Tareas programadas
+
+Al arrancar y cada 15 minutos el servidor corre dos funciones de la base (`TAREAS_PROGRAMADAS=false` lo apaga):
+
+- `fn_alertar_cajas_sin_cerrar`: una alerta por cada caja que sigue abierta después de la hora del parámetro
+  `CAJA_HORA_ALERTA_CIERRE` (21:30) o desde un día anterior. Al cerrar la caja la alerta queda atendida.
+- `fn_foto_inventario_mensual`: la primera vez que corre en un mes nuevo guarda la foto del inventario valorizado
+  del mes que acaba de cerrar. Las cantidades salen del kardex (son las del cierre aunque el servidor haya estado
+  apagado ese día); el costo y el precio de venta son los del momento en que se toma.
+
+Las alertas se ven en el panel (`GET /api/alertas`, `ALERTAS_VER`). Además de las anteriores, desde B7 hay una
+cuando alguien confirma un tipo de cambio fuera del límite (`TIPO_CAMBIO_FUERA_LIMITE`).
 
 ### Carga inicial desde Excel
 

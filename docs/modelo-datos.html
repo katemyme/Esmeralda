@@ -121,10 +121,10 @@
     <h1>Modelo de datos v1.1 (PostgreSQL 16)</h1>
     <p class="lede">Dos sucursales y una bodega central. La mercadería entra solo por la bodega, llega a las sucursales con envíos en dos pasos y sale por ventas de piezas, servicios o paquetes de perforación. Cada peso se sigue hasta el cierre de caja.</p>
     <div class="meta">
-      <span class="chip">45 tablas</span>
+      <span class="chip">47 tablas</span>
       <span class="chip">24 vistas</span>
-      <span class="chip">128 funciones</span>
-      <span class="chip">490 pruebas</span>
+      <span class="chip">135 funciones</span>
+      <span class="chip">524 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -335,6 +335,7 @@ erDiagram
   MERMA |o--o| MOVIMIENTO_INVENTARIO : aprobada
   SUCURSAL ||--o{ CONTEO : cuenta
   CONTEO ||--o{ CONTEO_DETALLE : escaneos
+  SUCURSAL ||--o{ INVENTARIO_CIERRE_MENSUAL : foto_del_mes
 
   COMPRA {
     bigint id PK
@@ -399,6 +400,15 @@ erDiagram
     int cantidad_contada
     int stock_sistema
   }
+  INVENTARIO_CIERRE_MENSUAL {
+    date mes PK "primer día del mes que cierra"
+    int sucursal_id PK,FK
+    int categoria_id PK,FK
+    int unidades
+    numeric valor_costo
+    numeric valor_venta
+    timestamptz tomada_at
+  }
 </pre>
     </div>
   </section>
@@ -417,6 +427,8 @@ erDiagram
   METODO_PAGO ||--o{ VENTA_PAGO : usa
   PROMOCION |o--o{ VENTA : aplica
   TURNO_CAJA ||--o{ VENTA : contiene
+  VENTA ||--o{ TICKET_IMPRESION : impresiones
+  TURNO_CAJA ||--o{ TICKET_IMPRESION : impresiones_del_cierre
 
   VENTA {
     bigint id PK
@@ -469,6 +481,13 @@ erDiagram
   TIPO_CAMBIO {
     date fecha PK
     numeric usd_a_nio
+  }
+  TICKET_IMPRESION {
+    bigint id PK
+    bigint venta_id FK "o el turno: uno de los dos"
+    bigint turno_id FK
+    bigint usuario_id FK
+    timestamptz impreso_at
   }
 </pre>
     </div>
@@ -584,7 +603,10 @@ erDiagram
       <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran; se anulan con el turno abierto y el stock vuelve, piezas de paquete incluidas.</p></div>
       <div class="rule"><h3>Arqueo con tolerancia</h3><p>Conteo por denominación. Una diferencia mayor a C$100 exige justificación y alerta; el fondo del día siguiente queda registrado.</p></div>
       <div class="rule"><h3>Arqueo ciego, un solo reconteo</h3><p>Quien cierra nunca ve el monto esperado ni la diferencia. Si el primer conteo no cuadra, la caja no se cierra y queda anotado; el segundo debe llevar justificación y cierra con lo contado. Su ticket trae solo lo contado, el retiro y el fondo.</p></div>
-      <div class="rule"><h3>Tipo de cambio sin errores de dedo</h3><p>Solo se registra el de hoy. Si se aleja más de 5 % del último registrado (parámetro) pide una confirmación explícita; el primero que se registra debe estar entre 20 y 60 córdobas por dólar.</p></div>
+      <div class="rule"><h3>Tipo de cambio sin errores de dedo</h3><p>Solo se registra el de hoy. Si se aleja más de 5 % del último registrado (parámetro) pide una confirmación explícita, y quien lo confirma deja una alerta al administrador; el primero que se registra debe estar entre 20 y 60 córdobas por dólar.</p></div>
+      <div class="rule"><h3>Reportes sin romper el arqueo ciego</h3><p>Cada quien ve en los reportes solo sus sucursales, y el costo y el margen solo con su permiso. Quien no ve las diferencias de caja tampoco ve las ventas ni los cobros de un turno que sigue abierto.</p></div>
+      <div class="rule"><h3>Original y copia</h3><p>Cada impresión de un ticket de venta o de cierre queda anotada, con quién la hizo. La primera es el original; desde la segunda el ticket sale marcado como COPIA.</p></div>
+      <div class="rule"><h3>Foto mensual del inventario</h3><p>Al cambiar de mes se guarda cuánto valía la mercadería, por ubicación y categoría. Las cantidades salen del kardex: son las del cierre aunque la foto se tome tarde.</p></div>
       <div class="rule"><h3>La caja sale del equipo</h3><p>La sucursal, la caja y el turno de una venta o de un cierre no los manda la pantalla: salen del equipo registrado de la sesión. Solo el administrador, sin caja en su equipo, la elige.</p></div>
       <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN. 5 intentos fallidos bloquean 15 minutos.</p></div>
       <div class="rule"><h3>Sin escalar permisos</h3><p>Solo un administrador edita, desactiva, desbloquea o resetea a otro administrador. Nadie otorga a un rol un permiso que no tiene, y el rol ADMIN no se edita.</p></div>
@@ -616,7 +638,8 @@ erDiagram
           <tr><td>Caja</td><td class="mono">fn_caja_de_sesion · fn_turno_de_sesion · fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar · fn_set_tipo_cambio</td><td>Caja del equipo, apertura, arqueo ciego con un reconteo, retiro, fondo, alertas y tipo de cambio del día</td></tr>
           <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables y equipos autorizados</td></tr>
           <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
-          <tr><td>Reportes</td><td class="mono">fn_reporte_ventas · fn_top_productos</td><td>Ventas por día, semana o mes y ranking</td></tr>
+          <tr><td>Reportes</td><td class="mono">fn_ventas_reporte · fn_reporte_ventas · fn_top_productos · fn_foto_inventario_mensual</td><td>Qué ventas puede ver cada quien en un reporte, ventas por día, semana o mes, ranking y foto mensual del inventario valorizado</td></tr>
+          <tr><td>Tickets</td><td class="mono">fn_registrar_impresion_venta · fn_registrar_impresion_cierre</td><td>Anotan cada impresión de un ticket: la primera es el original y las siguientes, copias</td></tr>
         </tbody>
       </table>
     </div>
