@@ -33,6 +33,8 @@ export interface ResultadoCarga {
     variantes: number;
     /** Productos que ya existían y cuyo precio de venta cambió con esta carga. */
     precios_actualizados: number;
+    /** Perforaciones que ya existían y cuyo precio de solo servicio cambió con esta carga. */
+    precios_servicio_actualizados: number;
     piezas_en_inventario: number;
     envios: number;
     proveedores: number;
@@ -54,6 +56,14 @@ class Deshacer extends Error {}
 interface VarianteExistente {
   id: number;
   tipo: string;
+  precio: string;
+  precio_nuevo: string;
+}
+
+/** Una perforación que ya estaba en el sistema, con su precio de servicio y el de la plantilla. */
+interface PerforacionExistente {
+  id: number;
+  servicio_variante_id: number;
   precio: string;
   precio_nuevo: string;
 }
@@ -100,8 +110,8 @@ function entero(celda: string | number | null): number | null | 'invalido' {
  * todo dentro de una sola transacción: si hay un error, o si es una simulación, no queda nada.
  * Solo crea lo que falta: lo que ya existe se omite con un aviso (así el mismo archivo se puede
  * volver a cargar sin duplicar nada). Los precios sí quedan como diga el archivo: la tabla de
- * precios, los precios especiales y el precio de venta de los productos que ya existen (su costo
- * no: es el promedio de las compras).
+ * precios, los precios especiales, el precio de solo servicio de las perforaciones que ya existen
+ * y el precio de venta de los productos que ya existen (su costo no: es el promedio de las compras).
  */
 @Injectable()
 export class CargaInicialService {
@@ -143,6 +153,7 @@ class Carga {
     productos: 0,
     variantes: 0,
     precios_actualizados: 0,
+    precios_servicio_actualizados: 0,
     piezas_en_inventario: 0,
     envios: 0,
     proveedores: 0,
@@ -160,6 +171,8 @@ class Carga {
   private readonly skuCreados = new Map<string, number>();
   /** SKU que ya existían y ya salieron en una fila de Productos de este archivo. */
   private readonly skuExistentes = new Set<string>();
+  /** Perforaciones que ya existían y ya salieron en una fila de Perforaciones de este archivo. */
+  private readonly perforacionesExistentes = new Set<string>();
   /** Lo creado en esta carga, para distinguir "ya existía" de "está dos veces en la plantilla". */
   private readonly creados = new Set<string>();
 
@@ -289,13 +302,21 @@ class Carga {
         )?.[1];
 
       if (this.repetido('Perforaciones', fila, 'perforación', valida.codigo)) continue;
-      let id = await this.unId(sql`select id from perforacion where codigo = ${valida.codigo}`);
-      if (id) {
-        this.aviso(
-          'Perforaciones',
-          fila,
-          `La perforación ${valida.codigo} ya existe: no se modificó`,
-        );
+      if (this.perforacionesExistentes.has(valida.codigo)) {
+        this.error('Perforaciones', fila, `${valida.codigo} está repetido en la plantilla`);
+        continue;
+      }
+      const existente = (
+        await sql<PerforacionExistente>`
+          select pf.id, pf.servicio_variante_id, sv.precio_venta as precio,
+                 ${valida.precio_servicio}::numeric(12,2) as precio_nuevo
+            from perforacion pf join variante sv on sv.id = pf.servicio_variante_id
+           where pf.codigo = ${valida.codigo}`.execute(this.trx)
+      ).rows.at(0);
+      let id = existente?.id;
+      if (existente) {
+        this.perforacionesExistentes.add(valida.codigo);
+        if (!(await this.actualizarPrecioServicio(fila, valida.codigo, existente))) continue;
       } else {
         const aceptadas = Object.entries(datos.acepta).filter(([, acepta]) => acepta);
         if (aceptadas.length === 0) {
@@ -362,6 +383,35 @@ class Carga {
         if (guardado) this.resumen.precios_paquete++;
       }
     }
+  }
+
+  /**
+   * Una perforación que ya existe no se vuelve a crear, pero su precio de solo servicio queda como
+   * diga el archivo (con fn_set_precio_variante, igual que en su pantalla: queda en el historial de
+   * precios). El nombre, las piezas del paquete y las gamas que acepta no se tocan. Devuelve false
+   * si el precio no se pudo guardar (el error ya quedó anotado en la fila).
+   */
+  private async actualizarPrecioServicio(
+    fila: number,
+    codigo: string,
+    perforacion: PerforacionExistente,
+  ): Promise<boolean> {
+    if (perforacion.precio === perforacion.precio_nuevo) {
+      this.aviso('Perforaciones', fila, `La perforación ${codigo} ya existe: no se modificó`);
+      return true;
+    }
+    const actualizado = await this.intentar('Perforaciones', fila, () =>
+      sql`select fn_set_precio_variante(${this.adminId}, ${perforacion.servicio_variante_id},
+                 ${perforacion.precio_nuevo}::numeric)`.execute(this.trx),
+    );
+    if (!actualizado) return false;
+    this.resumen.precios_servicio_actualizados++;
+    this.aviso(
+      'Perforaciones',
+      fila,
+      `La perforación ${codigo} ya existe: se actualizó su precio de servicio de C$ ${perforacion.precio} a C$ ${perforacion.precio_nuevo} (lo demás no se modificó)`,
+    );
+    return true;
   }
 
   // ---------------------------------------------------------------------- Productos

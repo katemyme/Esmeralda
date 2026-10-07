@@ -179,6 +179,19 @@ function conPrecioDeBarra(precio: number, costo?: number): Promise<Buffer> {
   });
 }
 
+/**
+ * La plantilla válida con otro precio de solo servicio (columna C) y otro nombre (B) para la
+ * perforación CIX (fila 3). La barra va con los C$ 750 que dejó la prueba del precio de productos.
+ */
+function conPrecioDeServicio(precio: number): Promise<Buffer> {
+  return plantilla(datosValidos, (hoja) => {
+    const fila = hoja('Perforaciones').getRow(3);
+    fila.getCell(2).value = 'Industrial CI renombrada';
+    fila.getCell(3).value = precio;
+    hoja('Productos').getRow(3).getCell(10).value = 750;
+  });
+}
+
 function ubicadas(observaciones: Observacion[]): string[] {
   return observaciones.map((o) => `${o.hoja}:${o.fila ?? '-'}`);
 }
@@ -250,6 +263,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         productos: 2,
         variantes: 3,
         precios_actualizados: 0,
+        precios_servicio_actualizados: 0,
         piezas_en_inventario: 23,
         envios: 2, // uno a cada sucursal
         proveedores: 1,
@@ -506,6 +520,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
           precios_paquete: 3,
           precios_especiales: 1,
           precios_actualizados: 0, // los de los productos no cambiaron
+          precios_servicio_actualizados: 0, // ni los de solo servicio
         },
         usuarios: [],
         errores: [],
@@ -590,6 +605,64 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       expect(otraVez.resumen.precios_actualizados).toBe(0);
     });
 
+    it('si el archivo trae otro precio de servicio para una perforación que ya existe, lo actualiza', async () => {
+      const guardada = async () => {
+        const { body } = await comoJefa('/api/perforaciones').expect(200);
+        return (body.perforaciones as PerforacionCatalogo[]).find((p) => p.codigo === 'CIX');
+      };
+      const conOtroPrecio = await conPrecioDeServicio(450);
+
+      // la simulación lo anuncia y no lo guarda
+      const simulada = (await cargar(conOtroPrecio).expect(200)).body as ResultadoCarga;
+      expect(simulada).toMatchObject({
+        aplicada: false,
+        resumen: { perforaciones: 0, precios_servicio_actualizados: 1, precios_actualizados: 0 },
+        errores: [],
+      });
+      expect((await guardada())?.precio_servicio).toBe('400.00');
+
+      const aplicada = (await cargar(conOtroPrecio, '?aplicar=true').expect(200))
+        .body as ResultadoCarga;
+      expect(aplicada).toMatchObject({
+        aplicada: true,
+        resumen: { perforaciones: 0, precios_servicio_actualizados: 1, precios_actualizados: 0 },
+        errores: [],
+      });
+      expect(
+        aplicada.avisos.filter((a) => a.hoja === 'Perforaciones').map((a) => a.mensaje),
+      ).toEqual([
+        'Fila de ejemplo de la plantilla: se omitió',
+        'La perforación CIX ya existe: se actualizó su precio de servicio de C$ 400.00 a C$ 450.00 (lo demás no se modificó)',
+        'La perforación CIY ya existe: no se modificó',
+      ]);
+
+      // cambió solo el precio: el nombre que trae la plantilla no se aplica
+      const industrial = await guardada();
+      expect(industrial).toMatchObject({ nombre: 'Industrial CI', precio_servicio: '450.00' });
+      const { body: precios } = await comoJefa(
+        `/api/variantes/${industrial?.servicio_variante_id}/historial-precios`,
+      ).expect(200);
+      expect(precios.historial[0]).toMatchObject({
+        precio_anterior: '400.00',
+        precio_nuevo: '450.00',
+      });
+
+      // con el precio ya igual, el mismo archivo no vuelve a cambiar nada
+      const otraVez = (await cargar(conOtroPrecio, '?aplicar=true').expect(200))
+        .body as ResultadoCarga;
+      expect(otraVez.resumen.precios_servicio_actualizados).toBe(0);
+    });
+
+    it('una perforación que ya existe, repetida en el archivo, es un error', async () => {
+      const repetida = await plantilla(datosValidos, (hoja) =>
+        escribir(hoja('Perforaciones'), 5, ['CIX', 'Industrial CI', 500, 1]),
+      );
+      const { body } = await cargar(repetida).expect(200);
+      expect((body as ResultadoCarga).errores).toEqual([
+        { hoja: 'Perforaciones', fila: 5, mensaje: 'CIX está repetido en la plantilla' },
+      ]);
+    });
+
     it('un producto que ya existe, repetido en el archivo, es un error', async () => {
       const repetido = await plantilla(datosValidos, (hoja) =>
         escribir(hoja('Productos'), 6, [
@@ -634,7 +707,14 @@ describe('Carga inicial desde la plantilla de Excel', () => {
           fila: 3,
           mensaje: 'Permiso denegado: se requiere PRECIOS_EDITAR',
         });
+        // lo mismo el precio de solo servicio: la plantilla trae C$ 400 y quedó en C$ 450
+        expect(resultado.errores).toContainEqual({
+          hoja: 'Perforaciones',
+          fila: 3,
+          mensaje: 'Permiso denegado: se requiere PRECIOS_EDITAR',
+        });
         expect(resultado.resumen.precios_actualizados).toBe(0);
+        expect(resultado.resumen.precios_servicio_actualizados).toBe(0);
       } finally {
         await ponerPermisos(permisos); // las otras pruebas esperan los permisos del seed
       }
