@@ -359,6 +359,23 @@ describe('POS y caja', () => {
         usd_a_nio: '40.0000',
         registrado_por: { id: ids.enzo },
       });
+      // quien confirma un valor fuera del límite deja una alerta para el administrador
+      const alertas = await comoJefa(
+        'get',
+        '/api/alertas?tipo=TIPO_CAMBIO_FUERA_LIMITE&limite=1',
+      ).expect(200);
+      expect((alertas.body.alertas as AlertaAdmin[])[0]).toMatchObject({
+        titulo:
+          'Tipo de cambio 40.0000 confirmado por Enzo Pos: se aleja más de 5 % del anterior (36.8000)',
+        detalle: {
+          usd_a_nio: 40,
+          anterior: 36.8,
+          variacion_pct: 8.7,
+          maximo_pct: 5,
+          usuario_id: ids.enzo,
+        },
+        sucursal: null,
+      });
 
       // volver al valor correcto también se compara con el último (40 → 36.8 es −8 %)
       await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: '36.80' }).expect(409);

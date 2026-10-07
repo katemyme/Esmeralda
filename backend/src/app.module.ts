@@ -26,6 +26,7 @@ import { ReportesModule } from './reportes/reportes.module';
 import { RolesModule } from './roles/roles.module';
 import { SaludController } from './salud/salud.controller';
 import { SucursalesModule } from './sucursales/sucursales.module';
+import { TareasModule } from './tareas/tareas.module';
 import { TipoCambioModule } from './tipo-cambio/tipo-cambio.module';
 import { UsuariosModule } from './usuarios/usuarios.module';
 import { VentasModule } from './ventas/ventas.module';
@@ -62,8 +63,9 @@ import { VentasModule } from './ventas/ventas.module';
     TipoCambioModule,
     CajaModule,
     VentasModule,
-    // B7: reportes
+    // B7: reportes y tareas programadas
     ReportesModule,
+    TareasModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

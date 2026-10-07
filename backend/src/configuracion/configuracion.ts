@@ -22,6 +22,10 @@ const esquemaEntorno = z.object({
   LOGIN_LIMITE_POR_MINUTO: z.coerce.number().int().min(1).max(10_000).default(10),
   TRUST_PROXY: z.string().default('false').transform(interpretarTrustProxy),
   DIR_FOTOS: z.string().trim().min(1).default('almacen/fotos'),
+  TAREAS_PROGRAMADAS: z
+    .enum(['true', 'false'], { error: 'debe ser true o false' })
+    .default('true')
+    .transform((valor) => valor === 'true'),
 });
 
 /**
@@ -52,6 +56,8 @@ export interface Configuracion {
   trustProxy: boolean | number | string;
   /** Carpeta (ruta absoluta) donde se guardan las fotos subidas de productos y mermas. */
   dirFotos: string;
+  /** false: este servidor no corre las tareas periódicas (alertas de caja sin cerrar, foto mensual). */
+  tareasProgramadas: boolean;
 }
 
 /** Token de inyección: `@Inject(CONFIGURACION) config: Configuracion`. */
@@ -77,6 +83,7 @@ export function cargarConfiguracion(entorno: NodeJS.ProcessEnv = process.env): C
     },
     trustProxy: e.TRUST_PROXY,
     dirFotos: resolve(e.DIR_FOTOS),
+    tareasProgramadas: e.TAREAS_PROGRAMADAS,
   };
 }
 

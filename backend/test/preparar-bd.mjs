@@ -17,4 +17,7 @@ export default async function prepararBd() {
   const dirFotos = join(tmpdir(), 'esmeralda-fotos-test');
   rmSync(dirFotos, { recursive: true, force: true });
   process.env.DIR_FOTOS = dirFotos;
+  // Las tareas periódicas no corren solas en las pruebas (crearían alertas según la hora del día):
+  // cada prueba que las necesita llama a TareasService.ejecutar() con la hora que le conviene
+  process.env.TAREAS_PROGRAMADAS = 'false';
 }

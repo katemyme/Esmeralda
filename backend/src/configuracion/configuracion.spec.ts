@@ -14,7 +14,16 @@ describe('cargarConfiguracion', () => {
       autenticacion: { secretoJwt: SECRETO, limiteLoginPorMinuto: 10, cookiesSeguras: false },
       trustProxy: false,
       dirFotos: resolve('almacen/fotos'),
+      tareasProgramadas: true,
     });
+  });
+
+  it('las tareas programadas se pueden apagar', () => {
+    const tareas = (valor: string) =>
+      cargarConfiguracion({ ...MINIMO, TAREAS_PROGRAMADAS: valor }).tareasProgramadas;
+    expect(tareas('false')).toBe(false);
+    expect(tareas('true')).toBe(true);
+    expect(() => tareas('no')).toThrow(/TAREAS_PROGRAMADAS/);
   });
 
   it('la carpeta de fotos queda como ruta absoluta', () => {
