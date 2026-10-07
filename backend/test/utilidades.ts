@@ -83,6 +83,19 @@ export async function registrarTablet(
   return cookiePuesta(respuesta, 'esmeralda_equipo')?.valor ?? '';
 }
 
+/**
+ * Para leer como bytes un archivo que la API entrega (Excel, PDF):
+ * `request(http).get(ruta).buffer(true).parse(comoBytes)` deja el contenido en `body`.
+ */
+export function comoBytes(
+  respuesta: Response,
+  listo: (error: Error | null, cuerpo: Buffer) => void,
+): void {
+  const partes: Buffer[] = [];
+  respuesta.on('data', (parte: Buffer) => partes.push(parte));
+  respuesta.on('end', () => listo(null, Buffer.concat(partes)));
+}
+
 /** Una cookie que la respuesta pone con Set-Cookie: su valor y sus atributos (HttpOnly, Path...). */
 export function cookiePuesta(
   respuesta: Response,

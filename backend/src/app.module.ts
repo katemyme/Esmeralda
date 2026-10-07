@@ -22,6 +22,7 @@ import { PerforacionesModule } from './perforaciones/perforaciones.module';
 import { ProductosModule } from './productos/productos.module';
 import { PromocionesModule } from './promociones/promociones.module';
 import { ProveedoresModule } from './proveedores/proveedores.module';
+import { ReportesModule } from './reportes/reportes.module';
 import { RolesModule } from './roles/roles.module';
 import { SaludController } from './salud/salud.controller';
 import { SucursalesModule } from './sucursales/sucursales.module';
@@ -61,6 +62,8 @@ import { VentasModule } from './ventas/ventas.module';
     TipoCambioModule,
     CajaModule,
     VentasModule,
+    // B7: reportes
+    ReportesModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],
