@@ -124,7 +124,7 @@
       <span class="chip">45 tablas</span>
       <span class="chip">24 vistas</span>
       <span class="chip">128 funciones</span>
-      <span class="chip">435 pruebas</span>
+      <span class="chip">472 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -499,6 +499,7 @@ erDiagram
     numeric fondo_siguiente_nio
     varchar justificacion_diferencia
     boolean cierre_forzado
+    smallint intentos_cierre
   }
   CAJA_MOVIMIENTO {
     bigint id PK
@@ -582,6 +583,8 @@ erDiagram
       <div class="rule"><h3>Sin ventas duplicadas</h3><p>La misma clave de venta enviada dos veces devuelve la misma venta. Numeración sin huecos por sucursal.</p></div>
       <div class="rule"><h3>Ventas inmutables</h3><p>No se editan ni se borran; se anulan con el turno abierto y el stock vuelve, piezas de paquete incluidas.</p></div>
       <div class="rule"><h3>Arqueo con tolerancia</h3><p>Conteo por denominación. Una diferencia mayor a C$100 exige justificación y alerta; el fondo del día siguiente queda registrado.</p></div>
+      <div class="rule"><h3>Arqueo ciego, un solo reconteo</h3><p>Quien cierra nunca ve el monto esperado ni la diferencia. Si el primer conteo no cuadra, la caja no se cierra y queda anotado; el segundo debe llevar justificación y cierra con lo contado. Su ticket trae solo lo contado, el retiro y el fondo.</p></div>
+      <div class="rule"><h3>La caja sale del equipo</h3><p>La sucursal, la caja y el turno de una venta o de un cierre no los manda la pantalla: salen del equipo registrado de la sesión. Solo el administrador, sin caja en su equipo, la elige.</p></div>
       <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN. 5 intentos fallidos bloquean 15 minutos.</p></div>
       <div class="rule"><h3>Sin escalar permisos</h3><p>Solo un administrador edita, desactiva, desbloquea o resetea a otro administrador. Nadie otorga a un rol un permiso que no tiene, y el rol ADMIN no se edita.</p></div>
       <div class="rule"><h3>Acceso por equipo</h3><p>Encargados y vendedores solo entran desde un equipo registrado de su sucursal. Reusar un token de sesión ya rotado cierra todas las sesiones y alerta.</p></div>
@@ -609,7 +612,7 @@ erDiagram
           <tr><td>Envíos</td><td class="mono">fn_crear_envio · fn_envio_set_linea · fn_enviar · fn_recibir_envio · fn_cancelar_envio · fn_sugerir_reparto</td><td>Reparto de bodega a sucursales y entre sucursales</td></tr>
           <tr><td>Inventario</td><td class="mono">fn_consultar_stock · fn_ve_cantidad_bodega · fn_movimiento_inventario · fn_set_stock_minimo · fn_reportar_merma · fn_resolver_merma</td><td>Consultas de stock, ajustes, stock mínimo y mermas</td></tr>
           <tr><td>Conteos</td><td class="mono">fn_iniciar_conteo · fn_conteo_registrar · fn_enviar_conteo · fn_conteo_diferencias · fn_aplicar_conteo · fn_cancelar_conteo</td><td>Conteo físico con la tablet</td></tr>
-          <tr><td>Caja</td><td class="mono">fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar</td><td>Apertura, arqueo ciego, retiro, fondo y alertas</td></tr>
+          <tr><td>Caja</td><td class="mono">fn_caja_de_sesion · fn_turno_de_sesion · fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar · fn_set_tipo_cambio</td><td>Caja del equipo, apertura, arqueo ciego con un reconteo, retiro, fondo, alertas y tipo de cambio del día</td></tr>
           <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables y equipos autorizados</td></tr>
           <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
           <tr><td>Reportes</td><td class="mono">fn_reporte_ventas · fn_top_productos</td><td>Ventas por día, semana o mes y ranking</td></tr>

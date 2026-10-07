@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo) y B5 (inventario y carga inicial). Faltan B6 (POS y caja) y B7 (reportes) |
+| Backend (Node + TypeScript, NestJS) | En desarrollo: listos B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial) y B6 (POS y caja). Falta B7 (reportes) |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura
@@ -194,6 +194,42 @@ bodega, quien no tiene `INVENTARIO_VER_BODEGA` solo sabe si hay o no (parámetro
 | `GET /api/inventario/movimientos` | `INVENTARIO_VER` | El kardex: `?sucursal_id=&variante_id=&tipo=&desde=&hasta=&limite=&antes_de=` |
 | `POST /api/inventario/movimientos` | `INVENTARIO_ENTRADA` o `INVENTARIO_AJUSTAR` | Entrada directa a la bodega, ajuste o merma directa: `{ sucursal_id, variante_id, tipo, cantidad, motivo, costo_unitario }` |
 | `PUT /api/inventario/stock-minimo` | `INVENTARIO_AJUSTAR` | `{ sucursal_id, variante_id, stock_minimo }` |
+
+### POS y caja
+
+La sucursal, la caja y el turno **no vienen en la solicitud**: salen del equipo registrado donde se inició la
+sesión. Una PC de caja trabaja con su caja; una tablet, con la única caja abierta de su sucursal. Solo el
+administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), indica `caja_id`.
+
+| Ruta | Permiso | Qué hace |
+|---|---|---|
+| `GET /api/caja/turno` | `CAJA_ABRIR`, `CAJA_CERRAR` o `VENTAS_REGISTRAR` | El turno abierto de la caja (`turno: null` si está cerrada). Sin montos |
+| `POST /api/caja/turno/abrir` | `CAJA_ABRIR` | `{ inicial_nio, inicial_usd }`: el efectivo contado al abrir, sin ver el fondo esperado |
+| `GET` · `POST /api/caja/turno/movimientos` | `CAJA_MOVIMIENTOS` | Ingresos y egresos de efectivo: `{ tipo, moneda, monto, motivo }` |
+| `POST /api/caja/turno/cerrar` | `CAJA_CERRAR` | Arqueo ciego: `{ efectivo: [{ moneda, valor, cantidad }], no_efectivo: [{ metodo, monto }], retiro_nio, retiro_usd, justificacion, observaciones }` → ticket de cierre |
+| `GET /api/turnos` · `GET /api/turnos/:id` | `CAJA_VER_DIFERENCIAS` | Historial con lo esperado, lo contado y las diferencias: `?sucursal_id=&estado=&desde=&hasta=&limite=&antes_de=` |
+| `GET /api/turnos/:id/ticket` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | Reimprimir el ticket de cierre |
+| `POST /api/turnos/:id/cierre-forzado` | `CAJA_CIERRE_FORZADO` | `{ motivo }`: el admin cierra sin arqueo un turno que nadie cerró |
+| `POST /api/ventas` | `VENTAS_REGISTRAR` | `{ clave_idempotencia, items: [{ variante_id, cantidad, precio, piezas }], pagos: [{ metodo, moneda, monto, referencia }], promocion_id, cliente_nombre, cliente_telefono, notas }` → la venta, con lo que va en el ticket |
+| `GET /api/ventas` · `GET /api/ventas/:id` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, solo las propias: `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` |
+| `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
+| `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
+| `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio }`: registra o corrige el de hoy (los días anteriores no se editan) |
+| `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
+
+- **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, hasta
+  el tope del parámetro) y la única rebaja es una promoción (`VENTAS_PROMOCION`). Un paquete lleva cantidad 1 y las
+  `piezas` escaneadas. El vuelto lo calcula la base. Sin turno abierto → 409 `SIN_TURNO_ABIERTO`.
+- **Sin duplicados.** `clave_idempotencia` es un UUID que el POS genera para cada venta. Si la solicitud llega dos
+  veces (doble clic, reintento de red) responde 200 con la misma venta y `repetida: true`; la primera vez, 201. La
+  clave de otra persona o de otro turno → 409 `CLAVE_REUTILIZADA`. El número de factura no deja saltos.
+- **Arqueo ciego.** Quien abre o cierra nunca recibe el monto esperado ni la diferencia. Si el conteo no cuadra por
+  más de la tolerancia → 422 `CONTEO_NO_CUADRA` (sin montos) y queda **un solo reconteo**: el siguiente intento debe
+  llevar `justificacion` (mínimo 10 caracteres) y la caja se cierra con lo contado, con alerta al administrador.
+- **Ticket de cierre.** Quien cierra recibe lo que contó, lo que retiró y el fondo que dejó. Lo vendido y lo cobrado
+  por método solo llegan con `CAJA_VER_DIFERENCIAS`; lo esperado y las diferencias, solo en `/api/turnos`.
+- **Ticket de venta.** La venta trae `ticket: { negocio, ruc, direccion, telefono, leyenda }` (parámetros
+  `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA`, más los datos de la sucursal) para que la pantalla lo imprima.
 
 ### Carga inicial desde Excel
 

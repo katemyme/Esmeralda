@@ -24,12 +24,18 @@ _Actualizado el 2026-10-06._
   (reglas para desactivar sucursales y eliminar roles, visibilidad por sucursal, fotos públicas con nombre al
   azar, carga inicial que no duplica; el aviso de exceljs se queda así) con dos ajustes ya hechos: la carga
   inicial actualiza el precio de los productos que ya existen, y pruebas de que las facturas no dejan saltos.
-- **Sigue:** **B6** (POS y caja): primero se presenta el plan y se programa solo con el OK del dueño.
-  **Pendiente:** B7 y el frontend.
-- Pruebas en verde: 435 de base de datos y 339 del backend. Nada se ha subido a GitHub.
+- **Terminado, pendiente de revisión del dueño:** **B6** (POS y caja). El dueño aprobó el plan y sus siete
+  decisiones el 2026-10-06 (están en «Decisiones de negocio clave»); se programó completo ese mismo día.
+- **Sigue:** **B7** (reportes), solo cuando el dueño lo pida. **Pendiente:** el frontend.
+- Pruebas en verde: 472 de base de datos y 402 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas, el inventario valorizado (`v_inventario_valorizado`, va con los reportes de
   B7) y borrar las fotos sueltas que nunca se usaron.
+- Fuera de B6: devoluciones de ventas de un turno ya cerrado (fase 2), el ticket en PDF y la tarea programada
+  `fn_alertar_cajas_sin_cerrar` (los dos van con B7), un historial del tipo de cambio, y avisar cuando el tipo de
+  cambio que se registra se aleja mucho del anterior (hoy solo se exige que sea mayor que cero). Preguntas
+  abiertas al dueño: si la carga inicial debe actualizar también el precio de servicio de las perforaciones que
+  ya existen, y si el número de los envíos (`ENV-000001`, hoy una SEQUENCE) pasa a un correlativo sin saltos.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -60,7 +66,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      435 pruebas de reglas de negocio
+db/04_pruebas.sql      472 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -115,6 +121,25 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - Carga inicial: solo crea lo que falta; el inventario inicial entra a la bodega y se reparte con envíos. De
     lo que ya existe solo cambia precios: tabla de paquetes, precios especiales y precio de venta de los
     productos (el costo no: es el promedio de las compras).
+- POS y caja (B6; decisiones del dueño del 2026-10-06), todas en la base:
+  - La sucursal, la caja y el turno **no los manda la pantalla**: salen del equipo registrado de la sesión
+    (`fn_caja_de_sesion`, `fn_turno_de_sesion`). PC de caja → su caja. Tablet → la única caja abierta de su
+    sucursal (con dos abiertas, se trabaja desde la PC de la caja); para abrir, la única caja activa. El
+    **administrador** sin caja en su equipo (o sin equipo registrado) indica la caja y puede vender, abrir y
+    cerrar; sentado en una PC de caja usa la de ese equipo. Encargados y vendedores nunca eligen.
+  - **Arqueo ciego:** quien abre o cierra nunca ve el monto esperado ni la diferencia. Se abre declarando lo
+    contado, sin ver el fondo que dejó el cierre anterior. Lo esperado y las diferencias solo se ven con
+    `CAJA_VER_DIFERENCIAS`.
+  - **Un solo reconteo:** si el primer conteo no cuadra (más que la tolerancia) y no trae justificación, la caja
+    no se cierra y queda anotado (`turno_caja.intentos_cierre`); desde el segundo, la justificación es obligatoria
+    —cuadre o no— y se cierra con lo contado. Así no se puede adivinar lo esperado probando conteos.
+  - **Ticket de cierre:** quien cierra recibe lo que contó, lo que retiró y el fondo; lo vendido y lo cobrado por
+    método solo con `CAJA_VER_DIFERENCIAS`. En un cierre forzado (sin conteo) el ticket reducido no trae montos.
+  - **Tipo de cambio:** solo se registra el de hoy y se puede corregir durante el día (`fn_set_tipo_cambio`); cada
+    venta guarda el suyo, así que el cambio vale para las ventas siguientes. Los días anteriores no se editan.
+  - **Ticket de venta:** la API entrega los datos y la pantalla lo imprime (el PDF va con B7). Encabezado y pie
+    con los parámetros `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA` (el dueño aún no ha dado el RUC ni la
+    leyenda: están vacíos).
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -132,7 +157,7 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
 | B3 ✅ | Panel admin: usuarios, roles/permisos, equipos, parámetros, alertas |
 | B4 ✅ | Catálogo: productos, perforaciones, gamas, precios de paquetes, promociones |
 | B5 ✅ | Inventario: compras, envíos/recepción, mermas, conteos (y carga inicial desde Excel) |
-| B6 | POS y caja: venta, cobro, apertura, cierre, ticket |
+| B6 ✅ | POS y caja: venta, cobro, apertura, cierre, ticket |
 | B7 | Reportes, exportación (Excel/PDF), tarea programada `fn_alertar_cajas_sin_cerrar` |
 
 ### Convenciones del backend
@@ -205,6 +230,25 @@ Zod para validar entrada, argon2id para contraseñas, JWT de acceso (15 min) + r
   (`?aplicar=true` para guardar). Solo crea lo que falta; lo repetido dentro del archivo es error. A un producto
   que ya existe le actualiza el precio de venta con `fn_set_precio_variante` (pide `PRECIOS_EDITAR`, queda en el
   historial de precios y se cuenta en `resumen.precios_actualizados`).
+- POS y caja (B6): módulos `caja/` (rutas `/api/caja/turno...`, `/api/turnos...`, `/api/metodos-pago`,
+  `/api/denominaciones`), `ventas/` y `tipo-cambio/`. Ningún esquema de entrada lleva sucursal ni turno: los
+  servicios reciben el `UsuarioAutenticado` completo y resuelven la caja con `caja/sesion-caja.ts`
+  (`exigirTurno()`, `turnoDeSesion()`, `cajaParaAbrir()`), que pasa `usuario.equipo.id` a la base; esta vuelve a
+  leer el equipo en cada solicitud (desactivarlo aplica de inmediato → 403). `caja_id` solo existe para el
+  administrador sin caja en su equipo (sin equipo y sin `caja_id` → 400). Sin turno abierto → 409
+  `SIN_TURNO_ABIERTO`.
+  - `POST /api/ventas` exige `clave_idempotencia` (UUID): 201 la primera vez; 200 y `repetida: true` si la clave
+    ya era de una venta del mismo vendedor y turno; si no, 409 `CLAVE_REUTILIZADA`. Alcance de las consultas:
+    `VENTAS_VER_TODAS` → sus sucursales; solo `VENTAS_VER_PROPIAS` → las propias; una venta ajena responde 404.
+  - Cierre: `fn_cerrar_turno` **no lanza error** cuando el primer conteo no cuadra (devuelve `{"cerrado": false}`
+    para que el intento quede guardado); el servicio responde 422 `CONTEO_NO_CUADRA` después de confirmar la
+    transacción. Ninguna respuesta de `/api/caja/...` trae montos esperados ni diferencias: solo `/api/turnos`
+    (`CAJA_VER_DIFERENCIAS`). Qué trae el ticket de cierre lo decide la base (`fn_ticket_cierre(turno, completo)`).
+  - Las funciones que devuelven JSON (`fn_ticket_cierre`) entregan los montos como número: el servicio los pasa a
+    texto con 2 decimales, como el resto de la API.
+  - `test/pos.e2e-spec.ts` trabaja en una sucursal propia (`PVE`) con su caja, su PC de caja y su tablet; usa una
+    pieza de gama Titanio (las otras pruebas cuentan las piezas y los precios de las gamas de acero) y al final
+    deja el tipo de cambio como estaba. Hace `app.listen(0)` porque envía dos solicitudes a la vez.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
