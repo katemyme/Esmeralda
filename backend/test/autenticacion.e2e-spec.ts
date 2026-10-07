@@ -101,7 +101,8 @@ describe('Autenticación y equipos', () => {
         },
       });
       expect(body.usuario.permisos).toContain('SUCURSALES_GESTIONAR');
-      expect(body.usuario.sucursales.map((s: { codigo: string }) => s.codigo)).toEqual([
+      // el admin las ve todas, por id (otras pruebas pueden haber creado más: van después)
+      expect(body.usuario.sucursales.slice(0, 3).map((s: { codigo: string }) => s.codigo)).toEqual([
         'LAM',
         'LBR',
         'BOD',

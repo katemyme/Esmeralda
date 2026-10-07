@@ -597,6 +597,8 @@ SELECT metodo, moneda, monto_esperado FROM fn_resumen_turno(:turno_lbr);
 -- Conteo con monedas de C$1 para poder representar cualquier monto; faltan C$500
 SELECT format('[{"moneda":"NIO","valor":1,"cantidad":%s}]', floor(:lbr_nio) - 500) AS conteo_corto \gset
 SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[{"moneda":"NIO","valor":3,"cantidad":1}]')$q$, :carlos, :turno_lbr), 'Denominación o cantidad inválida');
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[]', '[{"metodo":"CHEQUE","monto":10}]')$q$, :carlos, :turno_lbr), 'Método de pago o monto inválido en el arqueo: CHEQUE');
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[]', '[{"metodo":"EFECTIVO","monto":10}]')$q$, :carlos, :turno_lbr), 'Método de pago o monto inválido en el arqueo: EFECTIVO');
 SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, %L, %L, 999999)$q$, :carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)), 'más efectivo del contado');
 -- Primer conteo que no cuadra y sin justificación: la caja no se cierra y no se dice cuánto falta
 SELECT fn_cerrar_turno(:carlos, :turno_lbr, :'conteo_corto', format('[{"metodo":"TARJETA","monto":%s}]', :lbr_tarjeta)::jsonb, 0) AS intento1 \gset

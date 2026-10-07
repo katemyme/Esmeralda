@@ -4,6 +4,7 @@ import { AlertasModule } from './alertas/alertas.module';
 import { AuditoriaModule } from './auditoria/auditoria.module';
 import { AutenticacionModule } from './autenticacion/autenticacion.module';
 import { BaseDatosModule } from './base-datos/base-datos.module';
+import { CajaModule } from './caja/caja.module';
 import { CargaInicialModule } from './carga-inicial/carga-inicial.module';
 import { CategoriasModule } from './categorias/categorias.module';
 import { FiltroErrores } from './comun/filtro-errores';
@@ -24,7 +25,9 @@ import { ProveedoresModule } from './proveedores/proveedores.module';
 import { RolesModule } from './roles/roles.module';
 import { SaludController } from './salud/salud.controller';
 import { SucursalesModule } from './sucursales/sucursales.module';
+import { TipoCambioModule } from './tipo-cambio/tipo-cambio.module';
 import { UsuariosModule } from './usuarios/usuarios.module';
+import { VentasModule } from './ventas/ventas.module';
 
 @Module({
   imports: [
@@ -54,6 +57,10 @@ import { UsuariosModule } from './usuarios/usuarios.module';
     ConteosModule,
     InventarioModule,
     CargaInicialModule,
+    // B6: POS y caja
+    TipoCambioModule,
+    CajaModule,
+    VentasModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

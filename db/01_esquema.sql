@@ -1572,6 +1572,15 @@ BEGIN
       OR coalesce((x->>'cantidad')::integer, -1) < 0;
   IF v_invalida IS NOT NULL THEN RAISE EXCEPTION 'Denominación o cantidad inválida: %', v_invalida; END IF;
 
+  -- Vouchers y transferencias: métodos que existen y no son efectivo (ese se cuenta por denominación)
+  SELECT string_agg(DISTINCT coalesce(x->>'metodo', '(vacío)'), ', ') INTO v_invalida
+    FROM jsonb_array_elements(coalesce(p_no_efectivo, '[]'::jsonb)) x
+   WHERE NOT EXISTS (SELECT 1 FROM metodo_pago m WHERE m.codigo = upper(x->>'metodo') AND NOT m.es_efectivo)
+      OR coalesce((x->>'monto')::numeric, -1) < 0;
+  IF v_invalida IS NOT NULL THEN
+    RAISE EXCEPTION 'Método de pago o monto inválido en el arqueo: %', v_invalida;
+  END IF;
+
   BEGIN   -- si el conteo no cuadra y hay que recontar, lo guardado en este bloque se deshace
     INSERT INTO cierre_denominacion (turno_id, moneda, valor, cantidad)
     SELECT p_turno, upper(x->>'moneda'), (x->>'valor')::numeric, sum((x->>'cantidad')::integer)
