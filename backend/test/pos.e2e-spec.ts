@@ -211,7 +211,10 @@ describe('POS y caja', () => {
 
   afterAll(async () => {
     // Las otras pruebas esperan el tipo de cambio de los datos demo
-    await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: propio.tipoCambioOriginal });
+    await comoJefa('put', '/api/tipo-cambio').send({
+      usd_a_nio: propio.tipoCambioOriginal,
+      confirmar: true,
+    });
     await app.close();
   });
 
@@ -315,6 +318,102 @@ describe('POS y caja', () => {
           codigo: 'PERMISO_DENEGADO',
           mensaje: 'Permiso denegado: se requiere TIPO_CAMBIO_GESTIONAR',
         });
+    });
+
+    it('si se aleja más de 5 % del último registrado → 409, salvo con confirmación explícita', async () => {
+      // un error de dedo: 368 en vez de 36.8
+      await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+        .send({ usd_a_nio: 368 })
+        .expect(409)
+        .expect({
+          codigo: 'CONFIRMACION_REQUERIDA',
+          mensaje:
+            'El tipo de cambio 368.0000 se aleja más de 5 % del último registrado (36.8000). Si es correcto, confírmelo.',
+        });
+      const haciaAbajo = await comoJefa('put', '/api/tipo-cambio')
+        .send({ usd_a_nio: 3.68, confirmar: false })
+        .expect(409);
+      expect(haciaAbajo.body.codigo).toBe('CONFIRMACION_REQUERIDA');
+      const sinCambio = await conSesion('get', '/api/tipo-cambio', vera.acceso).expect(200);
+      expect(sinCambio.body.tipo_cambio.usd_a_nio).toBe('36.8000');
+
+      // la confirmación es un true explícito
+      const malConfirmado = await comoJefa('put', '/api/tipo-cambio')
+        .send({ usd_a_nio: 40, confirmar: 'si' })
+        .expect(400);
+      expect(malConfirmado.body.errores).toEqual([
+        { campo: 'confirmar', mensaje: 'confirmar debe ser true o false' },
+      ]);
+      const confirmado = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+        .send({ usd_a_nio: 40, confirmar: true })
+        .expect(200);
+      expect(confirmado.body.tipo_cambio).toMatchObject({
+        usd_a_nio: '40.0000',
+        registrado_por: { id: ids.enzo },
+      });
+
+      // volver al valor correcto también se compara con el último (40 → 36.8 es −8 %)
+      await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: '36.80' }).expect(409);
+      const corregido = await comoJefa('put', '/api/tipo-cambio')
+        .send({ usd_a_nio: '36.80', confirmar: true })
+        .expect(200);
+      expect(corregido.body.tipo_cambio.usd_a_nio).toBe('36.8000');
+    });
+
+    it('el límite es el parámetro TIPO_CAMBIO_VARIACION_MAX, que se cambia desde el panel', async () => {
+      const fijarLimite = (valor: string) =>
+        comoJefa('put', '/api/parametros/TIPO_CAMBIO_VARIACION_MAX').send({ valor }).expect(200);
+      await conSesion('put', '/api/tipo-cambio', enzo.acceso).send({ usd_a_nio: 39 }).expect(409);
+      await fijarLimite('10');
+      try {
+        const { body } = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+          .send({ usd_a_nio: 39 }) // +5.98 %
+          .expect(200);
+        expect(body.tipo_cambio.usd_a_nio).toBe('39.0000');
+        await conSesion('put', '/api/tipo-cambio', enzo.acceso).send({ usd_a_nio: 43 }).expect(409);
+      } finally {
+        await fijarLimite('5');
+        await comoJefa('put', '/api/tipo-cambio')
+          .send({ usd_a_nio: '36.80', confirmar: true })
+          .expect(200);
+      }
+    });
+
+    it('sin un tipo de cambio anterior solo se aceptan valores entre 20 y 60', async () => {
+      // Se quitan los registrados solo mientras dura esta prueba (los archivos corren uno tras otro)
+      const registrados = await bd.db.selectFrom('tipo_cambio').selectAll().execute();
+      await bd.db.deleteFrom('tipo_cambio').execute();
+      try {
+        await conSesion('get', '/api/tipo-cambio', vera.acceso)
+          .expect(200)
+          .expect({ tipo_cambio: null });
+        // fuera del rango no entra, ni con la confirmación
+        for (const [usd_a_nio, recibido] of [
+          [19.99, '19.9900'],
+          [60.01, '60.0100'],
+          [366.24, '366.2400'],
+        ]) {
+          await comoJefa('put', '/api/tipo-cambio')
+            .send({ usd_a_nio, confirmar: true })
+            .expect(422)
+            .expect({
+              codigo: 'REGLA_NEGOCIO',
+              mensaje: `Es el primer tipo de cambio que se registra: debe estar entre 20 y 60 córdobas por dólar (recibido: ${recibido})`,
+            });
+        }
+        await conSesion('get', '/api/tipo-cambio', vera.acceso)
+          .expect(200)
+          .expect({ tipo_cambio: null });
+        const { body } = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+          .send({ usd_a_nio: 36.5 })
+          .expect(200);
+        expect(body.tipo_cambio).toMatchObject({ usd_a_nio: '36.5000', es_de_hoy: true });
+      } finally {
+        await bd.db.deleteFrom('tipo_cambio').execute();
+        await bd.db.insertInto('tipo_cambio').values(registrados).execute();
+      }
+      const repuesto = await conSesion('get', '/api/tipo-cambio', vera.acceso).expect(200);
+      expect(repuesto.body.tipo_cambio).toMatchObject({ usd_a_nio: '36.8000', es_de_hoy: true });
     });
   });
 

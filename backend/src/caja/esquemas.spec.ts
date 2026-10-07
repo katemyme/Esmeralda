@@ -163,15 +163,30 @@ describe('otros esquemas de la caja', () => {
 describe('esquemaTipoCambio', () => {
   const MENSAJE = 'usd_a_nio debe ser un monto mayor que 0, con 4 decimales como máximo';
 
-  it('córdobas por dólar, con hasta 4 decimales', () => {
-    expect(esquemaTipoCambio.parse({ usd_a_nio: 36.6243 })).toEqual({ usd_a_nio: '36.6243' });
-    expect(esquemaTipoCambio.parse({ usd_a_nio: ' 36.8 ' })).toEqual({ usd_a_nio: '36.8' });
+  it('córdobas por dólar, con hasta 4 decimales; sin confirmar si no se dice', () => {
+    expect(esquemaTipoCambio.parse({ usd_a_nio: 36.6243 })).toEqual({
+      usd_a_nio: '36.6243',
+      confirmar: false,
+    });
+    expect(esquemaTipoCambio.parse({ usd_a_nio: ' 36.8 ', confirmar: true })).toEqual({
+      usd_a_nio: '36.8',
+      confirmar: true,
+    });
   });
 
   it('un solo mensaje para cualquier valor inválido', () => {
     for (const usd_a_nio of [0, '0.0000', -36, 36.62435, 'treinta', null, undefined]) {
       const resultado = esquemaTipoCambio.safeParse({ usd_a_nio });
       expect(resultado.error?.issues.map((i) => i.message)).toEqual([MENSAJE]);
+    }
+  });
+
+  it('la confirmación solo vale como true o false', () => {
+    for (const confirmar of ['true', 'si', 1, null]) {
+      const resultado = esquemaTipoCambio.safeParse({ usd_a_nio: 36.6243, confirmar });
+      expect(resultado.error?.issues.map((i) => i.message)).toEqual([
+        'confirmar debe ser true o false',
+      ]);
     }
   });
 });

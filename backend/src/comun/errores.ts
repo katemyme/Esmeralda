@@ -149,6 +149,8 @@ function traducirBaseDatos(error: DatabaseError): ErrorTraducido {
       return respuesta(403, 'PERMISO_DENEGADO', error.message);
     case 'P0001': // raise_exception: reglas del negocio
       return respuesta(422, 'REGLA_NEGOCIO', error.message);
+    case 'ESM02': // la función solo sigue con una confirmación explícita (fn_set_tipo_cambio)
+      return respuesta(409, 'CONFIRMACION_REQUERIDA', error.message);
     case '23514': // check_violation
       return restriccion
         ? respuesta(422, 'REGLA_NEGOCIO', 'Los datos no cumplen una regla del sistema', restriccion)

@@ -113,6 +113,8 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
    'Diferencia de arqueo (en C$, dólares convertidos) a partir de la cual se exige justificación y se alerta.'),
   ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false, NULL,
    'Hora (Managua) a la que se alerta si una caja sigue sin cerrar.'),
+  ('TIPO_CAMBIO_VARIACION_MAX', '5', 'NUMERO', NULL, false, NULL,
+   'Variación máxima (%) entre el tipo de cambio que se registra y el último registrado. Si se pasa, se pide confirmarlo.'),
   ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false, NULL,
    'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.'),
   ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false, 1,

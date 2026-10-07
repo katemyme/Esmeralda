@@ -33,6 +33,15 @@ describe('traducirError: errores de PostgreSQL', () => {
     });
   });
 
+  it('la función pide una confirmación explícita (ESM02) → 409 con el mensaje de la base', () => {
+    const mensaje =
+      'El tipo de cambio 366.0000 se aleja más de 5 % del último registrado (36.6243). Si es correcto, confírmelo.';
+    expect(traducirError(errorBd('ESM02', mensaje))).toEqual({
+      estado: 409,
+      cuerpo: { codigo: 'CONFIRMACION_REQUERIDA', mensaje },
+    });
+  });
+
   it('CHECK propio de una función (sin restricción) → 422 con su mensaje', () => {
     const error = errorBd('23514', 'El parámetro X debe ser un número positivo');
     expect(traducirError(error).cuerpo.mensaje).toBe('El parámetro X debe ser un número positivo');

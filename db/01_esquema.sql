@@ -1357,16 +1357,37 @@ END $$;
 -- Tipo de cambio de hoy (día de Managua). Se puede corregir durante el día: cada venta guarda el
 -- tipo de cambio con que se cobró, así que el nuevo valor solo afecta a las ventas siguientes.
 -- Los días anteriores no se editan.
-CREATE OR REPLACE FUNCTION fn_set_tipo_cambio(p_usuario bigint, p_usd_a_nio numeric) RETURNS date
+-- Control contra errores de dedo (366 en vez de 36.6): si el valor se aleja del último registrado
+-- más que el parámetro TIPO_CAMBIO_VARIACION_MAX (%), solo se guarda con p_confirmado; sin él falla
+-- con SQLSTATE ESM02 (la API responde 409 CONFIRMACION_REQUERIDA). El primero que se registra no
+-- tiene con qué compararse: debe estar entre 20 y 60, y ahí la confirmación no cuenta.
+CREATE OR REPLACE FUNCTION fn_set_tipo_cambio(p_usuario bigint, p_usd_a_nio numeric, p_confirmado boolean DEFAULT false)
+RETURNS date
 LANGUAGE plpgsql AS $$
-DECLARE v_hoy date := (now() AT TIME ZONE 'America/Managua')::date;
+DECLARE
+  v_hoy     date    := (now() AT TIME ZONE 'America/Managua')::date;
+  v_nuevo   numeric := round(p_usd_a_nio, 4);
+  v_ultimo  numeric;
+  v_max     numeric := coalesce(fn_parametro_num('TIPO_CAMBIO_VARIACION_MAX'), 0);
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'TIPO_CAMBIO_GESTIONAR');
-  IF p_usd_a_nio IS NULL OR round(p_usd_a_nio, 4) <= 0 THEN
+  IF v_nuevo IS NULL OR v_nuevo <= 0 THEN
     RAISE EXCEPTION 'El tipo de cambio debe ser mayor que cero';
   END IF;
+
+  SELECT usd_a_nio INTO v_ultimo FROM tipo_cambio WHERE fecha <= v_hoy ORDER BY fecha DESC LIMIT 1;
+  IF v_ultimo IS NULL THEN
+    IF v_nuevo NOT BETWEEN 20 AND 60 THEN
+      RAISE EXCEPTION 'Es el primer tipo de cambio que se registra: debe estar entre 20 y 60 córdobas por dólar (recibido: %)', v_nuevo;
+    END IF;
+  ELSIF abs(v_nuevo - v_ultimo) * 100 > v_ultimo * v_max AND NOT coalesce(p_confirmado, false) THEN
+    RAISE EXCEPTION 'El tipo de cambio % se aleja más de % %% del último registrado (%). Si es correcto, confírmelo.',
+          v_nuevo, v_max, v_ultimo
+          USING ERRCODE = 'ESM02';
+  END IF;
+
   INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
-  VALUES (v_hoy, round(p_usd_a_nio, 4), p_usuario)
+  VALUES (v_hoy, v_nuevo, p_usuario)
   ON CONFLICT (fecha) DO UPDATE SET usd_a_nio = EXCLUDED.usd_a_nio, usuario_id = EXCLUDED.usuario_id;
   RETURN v_hoy;
 END $$;

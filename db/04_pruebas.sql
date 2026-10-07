@@ -20,6 +20,16 @@ EXCEPTION WHEN OTHERS THEN
   RETURN 'OK  → ' || SQLERRM;
 END $$;
 
+-- Helper: ejecuta SQL y devuelve el código (SQLSTATE) con que falló, o NULL si no falló
+CREATE OR REPLACE FUNCTION pg_temp.codigo_error(p_sql text) RETURNS text
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE p_sql;
+  RETURN NULL;
+EXCEPTION WHEN OTHERS THEN
+  RETURN SQLSTATE;
+END $$;
+
 CREATE OR REPLACE FUNCTION pg_temp.afirma(p_cond boolean, p_msg text) RETURNS text
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -1188,7 +1198,39 @@ SELECT fn_set_tipo_cambio(:admin, 36.62435);
 SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 36.6244 AND (SELECT count(*) = 1 AND bool_and(usuario_id = :admin) FROM tipo_cambio WHERE fecha = :'hoy'), 'corregirlo el mismo día reemplaza el valor (4 decimales)');
 SELECT pg_temp.afirma((SELECT tipo_cambio FROM venta WHERE id = :v_pos) = :tc_antes, 'las ventas ya hechas conservan el tipo de cambio con que se cobraron');
 SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'tipo_cambio' AND accion = 'UPDATE' AND usuario_id = :admin) >= 1, 'el cambio queda en la bitácora');
-SELECT fn_set_tipo_cambio(:admin, :tc_antes);
+
+-- Control de variación contra el último registrado (TIPO_CAMBIO_VARIACION_MAX = 5 %); aquí el último es 36.6244
+SELECT pg_temp.afirma(fn_parametro_num('TIPO_CAMBIO_VARIACION_MAX') = 5, 'la variación máxima del tipo de cambio viene en 5 %');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 366.24)', :admin), 'se aleja más de 5 % del último registrado (36.6244)');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 3.66, false)', :maria), 'se aleja más de 5 %');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 40, NULL)', :admin), 'Si es correcto, confírmelo');
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 36.6244, 'el valor rechazado no se guarda');
+SELECT pg_temp.afirma(pg_temp.codigo_error(format('SELECT fn_set_tipo_cambio(%s, 40)', :admin)) = 'ESM02', 'ese rechazo lleva el código ESM02 (con él la API pide la confirmación)');
+SELECT fn_set_tipo_cambio(:admin, 40, true);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 40, 'con la confirmación explícita se registra aunque se aleje');
+SELECT fn_set_tipo_cambio(:maria, 42);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 42, 'una variación de justo el 5 % pasa sin confirmar');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 44.1001)', :maria), 'se aleja más de 5 % del último registrado (42.0000)');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 39.8999)', :maria), 'se aleja más de 5 %');
+SELECT fn_set_parametro(:admin, 'TIPO_CAMBIO_VARIACION_MAX', '10');
+SELECT fn_set_tipo_cambio(:maria, 38);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 38, 'el límite sale del parámetro: con 10 % pasa una variación del 9.5 %');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'TIPO_CAMBIO_VARIACION_MAX', ''), 'no puede quedar vacío');
+SELECT fn_set_parametro(:admin, 'TIPO_CAMBIO_VARIACION_MAX', '5');
+
+-- Sin un tipo de cambio anterior no hay con qué comparar: solo entra entre 20 y 60
+BEGIN;
+DELETE FROM tipo_cambio;
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 19.9999)', :admin), 'debe estar entre 20 y 60');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 60.0001)', :admin), 'debe estar entre 20 y 60');
+SELECT pg_temp.espera_error(format('SELECT fn_set_tipo_cambio(%s, 366.24, true)', :admin), 'Es el primer tipo de cambio que se registra');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM tipo_cambio), 'fuera de ese rango no se guarda, ni con confirmación');
+SELECT fn_set_tipo_cambio(:maria, 60);
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 60, 'el primer tipo de cambio entra si está entre 20 y 60 (sin pedir confirmación)');
+ROLLBACK;
+SELECT pg_temp.afirma(fn_tipo_cambio_vigente() = 38, 'después de la prueba sigue el tipo de cambio que había');
+
+SELECT fn_set_tipo_cambio(:admin, :tc_antes, true);
 
 \echo '\n=== 23. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 -- Después de todas las ventas de arriba (completadas, anuladas, rechazadas y repetidas con la misma clave)

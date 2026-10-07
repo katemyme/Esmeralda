@@ -17,13 +17,17 @@ export class TipoCambioController {
     return { tipo_cambio: await this.tipoCambio.vigente() };
   }
 
-  /** `{ usd_a_nio }`: registra o corrige el de hoy. Los días anteriores no se editan. */
+  /**
+   * `{ usd_a_nio, confirmar }`: registra o corrige el de hoy. Los días anteriores no se editan.
+   * Si se aleja del último más de lo permitido → 409 CONFIRMACION_REQUERIDA, salvo que venga
+   * `confirmar: true`. El primero que se registra debe estar entre 20 y 60 (422).
+   */
   @Put()
   @RequierePermiso('TIPO_CAMBIO_GESTIONAR')
   async registrar(
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Body(new ValidacionZod(esquemaTipoCambio)) datos: DatosTipoCambio,
   ): Promise<{ tipo_cambio: TipoCambio | null }> {
-    return { tipo_cambio: await this.tipoCambio.registrar(usuario.id, datos.usd_a_nio) };
+    return { tipo_cambio: await this.tipoCambio.registrar(usuario.id, datos) };
   }
 }

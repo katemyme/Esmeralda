@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql } from 'kysely';
 import { BaseDatosService } from '../base-datos/base-datos.service';
+import type { DatosTipoCambio } from './esquemas';
 
 /** El tipo de cambio vigente: el último registrado hasta hoy (día de Managua). */
 export interface TipoCambio {
@@ -16,7 +17,9 @@ export interface TipoCambio {
 /**
  * Tipo de cambio del dólar. Lo registra quien tiene TIPO_CAMBIO_GESTIONAR con fn_set_tipo_cambio:
  * solo el de hoy, que se puede corregir durante el día (cada venta guarda el tipo de cambio con
- * que se cobró, así que el cambio vale para las ventas siguientes).
+ * que se cobró, así que el cambio vale para las ventas siguientes). La misma función controla los
+ * errores de dedo: el primero debe estar entre 20 y 60, y los siguientes no pueden alejarse del
+ * último más que el parámetro TIPO_CAMBIO_VARIACION_MAX sin una confirmación explícita.
  */
 @Injectable()
 export class TipoCambioService {
@@ -52,9 +55,14 @@ export class TipoCambioService {
     };
   }
 
-  async registrar(usuarioId: number, usdANio: string): Promise<TipoCambio | null> {
+  /**
+   * Si el valor se aleja demasiado del último registrado y no viene confirmado, la base lo rechaza
+   * (409 CONFIRMACION_REQUERIDA): la pantalla pregunta y lo reenvía con `confirmar: true`.
+   */
+  async registrar(usuarioId: number, datos: DatosTipoCambio): Promise<TipoCambio | null> {
     await this.bd.transaccion(usuarioId, (trx) =>
-      sql`select fn_set_tipo_cambio(${usuarioId}, ${usdANio}::numeric)`.execute(trx),
+      sql`select fn_set_tipo_cambio(${usuarioId}, ${datos.usd_a_nio}::numeric,
+                 ${datos.confirmar})`.execute(trx),
     );
     return this.vigente();
   }
