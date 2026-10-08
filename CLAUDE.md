@@ -37,14 +37,15 @@ _Actualizado el 2026-10-08._
   tomadas al programarlo (están en «Decisiones de negocio clave», «Devoluciones y cambios»). El dueño confirmó
   que en un **cambio por algo más barato** lo que sobra sigue la forma de pago de la factura original, igual que
   el reembolso. Con B8 el backend queda completo: etiqueta `backend-completo` y respaldo en
-  `C:\Respaldos\esmeralda-backend-completo.bundle` (los dos son de antes del ajuste que sigue).
+  `C:\Respaldos\esmeralda-backend-completo.bundle` (los dos actualizados el 2026-10-08 con el ajuste que sigue).
 - **Ajuste pedido al aprobar B8, ya hecho (2026-10-08):** la devolución aprobada que vence deja dos alertas
   `DEVOLUCION_VENCIDA`, una en el panel del administrador y otra para la sucursal que la solicitó. Para eso las
   alertas tienen ahora la casilla `para_sucursal` y la ruta `GET /api/alertas/sucursal` (ver «Convenciones del
   backend», Panel).
-- **Sigue: el frontend** (`frontend/`, React + Vite como PWA), pedido por el dueño el 2026-10-08 con su orden de
-  fases (F1 a F5) y la identidad visual ya decidida: ver «Etapa siguiente: frontend». Primero un plan por fases
-  y su OK; después **solo F1** y detenerse para su revisión.
+- **Sigue: el frontend** (`frontend/`, React + Vite como PWA). El dueño aprobó el plan por fases el 2026-10-08
+  y dio sus decisiones (equipos, impresora, servidor, códigos, PIN): ver «Etapa siguiente: frontend». **Falta su
+  OK** al plan ajustado de F1 y a los diseños del celular, el PIN y el código de los productos; con el OK se
+  programa primero ese backend y después **solo F1**, y se espera su revisión.
 - Pruebas en verde: 665 de base de datos y 535 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
@@ -239,22 +240,49 @@ Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseñ
 
 ## Etapa siguiente: frontend (`frontend/`, todavía no existe)
 
-Pedido por el dueño el 2026-10-08: **React + Vite como PWA**. El plan por fases se le presentó ese día y está
-**pendiente de su OK** (con sus respuestas sobre tablet, impresora, etiquetas y dónde va a vivir el sistema).
-Con el OK se programa **solo F1** y se espera su revisión; cada fase siguiente, igual.
+Pedido por el dueño el 2026-10-08: **React + Vite como PWA**. Ese mismo día aprobó el plan por fases y sus
+librerías (React 19, Vite 8, TypeScript 6.0 como el backend, React Router, TanStack Query, Zod + React Hook Form,
+Tailwind 4 + Radix + lucide, vite-plugin-pwa, barcode-detector, Recharts; Vitest + Testing Library + MSW +
+Playwright; oxlint + Prettier). Se programa **una fase a la vez** y se espera su revisión.
 
-Orden de fases que propuso el dueño:
+**Pendiente de su OK (no programar antes):** el plan ajustado de F1 y los tres diseños que se le presentaron el
+2026-10-08: acceso desde el celular (lista de permisos que valen sin equipo registrado), cambio rápido de
+vendedora con PIN, y el formato del código de los productos. Los tres piden cambios en el backend, con pruebas.
 
 | Fase | Contenido |
 |---|---|
-| F1 | Base: inicio de sesión con refresco de token, menú según rol y permisos, cliente de la API con manejo de errores, archivo de tema, centro de alertas. Diseño primero para tablet (botones grandes, táctil); el panel del administrador también en celular (desde ahí aprueba devoluciones, mermas y conteos) |
-| F2 | Caja y POS: abrir turno, vender (búsqueda y escaneo QR con la cámara, paquetes, promoción, pagos mixtos C$/US$, vuelto), anular, cierre ciego por billetes y monedas, imprimir tickets, devoluciones y cambios (buscar la factura por el QR, solicitar, ejecutar) |
-| F3 | Inventario: envíos con recepción por escaneo, mermas, conteos y kardex |
-| F4 | Administración: usuarios, roles, sucursales, equipos, categorías (con «admite devolución»), productos y precios, compras, promociones, parámetros, tipo de cambio con su historial, carga inicial, aprobación de devoluciones, mermas y conteos, reembolsos por transferencia |
+| F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara. Primero el backend que hace falta (celular y PIN) |
+| F2a | Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB |
+| F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
+| F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
+| F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
+| F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
 | F5 | Reportes: filtros por periodo, comparación con el periodo anterior, gráficas, descargas en Excel y PDF |
+| F6 | Puesta en producción: VPS en internet con dominio y HTTPS |
 
-Ajustes al orden propuestos en el plan (por confirmar): las aprobaciones junto a lo que aprueban (devoluciones y
-transferencias en F2; mermas y conteos en F3), registrar el tipo de cambio de hoy en F2 y revisar F2 en dos partes.
+**Decisiones del dueño (2026-10-08):**
+
+- **Equipos.** Tablets Android con Chrome en las sucursales: ahí se hace todo lo de caja. Las trabajadoras entran
+  también desde su celular personal (iPhone, Safari), y desde ahí **solo**: consultar precios y existencias,
+  buscar o escanear productos, recibir envíos, hacer conteos y crear solicitudes de devolución, siempre en sus
+  sucursales. Todo lo que mueve dinero (abrir turno, cobrar, anular, movimientos de efectivo, cerrar, ejecutar
+  devoluciones) exige un equipo registrado. El dueño aprueba desde su iPhone.
+- **Impresora:** Xprinter XP-T80A (80 mm, ESC/POS, USB y red, salida de gaveta de 24 V; todavía sin gaveta),
+  conectada por USB a la tablet con un adaptador OTG. Impresión directa desde Chrome por **WebUSB** con ESC/POS:
+  ticket de venta, de cierre y de devolución, con corte y el QR de la factura. Apertura de gaveta lista pero
+  apagada, con un parámetro. El diálogo de imprimir del sistema queda de respaldo. Reintentar una impresión que
+  falló no debe marcarla como COPIA.
+- **Servidor:** un VPS en internet con dominio y HTTPS (F6). Para probar en la tablet y el celular, un túnel de
+  Cloudflare.
+- **Códigos y etiquetas:** las piezas no tienen código. El sistema genera el de cada producto al crearlo. Las
+  etiquetas con QR se imprimen solo en la bodega, al registrar una compra o desde el producto, eligiendo cuántas
+  copias; todavía sin impresora de etiquetas: un PDF con tamaño configurable.
+- **Escanear nunca es el único camino:** en todas las pantallas donde se escanea (venta, envíos, conteos,
+  devoluciones) hay además un buscador por nombre o código para elegir el producto tocándolo.
+- **Sin internet no se vende** (la app avisa y deja reintentar sin duplicar).
+- **Cambio rápido de vendedora con PIN de 4 dígitos:** solo en un equipo registrado y para usuarias asignadas a
+  esa sucursal; guardado con hash; se bloquea a los 5 intentos fallidos y el administrador lo reinicia; cada
+  acción queda a nombre de quien puso el PIN; la pantalla se bloquea sola tras un rato sin uso.
 
 **Identidad visual (decidida por el dueño).** Variables CSS en un solo archivo de tema:
 
