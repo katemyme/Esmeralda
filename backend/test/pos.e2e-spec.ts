@@ -16,6 +16,7 @@ import type {
 import type { Existencia } from '../src/inventario/inventario.service';
 import type { PerforacionCatalogo } from '../src/perforaciones/perforaciones.service';
 import type { ProductoCatalogo } from '../src/productos/productos.service';
+import type { TipoCambioDelDia } from '../src/tipo-cambio/tipo-cambio.service';
 import type { VentaDetalle, VentaResumen } from '../src/ventas/ventas.service';
 import {
   comoBytes,
@@ -243,6 +244,7 @@ describe('POS y caja', () => {
       ['post', '/api/ventas/1/imprimir'],
       ['get', '/api/tipo-cambio'],
       ['put', '/api/tipo-cambio'],
+      ['get', '/api/tipo-cambio/historial'],
       ['get', '/api/metodos-pago'],
       ['get', '/api/denominaciones'],
     ];
@@ -307,6 +309,63 @@ describe('POS y caja', () => {
         .where('fecha', '=', hoyEnManagua())
         .execute();
       expect(filas).toEqual([{ usd_a_nio: '36.8000' }]);
+    });
+
+    it('GET /api/tipo-cambio/historial: un día por fila, con quién lo dejó y lo que se registró ese día', async () => {
+      const hoy = hoyEnManagua();
+      const ruta = '/api/tipo-cambio/historial';
+      const { body } = await conSesion('get', ruta, enzo.acceso).expect(200);
+      const historial = body.historial as TipoCambioDelDia[];
+      const enzoPos = { id: ids.enzo, nombre_completo: 'Enzo Pos' };
+      const jefaPos = { id: ids.jefa, nombre_completo: 'Jefa del POS' };
+      // Del más reciente al más antiguo: el de hoy y, detrás, el de los datos demo
+      expect(historial).toHaveLength(2);
+      expect(historial[0]).toEqual({
+        fecha: hoy,
+        usd_a_nio: '36.8000',
+        registrado_por: jefaPos,
+        registrado_at: expect.any(String),
+        // la tabla guarda el último valor del día; la corrección se ve aquí
+        registros: [
+          { usd_a_nio: '36.9000', registrado_por: enzoPos, registrado_at: expect.any(String) },
+          { usd_a_nio: '36.8000', registrado_por: jefaPos, registrado_at: expect.any(String) },
+        ],
+      });
+      const [primero, ultimo] = historial[0].registros.map((r) => String(r.registrado_at));
+      expect(historial[0].registrado_at).toBe(ultimo);
+      expect(Date.parse(primero)).toBeLessThanOrEqual(Date.parse(ultimo));
+      // el de los datos demo lo registró el administrador, una sola vez
+      const admin = { id: expect.any(Number), nombre_completo: expect.any(String) };
+      expect(historial[1]).toMatchObject({
+        usd_a_nio: propio.tipoCambioOriginal,
+        registrado_por: admin,
+        registros: [{ usd_a_nio: propio.tipoCambioOriginal, registrado_por: admin }],
+      });
+      expect(historial[1].registros).toHaveLength(1);
+      expect(historial[1].fecha < hoy).toBe(true);
+
+      const fechas = async (consulta: string) => {
+        const respuesta = await comoJefa('get', `${ruta}?${consulta}`).expect(200);
+        return (respuesta.body.historial as TipoCambioDelDia[]).map((d) => d.fecha);
+      };
+      expect(await fechas(`desde=${hoy}`)).toEqual([hoy]);
+      expect(await fechas(`hasta=${historial[1].fecha}`)).toEqual([historial[1].fecha]);
+      expect(await fechas(`desde=${historial[1].fecha}&hasta=${hoy}`)).toEqual([
+        hoy,
+        historial[1].fecha,
+      ]);
+      expect(await fechas('limite=1')).toEqual([hoy]);
+      expect(await fechas('desde=2001-01-01&hasta=2001-12-31')).toEqual([]);
+
+      const invalidas: [string, string, string][] = [
+        ['desde=ayer', 'desde', 'desde debe ser una fecha con el formato AAAA-MM-DD'],
+        [`desde=${hoy}&hasta=2001-01-01`, 'hasta', 'hasta no puede ser anterior a desde'],
+        ['limite=0', 'limite', 'limite debe ser un número entre 1 y 200'],
+      ];
+      for (const [consulta, campo, mensaje] of invalidas) {
+        const invalida = await comoJefa('get', `${ruta}?${consulta}`).expect(400);
+        expect(invalida.body.errores).toEqual([{ campo, mensaje }]);
+      }
     });
 
     it('valores inválidos → 400; sin TIPO_CAMBIO_GESTIONAR → 403', async () => {
@@ -1496,6 +1555,7 @@ describe('POS y caja', () => {
         ['post', `/api/turnos/${propio.turno}/cierre-forzado`, 'CAJA_CIERRE_FORZADO'],
         ['post', `/api/ventas/${venta.a}/anular`, 'VENTAS_ANULAR'],
         ['put', '/api/tipo-cambio', 'TIPO_CAMBIO_GESTIONAR'],
+        ['get', '/api/tipo-cambio/historial', 'TIPO_CAMBIO_GESTIONAR'],
       ];
       for (const [metodo, ruta, permiso] of rutas) {
         await conSesion(metodo, ruta, vera.acceso)

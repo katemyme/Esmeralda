@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { monto4 } from '../comun/esquemas';
+import { fechaDeConsulta, limiteDeConsulta, monto4 } from '../comun/esquemas';
 
 const MENSAJE = 'usd_a_nio debe ser un monto mayor que 0, con 4 decimales como máximo';
 
@@ -12,3 +12,16 @@ export const esquemaTipoCambio = z.object({
   confirmar: z.boolean({ error: 'confirmar debe ser true o false' }).default(false),
 });
 export type DatosTipoCambio = z.output<typeof esquemaTipoCambio>;
+
+/** Historial: `?desde=&hasta=` (días de Managua) y `?limite=` (por defecto 50, hasta 200). */
+export const esquemaHistorialTipoCambio = z
+  .object({
+    desde: fechaDeConsulta('desde').optional(),
+    hasta: fechaDeConsulta('hasta').optional(),
+    limite: limiteDeConsulta(),
+  })
+  .refine((filtro) => !filtro.desde || !filtro.hasta || filtro.desde <= filtro.hasta, {
+    path: ['hasta'],
+    message: 'hasta no puede ser anterior a desde',
+  });
+export type FiltroHistorialTipoCambio = z.output<typeof esquemaHistorialTipoCambio>;

@@ -217,6 +217,7 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF de 80 mm |
 | `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
 | `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
+| `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los registrados, un día por fila del más reciente al más antiguo, con quién dejó cada valor y, en `registros`, todo lo que se registró ese día (el primero y sus correcciones): `?desde=&hasta=&limite=` |
 | `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
 
 - **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, hasta
