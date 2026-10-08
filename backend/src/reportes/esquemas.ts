@@ -83,6 +83,10 @@ export const esquemaReporteProductos = z
   .superRefine(validarRango);
 export type FiltroReporteProductos = z.output<typeof esquemaReporteProductos>;
 
+/** Compras por proveedor: el rango va por la fecha de la factura; no lleva sucursal (todas entran a la bodega). */
+export const esquemaReporteCompras = z.object({ ...rango, formato }).superRefine(validarRango);
+export type FiltroReporteCompras = z.output<typeof esquemaReporteCompras>;
+
 /** Reportes que son una foto de este momento (por reponer): `?sucursal_id=&formato=`. */
 export const esquemaReporteActual = z.object({ sucursal_id: sucursalId, formato });
 export type FiltroReporteActual = z.output<typeof esquemaReporteActual>;

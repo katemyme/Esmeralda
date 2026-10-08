@@ -258,6 +258,8 @@ donde cada sección es una tabla: `{ clave, titulo, columnas: [{ clave, titulo, 
 | `GET /api/reportes/gamas` | `REPORTES_VER` | Paquetes vendidos según la gama de la pieza |
 | `GET /api/reportes/promociones` | `REPORTES_VER` | Ventas, rebaja y cobrado con cada promoción |
 | `GET /api/reportes/sobreprecios` | `REPORTES_VER` | Cada línea cobrada por encima del precio establecido |
+| `GET /api/reportes/piezas-en-paquetes` | `REPORTES_COSTOS` | Piezas que salieron del inventario dentro de paquetes (perforación con pieza), en total y por sucursal, con su costo |
+| `GET /api/reportes/compras-por-proveedor` | `REPORTES_COSTOS` | Compras confirmadas por proveedor y moneda, por mes y una por una: piezas, faltantes, factura, gastos de importación y costo total. El rango va por la fecha de la factura; no lleva `sucursal_id` |
 | `GET /api/reportes/cierres` | `CAJA_VER_DIFERENCIAS` | Turnos cerrados en el rango: esperado, contado, diferencia, reconteo, cierre forzado y justificación |
 | `GET /api/reportes/mermas` | `REPORTES_VER` | Mermas aprobadas (al costo de cuando se aprobaron); pendientes y rechazadas, aparte |
 | `GET /api/reportes/inventario-valorizado` | `REPORTES_COSTOS` | Unidades, valor a costo y a precio de venta por ubicación y categoría: el de hoy o, con `?mes=AAAA-MM`, la foto del cierre de ese mes (`/meses` lista los que tienen foto) |

@@ -9,6 +9,7 @@ import type {
   FiltroInventarioValorizado,
   FiltroReporte,
   FiltroReporteActual,
+  FiltroReporteCompras,
   FiltroReporteProductos,
   FiltroReporteVentas,
 } from './esquemas';
@@ -405,6 +406,165 @@ export class ReportesService {
         c.veCostos,
       ),
     ]);
+  }
+
+  /**
+   * Las piezas que salieron del inventario dentro de un paquete (perforación con pieza), para saber
+   * qué reponer. Lleva costos: pide REPORTES_COSTOS (lo exige la ruta).
+   */
+  async piezasEnPaquetes(usuarioId: number, filtro: FiltroReporte): Promise<Reporte> {
+    const c = await this.contexto(usuarioId, filtro);
+    const piezas = sql`
+      ${this.lineas(c)}
+      join venta_detalle_pieza dp on dp.venta_detalle_id = l.detalle_id
+      join variante va on va.id = dp.variante_id
+      join producto pr on pr.id = va.producto_id
+      left join gama g on g.id = va.gama_id`;
+    const pieza = sql`va.sku, pr.nombre || ' — ' || va.nombre as pieza, g.nombre as gama`;
+    const sumas = sql`
+      coalesce(sum(dp.cantidad), 0)::integer as unidades,
+      case when ${veCostos(usuarioId)}
+           then coalesce(sum(dp.cantidad * dp.costo_unitario), 0)::numeric(14,2) end as costo`;
+    const [porPieza, porSucursal] = await Promise.all([
+      sql<FilaAgrupada>`
+        select grouping(va.id)::integer as es_total, ${pieza}, ${sumas}
+          from ${piezas}
+         group by grouping sets ((va.id, va.sku, pr.nombre, va.nombre, g.nombre), ())
+         order by 1, sum(dp.cantidad) desc, va.sku`.execute(this.bd.db),
+      sql<FilaAgrupada>`
+        select grouping(va.id)::integer as es_total, l.sucursal, ${pieza}, ${sumas}
+          from ${piezas}
+         group by grouping sets
+               ((l.sucursal_id, l.sucursal, va.id, va.sku, pr.nombre, va.nombre, g.nombre), ())
+         order by 1, l.sucursal, sum(dp.cantidad) desc, va.sku`.execute(this.bd.db),
+    ]);
+    const columnas: ColumnaDefinida[] = [
+      { clave: 'sku', titulo: 'SKU', tipo: 'texto' },
+      { clave: 'pieza', titulo: 'Pieza', tipo: 'texto' },
+      { clave: 'gama', titulo: 'Gama', tipo: 'texto' },
+      { clave: 'unidades', titulo: 'Unidades', tipo: 'entero' },
+      { clave: 'costo', titulo: 'Costo', tipo: 'monto', costo: true },
+    ];
+    return this.deVentas(c, 'piezas-en-paquetes', 'Piezas consumidas en paquetes', [
+      this.seccion(c, 'por_pieza', 'Piezas consumidas en paquetes', columnas, porPieza.rows),
+      this.seccion(
+        c,
+        'por_sucursal',
+        'Por sucursal',
+        [{ clave: 'sucursal', titulo: 'Sucursal', tipo: 'texto' }, ...columnas],
+        porSucursal.rows,
+      ),
+    ]);
+  }
+
+  // -------------------------------------------------------------------------- Compras
+
+  /**
+   * Compras confirmadas cuya factura cae en el rango: por proveedor, por mes y una por una, con
+   * sus gastos de importación. Todo es costo: pide REPORTES_COSTOS (lo exige la ruta) y, sin él,
+   * la consulta no trae nada.
+   */
+  async comprasPorProveedor(usuarioId: number, filtro: FiltroReporteCompras): Promise<Reporte> {
+    const c = await this.contexto(usuarioId, filtro);
+    const compras = sql`
+      v_compras c
+      ${donde(
+        sql`c.estado = 'CONFIRMADA'`,
+        sql`c.fecha_factura between ${c.desde}::date and ${c.hasta}::date`,
+        sql`${veCostos(usuarioId)}`,
+      )}`;
+    // La factura en su moneda solo se suma dentro de un proveedor y una moneda: no en el total
+    const sumas = sql`
+      count(*)::integer as compras,
+      coalesce(sum(c.piezas_facturadas), 0)::integer as piezas_facturadas,
+      coalesce(sum(c.piezas_recibidas), 0)::integer as piezas_recibidas,
+      coalesce(sum(c.faltantes), 0)::integer as faltantes,
+      case when grouping(c.moneda) = 0 then sum(c.total_factura)::numeric(14,2) end
+        as total_factura,
+      coalesce(sum(c.total_factura_nio), 0)::numeric(14,2) as total_factura_nio,
+      coalesce(sum(c.gastos_nio), 0)::numeric(14,2) as gastos_nio,
+      coalesce(sum(c.costo_total_nio), 0)::numeric(14,2) as costo_total_nio,
+      round(100 * sum(c.gastos_nio) / nullif(sum(c.total_factura_nio), 0), 1) as gastos_pct`;
+    const [porProveedor, porMes, detalle] = await Promise.all([
+      sql<FilaAgrupada>`
+        select grouping(c.moneda)::integer as es_total, c.proveedor, c.moneda, ${sumas}
+          from ${compras}
+         group by grouping sets ((c.proveedor, c.moneda), ())
+         order by 1, sum(c.costo_total_nio) desc, c.proveedor, c.moneda`.execute(this.bd.db),
+      sql<FilaAgrupada>`
+        select grouping(c.moneda)::integer as es_total, c.mes, c.proveedor, c.moneda, ${sumas}
+          from (select c.*, date_trunc('month', c.fecha_factura)::date as mes from ${compras}) c
+         group by grouping sets ((c.mes, c.proveedor, c.moneda), ())
+         order by 1, c.mes, c.proveedor, c.moneda`.execute(this.bd.db),
+      sql<Fila>`
+        select c.fecha_factura, c.proveedor, c.factura_numero, c.moneda,
+               c.piezas_facturadas::integer as piezas_facturadas,
+               c.piezas_recibidas::integer as piezas_recibidas, c.faltantes::integer as faltantes,
+               c.total_factura::numeric(14,2) as total_factura,
+               c.total_factura_nio::numeric(14,2) as total_factura_nio,
+               c.gastos_nio::numeric(14,2) as gastos_nio,
+               c.costo_total_nio::numeric(14,2) as costo_total_nio
+          from ${compras}
+         order by c.fecha_factura, c.compra_id`.execute(this.bd.db),
+    ]);
+    const proveedor: ColumnaDefinida[] = [
+      { clave: 'proveedor', titulo: 'Proveedor', tipo: 'texto' },
+      { clave: 'moneda', titulo: 'Moneda', tipo: 'texto' },
+    ];
+    const piezas: ColumnaDefinida[] = [
+      { clave: 'piezas_facturadas', titulo: 'Piezas facturadas', tipo: 'entero' },
+      { clave: 'piezas_recibidas', titulo: 'Piezas recibidas', tipo: 'entero' },
+      { clave: 'faltantes', titulo: 'Faltantes', tipo: 'entero' },
+    ];
+    const montos: ColumnaDefinida[] = [
+      { clave: 'total_factura', titulo: 'Factura en su moneda', tipo: 'monto' },
+      { clave: 'total_factura_nio', titulo: 'Factura en C$', tipo: 'monto' },
+      { clave: 'gastos_nio', titulo: 'Gastos de importación C$', tipo: 'monto' },
+      { clave: 'costo_total_nio', titulo: 'Costo total C$', tipo: 'monto' },
+    ];
+    const agrupadas: ColumnaDefinida[] = [
+      ...proveedor,
+      { clave: 'compras', titulo: 'Compras', tipo: 'entero' },
+      ...piezas,
+      ...montos,
+      { clave: 'gastos_pct', titulo: 'Gastos sobre factura %', tipo: 'porcentaje' },
+    ];
+    const total = separar(porProveedor.rows).totales;
+    return this.reporte(
+      c,
+      'compras-por-proveedor',
+      'Compras por proveedor',
+      [
+        this.seccion(c, 'por_proveedor', 'Compras por proveedor', agrupadas, porProveedor.rows),
+        this.seccion(
+          c,
+          'por_mes',
+          'Por mes y proveedor',
+          [{ clave: 'mes', titulo: 'Mes', tipo: 'mes' }, ...agrupadas],
+          porMes.rows,
+        ),
+        seccion(
+          'compras',
+          'Compras confirmadas',
+          [
+            { clave: 'fecha_factura', titulo: 'Fecha de la factura', tipo: 'fecha' },
+            { clave: 'proveedor', titulo: 'Proveedor', tipo: 'texto' },
+            { clave: 'factura_numero', titulo: 'Factura', tipo: 'texto' },
+            { clave: 'moneda', titulo: 'Moneda', tipo: 'texto' },
+            ...piezas,
+            ...montos,
+          ],
+          detalle.rows,
+          total,
+          c.veCostos,
+        ),
+      ],
+      {
+        notas: [
+          'Compras confirmadas, por la fecha de su factura. Todas entran a la bodega central.',
+        ],
+      },
+    );
   }
 
   // ------------------------------------------------------------------- Cierres de caja

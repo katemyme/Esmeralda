@@ -10,11 +10,13 @@ import {
   esquemaInventarioValorizado,
   esquemaReporte,
   esquemaReporteActual,
+  esquemaReporteCompras,
   esquemaReporteProductos,
   esquemaReporteVentas,
   type FiltroInventarioValorizado,
   type FiltroReporte,
   type FiltroReporteActual,
+  type FiltroReporteCompras,
   type FiltroReporteProductos,
   type FiltroReporteVentas,
 } from './esquemas';
@@ -137,6 +139,26 @@ export class ReportesController {
     @Query(new ValidacionZod(esquemaReporte)) filtro: FiltroReporte,
   ): Promise<Respuesta> {
     return entregar(await this.reportes.sobreprecios(usuario.id, filtro), filtro.formato);
+  }
+
+  /** Las piezas que salieron dentro de paquetes, en total y por sucursal, con su costo. */
+  @Get('piezas-en-paquetes')
+  @RequierePermiso('REPORTES_COSTOS')
+  async piezasEnPaquetes(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Query(new ValidacionZod(esquemaReporte)) filtro: FiltroReporte,
+  ): Promise<Respuesta> {
+    return entregar(await this.reportes.piezasEnPaquetes(usuario.id, filtro), filtro.formato);
+  }
+
+  /** Compras confirmadas por proveedor, por mes y una por una (el rango va por la fecha de la factura). */
+  @Get('compras-por-proveedor')
+  @RequierePermiso('REPORTES_COSTOS')
+  async comprasPorProveedor(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Query(new ValidacionZod(esquemaReporteCompras)) filtro: FiltroReporteCompras,
+  ): Promise<Respuesta> {
+    return entregar(await this.reportes.comprasPorProveedor(usuario.id, filtro), filtro.formato);
   }
 
   /** Los turnos cerrados en el rango, con lo esperado, lo contado y las diferencias. */

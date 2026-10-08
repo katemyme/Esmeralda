@@ -317,6 +317,8 @@ describe('Reportes', () => {
       'gamas',
       'promociones',
       'sobreprecios',
+      'piezas-en-paquetes',
+      'compras-por-proveedor',
       'cierres',
       'mermas',
       'inventario-valorizado',
@@ -540,6 +542,46 @@ describe('Reportes', () => {
         },
       ]);
       expect(sobreprecios.totales).toEqual({ cantidad: 1, sobreprecio: '100.00' });
+    });
+
+    it('piezas consumidas en paquetes: solo con REPORTES_COSTOS, al costo de cuando se vendieron', async () => {
+      for (const acceso of [eva.acceso, rita.acceso]) {
+        await con(acceso, '/api/reportes/piezas-en-paquetes').expect(403).expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: 'Permiso denegado: se requiere REPORTES_COSTOS',
+        });
+      }
+      const r = await reporte(jefa.acceso, 'piezas-en-paquetes');
+      expect(r).toMatchObject({
+        clave: 'piezas-en-paquetes',
+        titulo: 'Piezas consumidas en paquetes',
+        desde: hoy,
+        hasta: hoy,
+        notas: [],
+      });
+      // Solo el aro que salió con la perforación: los dos que se vendieron sueltos no cuentan.
+      // Su costo es el de la venta (C$100), aunque después haya subido a C$150.
+      const aro = {
+        sku: 'RPT-ARO',
+        pieza: 'Joya RPT — Aro',
+        gama: 'Titanio',
+        unidades: 1,
+        costo: '100.00',
+      };
+      const total = { unidades: 1, costo: '100.00' };
+      expect(seccion(r, 'por_pieza').filas).toEqual([aro]);
+      expect(seccion(r, 'por_pieza').totales).toEqual(total);
+      expect(seccion(r, 'por_sucursal').filas).toEqual([{ sucursal: SUCURSAL, ...aro }]);
+      expect(seccion(r, 'por_sucursal').totales).toEqual(total);
+
+      const ayer = sumarDias(hoy, -1);
+      const antes = await reporte(
+        jefa.acceso,
+        'piezas-en-paquetes',
+        `&desde=${ayer}&hasta=${ayer}`,
+      );
+      expect(seccion(antes, 'por_pieza').filas).toEqual([]);
+      expect(seccion(antes, 'por_pieza').totales).toEqual({ unidades: 0, costo: '0.00' });
     });
 
     it('el diario, el semanal (lunes a domingo) y el mensual; y un rango partido por semana o por mes', async () => {
@@ -787,6 +829,229 @@ describe('Reportes', () => {
     });
   });
 
+  describe('compras por proveedor', () => {
+    // Tres compras confirmadas con facturas de marzo y abril de 2019 (nadie más compra en esas
+    // fechas) y una en borrador, de piezas propias para no mover el costo de las demás pruebas
+    const RANGO = '&desde=2019-03-01&hasta=2019-04-30';
+    const deA = {
+      proveedor: 'Proveedor A RPT',
+      moneda: 'USD',
+      compras: 2,
+      piezas_facturadas: 15,
+      piezas_recibidas: 14,
+      faltantes: 1,
+      total_factura: '40.00',
+      total_factura_nio: '1460.00', // US$40 × 36.50
+      gastos_nio: '146.00', // US$4 de courier
+      costo_total_nio: '1606.00',
+      gastos_pct: '10.0',
+    };
+    const deB = {
+      proveedor: 'Proveedor B RPT',
+      moneda: 'NIO',
+      compras: 1,
+      piezas_facturadas: 20,
+      piezas_recibidas: 20,
+      faltantes: 0,
+      total_factura: '1000.00',
+      total_factura_nio: '1000.00',
+      gastos_nio: '100.00',
+      costo_total_nio: '1100.00',
+      gastos_pct: '10.0',
+    };
+    const total = {
+      compras: 3,
+      piezas_facturadas: 35,
+      piezas_recibidas: 34,
+      faltantes: 1,
+      total_factura: null, // dólares y córdobas no se suman
+      total_factura_nio: '2460.00',
+      gastos_nio: '246.00',
+      costo_total_nio: '2706.00',
+      gastos_pct: '10.0',
+    };
+
+    beforeAll(async () => {
+      const proveedor = async (nombre: string, moneda: string) => {
+        const { body } = await enviar(jefa.acceso, 'post', '/api/proveedores')
+          .send({ nombre, moneda_habitual: moneda })
+          .expect(201);
+        return body.proveedor.id as number;
+      };
+      const a = await proveedor('Proveedor A RPT', 'USD');
+      const b = await proveedor('Proveedor B RPT', 'NIO');
+      const categoria = await enviar(jefa.acceso, 'post', '/api/categorias')
+        .send({ nombre: 'Compras RPT' })
+        .expect(201);
+      const producto = await enviar(jefa.acceso, 'post', '/api/productos')
+        .send({
+          categoria_id: categoria.body.categoria.id,
+          nombre: 'Insumo RPT',
+          variantes: [
+            { sku: 'RPT-INS1', nombre: 'Uno', precio_venta: 1000 },
+            { sku: 'RPT-INS2', nombre: 'Dos', precio_venta: 1000 },
+          ],
+        })
+        .expect(201);
+      const [uno, dos] = (producto.body.producto as ProductoCatalogo).variantes.map((v) => v.id);
+
+      const comprar = async (cuerpo: Record<string, unknown>, confirmar = true) => {
+        const { body } = await enviar(jefa.acceso, 'post', '/api/compras').send(cuerpo).expect(201);
+        if (confirmar) {
+          await enviar(jefa.acceso, 'post', `/api/compras/${body.compra.id}/confirmar`).expect(200);
+        }
+      };
+      await comprar({
+        proveedor_id: a,
+        factura_numero: 'RPT-A1',
+        fecha_factura: '2019-03-10',
+        moneda: 'USD',
+        tipo_cambio: 36.5,
+        lineas: [
+          { variante_id: uno, cantidad_facturada: 10, costo_unitario: 2, cantidad_recibida: 9 },
+        ],
+        gastos: [{ concepto: 'COURIER', moneda: 'USD', monto: 4 }],
+      });
+      await comprar({
+        proveedor_id: a,
+        factura_numero: 'RPT-A2',
+        fecha_factura: '2019-03-25',
+        moneda: 'USD',
+        tipo_cambio: 36.5,
+        lineas: [{ variante_id: dos, cantidad_facturada: 5, costo_unitario: 4 }],
+      });
+      await comprar({
+        proveedor_id: b,
+        factura_numero: 'RPT-B1',
+        fecha_factura: '2019-04-02',
+        moneda: 'NIO',
+        lineas: [{ variante_id: uno, cantidad_facturada: 20, costo_unitario: 50 }],
+        gastos: [{ concepto: 'ADUANA', moneda: 'NIO', monto: 100 }],
+      });
+      // en borrador: no entra al reporte
+      await comprar(
+        {
+          proveedor_id: b,
+          factura_numero: 'RPT-B2',
+          fecha_factura: '2019-04-05',
+          moneda: 'NIO',
+          lineas: [{ variante_id: dos, cantidad_facturada: 3, costo_unitario: 10 }],
+        },
+        false,
+      );
+    });
+
+    it('solo con REPORTES_COSTOS', async () => {
+      for (const acceso of [eva.acceso, rita.acceso]) {
+        await con(acceso, '/api/reportes/compras-por-proveedor').expect(403).expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: 'Permiso denegado: se requiere REPORTES_COSTOS',
+        });
+      }
+    });
+
+    it('las confirmadas del rango por proveedor y moneda, con sus gastos de importación', async () => {
+      const r = await reporte(jefa.acceso, 'compras-por-proveedor', RANGO);
+      expect(r).toMatchObject({
+        clave: 'compras-por-proveedor',
+        titulo: 'Compras por proveedor',
+        desde: '2019-03-01',
+        hasta: '2019-04-30',
+        sucursal: null, // las compras no son de una sucursal: todas entran a la bodega
+        notas: [
+          'Compras confirmadas, por la fecha de su factura. Todas entran a la bodega central.',
+        ],
+      });
+      const s = seccion(r, 'por_proveedor');
+      expect(claves(s)).toEqual([
+        'proveedor',
+        'moneda',
+        'compras',
+        'piezas_facturadas',
+        'piezas_recibidas',
+        'faltantes',
+        'total_factura',
+        'total_factura_nio',
+        'gastos_nio',
+        'costo_total_nio',
+        'gastos_pct',
+      ]);
+      expect(s.filas).toEqual([deA, deB]); // primero el que más costó
+      expect(s.totales).toEqual(total);
+    });
+
+    it('por mes, y cada compra con su factura', async () => {
+      const r = await reporte(jefa.acceso, 'compras-por-proveedor', RANGO);
+      expect(seccion(r, 'por_mes').columnas[0]).toEqual({
+        clave: 'mes',
+        titulo: 'Mes',
+        tipo: 'mes',
+      });
+      expect(seccion(r, 'por_mes').filas).toEqual([
+        { mes: '2019-03-01', ...deA },
+        { mes: '2019-04-01', ...deB },
+      ]);
+      expect(seccion(r, 'por_mes').totales).toEqual(total);
+
+      const compras = seccion(r, 'compras');
+      expect(compras.filas).toEqual([
+        {
+          fecha_factura: '2019-03-10',
+          proveedor: 'Proveedor A RPT',
+          factura_numero: 'RPT-A1',
+          moneda: 'USD',
+          piezas_facturadas: 10,
+          piezas_recibidas: 9,
+          faltantes: 1,
+          total_factura: '20.00',
+          total_factura_nio: '730.00',
+          gastos_nio: '146.00',
+          costo_total_nio: '876.00',
+        },
+        expect.objectContaining({ factura_numero: 'RPT-A2', costo_total_nio: '730.00' }),
+        expect.objectContaining({ factura_numero: 'RPT-B1', costo_total_nio: '1100.00' }),
+      ]);
+      expect(compras.totales).toEqual({
+        piezas_facturadas: 35,
+        piezas_recibidas: 34,
+        faltantes: 1,
+        total_factura: null,
+        total_factura_nio: '2460.00',
+        gastos_nio: '246.00',
+        costo_total_nio: '2706.00',
+      });
+    });
+
+    it('el rango va por la fecha de la factura', async () => {
+      const marzo = await reporte(
+        jefa.acceso,
+        'compras-por-proveedor',
+        '&periodo=mes&fecha=2019-03-15',
+      );
+      expect(marzo).toMatchObject({ desde: '2019-03-01', hasta: '2019-03-31' });
+      expect(seccion(marzo, 'por_proveedor').filas).toEqual([deA]);
+      expect(seccion(marzo, 'compras').filas).toHaveLength(2);
+      const vacio = await reporte(
+        jefa.acceso,
+        'compras-por-proveedor',
+        '&desde=2018-01-01&hasta=2018-12-31',
+      );
+      expect(seccion(vacio, 'por_proveedor').filas).toEqual([]);
+      expect(seccion(vacio, 'por_proveedor').totales).toMatchObject({
+        compras: 0,
+        costo_total_nio: '0.00',
+        gastos_pct: null,
+      });
+      const { body } = await con(
+        jefa.acceso,
+        '/api/reportes/compras-por-proveedor?desde=2019-04-30&hasta=2019-03-01',
+      ).expect(400);
+      expect(body.errores).toEqual([
+        { campo: 'hasta', mensaje: 'hasta no puede ser anterior a desde' },
+      ]);
+    });
+  });
+
   describe('cierres de caja', () => {
     let detalle: TurnoDetalle;
 
@@ -971,6 +1236,69 @@ describe('Reportes', () => {
       expect(dias[4].slice(0, 2)).toEqual(['Total', 6]);
     });
 
+    it('compras por proveedor y piezas en paquetes también se descargan en Excel', async () => {
+      const respuesta = await descargar(
+        jefa.acceso,
+        'compras-por-proveedor?desde=2019-03-01&hasta=2019-04-30&formato=xlsx',
+      );
+      expect(respuesta.headers['content-type']).toBe(XLSX);
+      expect(respuesta.headers['content-disposition']).toBe(
+        'attachment; filename="compras-por-proveedor_2019-03-01_2019-04-30.xlsx"',
+      );
+      const compras = await libro(respuesta.body as Buffer);
+      expect(compras.worksheets.map((h) => h.name)).toEqual([
+        'Compras por proveedor',
+        'Por mes y proveedor',
+        'Compras confirmadas',
+      ]);
+      expect(tabla(compras.worksheets[0], 'Proveedor')).toEqual([
+        [
+          'Proveedor',
+          'Moneda',
+          'Compras',
+          'Piezas facturadas',
+          'Piezas recibidas',
+          'Faltantes',
+          'Factura en su moneda',
+          'Factura en C$',
+          'Gastos de importación C$',
+          'Costo total C$',
+          'Gastos sobre factura %',
+        ],
+        ['Proveedor A RPT', 'USD', 2, 15, 14, 1, 40, 1460, 146, 1606, 10],
+        ['Proveedor B RPT', 'NIO', 1, 20, 20, 0, 1000, 1000, 100, 1100, 10],
+        // sin suma de las facturas en su moneda (mezcla dólares y córdobas): la celda va vacía
+        ['Total', undefined, 3, 35, 34, 1, undefined, 2460, 246, 2706, 10],
+      ]);
+      const porMes = tabla(compras.worksheets[1], 'Mes');
+      expect(porMes[1].slice(0, 3)).toEqual([
+        new Date('2019-03-01T00:00:00Z'),
+        'Proveedor A RPT',
+        'USD',
+      ]);
+      const facturas = tabla(compras.worksheets[2], 'Fecha de la factura');
+      expect(facturas[1].slice(0, 3)).toEqual([
+        new Date('2019-03-10T00:00:00Z'),
+        'Proveedor A RPT',
+        'RPT-A1',
+      ]);
+
+      const piezas = await descargar(
+        jefa.acceso,
+        `piezas-en-paquetes?sucursal_id=${ids.suc}&formato=xlsx`,
+      );
+      expect(piezas.headers['content-disposition']).toBe(
+        `attachment; filename="piezas-en-paquetes_${hoy}.xlsx"`,
+      );
+      const hojas = (await libro(piezas.body as Buffer)).worksheets;
+      expect(hojas.map((h) => h.name)).toEqual(['Piezas consumidas en paquetes', 'Por sucursal']);
+      expect(tabla(hojas[1], 'Sucursal')).toEqual([
+        ['Sucursal', 'SKU', 'Pieza', 'Gama', 'Unidades', 'Costo'],
+        [SUCURSAL, 'RPT-ARO', 'Joya RPT — Aro', 'Titanio', 1, 100],
+        ['Total', undefined, undefined, undefined, 1, 100],
+      ]);
+    });
+
     it('?formato=pdf: tamaño carta, horizontal cuando la tabla es ancha', async () => {
       const angosto = await descargar(jefa.acceso, `cobros?sucursal_id=${ids.suc}&formato=pdf`);
       expect(angosto.headers['content-type']).toBe('application/pdf');
@@ -997,12 +1325,16 @@ describe('Reportes', () => {
         'gamas',
         'promociones',
         'sobreprecios',
+        'piezas-en-paquetes',
+        'compras-por-proveedor',
+        'compras-por-proveedor?desde=2019-03-01&hasta=2019-04-30',
         'cierres',
         'mermas',
         'inventario-valorizado',
         'por-reponer',
       ]) {
-        const { body } = await descargar(jefa.acceso, `${ruta}?formato=pdf`);
+        const separador = ruta.includes('?') ? '&' : '?';
+        const { body } = await descargar(jefa.acceso, `${ruta}${separador}formato=pdf`);
         expect((body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
       }
       const vacio = await descargar(
@@ -1015,6 +1347,8 @@ describe('Reportes', () => {
     it('exportar pide el mismo permiso que ver el reporte', async () => {
       await con(vera.acceso, '/api/reportes/ventas?formato=xlsx').expect(403);
       await con(eva.acceso, '/api/reportes/inventario-valorizado?formato=pdf').expect(403);
+      await con(eva.acceso, '/api/reportes/compras-por-proveedor?formato=xlsx').expect(403);
+      await con(eva.acceso, '/api/reportes/piezas-en-paquetes?formato=pdf').expect(403);
       await con(rita.acceso, '/api/reportes/cierres?formato=xlsx').expect(403);
     });
   });
