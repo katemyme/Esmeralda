@@ -121,10 +121,10 @@
     <h1>Modelo de datos v1.1 (PostgreSQL 16)</h1>
     <p class="lede">Dos sucursales y una bodega central. La mercadería entra solo por la bodega, llega a las sucursales con envíos en dos pasos y sale por ventas de piezas, servicios o paquetes de perforación. Cada peso se sigue hasta el cierre de caja.</p>
     <div class="meta">
-      <span class="chip">47 tablas</span>
-      <span class="chip">24 vistas</span>
-      <span class="chip">135 funciones</span>
-      <span class="chip">524 pruebas</span>
+      <span class="chip">49 tablas</span>
+      <span class="chip">25 vistas</span>
+      <span class="chip">151 funciones</span>
+      <span class="chip">657 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -137,6 +137,7 @@
     <a href="#catalogo">Catálogo y perforaciones</a>
     <a href="#inventario">Compras e inventario</a>
     <a href="#ventas">Ventas y promociones</a>
+    <a href="#devoluciones">Devoluciones y cambios</a>
     <a href="#caja">Caja</a>
     <a href="#roles">Roles</a>
     <a href="#reglas">Reglas garantizadas</a>
@@ -169,6 +170,7 @@ erDiagram
     varchar codigo UK "LAM, LBR, BOD"
     varchar tipo "SUCURSAL o BODEGA"
     int ultimo_numero_venta
+    int ultimo_numero_devolucion
   }
   CAJA {
     int id PK
@@ -261,6 +263,12 @@ erDiagram
   PERFORACION ||--o{ PRECIO_ESPECIAL_PAQUETE : excepcion
   VARIANTE ||--o{ HISTORIAL_PRECIO : cambia
 
+  CATEGORIA {
+    int id PK
+    varchar nombre UK
+    boolean activa
+    boolean admite_devolucion "la marca el administrador"
+  }
   PRODUCTO {
     bigint id PK
     int categoria_id FK
@@ -477,6 +485,7 @@ erDiagram
     smallint id PK
     varchar codigo UK
     boolean es_efectivo
+    boolean interno "saldo por cambio"
   }
   TIPO_CAMBIO {
     date fecha PK
@@ -484,10 +493,62 @@ erDiagram
   }
   TICKET_IMPRESION {
     bigint id PK
-    bigint venta_id FK "o el turno: uno de los dos"
+    bigint venta_id FK "uno de los tres"
     bigint turno_id FK
+    bigint devolucion_id FK
     bigint usuario_id FK
     timestamptz impreso_at
+  }
+</pre>
+    </div>
+  </section>
+
+  <section id="devoluciones">
+    <div class="section-head">
+      <h2>Devoluciones y cambios</h2>
+      <p>Para ventas de un turno ya cerrado (con el turno abierto, la venta se anula). La sucursal la solicita, solo el administrador la aprueba o la rechaza, y ya aprobada se ejecuta en la caja abierta de la sucursal donde está el cliente. Lo devuelto vale lo que se pagó por ello y se entrega como se pagó la factura: en efectivo desde la caja, por transferencia del administrador o, en un cambio, como saldo de la venta nueva. La factura original no se toca.</p>
+    </div>
+    <div class="diagram">
+<pre class="mermaid">
+erDiagram
+  VENTA ||--o{ DEVOLUCION : se_devuelve
+  DEVOLUCION ||--|{ DEVOLUCION_DETALLE : lineas
+  VENTA_DETALLE ||--o{ DEVOLUCION_DETALLE : de_la_linea
+  DEVOLUCION |o--o| VENTA : venta_del_cambio
+  TURNO_CAJA ||--o{ DEVOLUCION : se_ejecuta_en
+  DEVOLUCION ||--o{ MOVIMIENTO_INVENTARIO : entra_al_stock
+  DEVOLUCION_DETALLE |o--o| MERMA : defectuoso
+  DEVOLUCION ||--o{ TICKET_IMPRESION : impresiones
+
+  DEVOLUCION {
+    bigint id PK
+    bigint venta_id FK "la factura original"
+    varchar tipo "DEVOLUCION o CAMBIO"
+    varchar estado "PENDIENTE, APROBADA, RECHAZADA, EJECUTADA, CANCELADA"
+    varchar motivo
+    varchar cliente_nombre
+    varchar cliente_telefono
+    numeric monto_total "lo pagado por lo devuelto"
+    int sucursal_solicitud_id FK
+    date vence_el "aprobada: último día para ejecutarla"
+    varchar numero UK "DEV-LAM-000001, al ejecutarse"
+    int sucursal_id FK "donde se ejecutó"
+    bigint turno_id FK
+    numeric monto_saldo "aplicado a la venta del cambio"
+    numeric monto_efectivo "sale de la caja"
+    numeric monto_transferencia "la hace el administrador"
+    bigint venta_cambio_id FK
+    varchar transferencia_referencia
+  }
+  DEVOLUCION_DETALLE {
+    bigint id PK
+    bigint devolucion_id FK
+    bigint venta_detalle_id FK
+    int cantidad
+    varchar estado_producto "BUENO o DEFECTUOSO"
+    numeric monto
+    bigint movimiento_id FK
+    bigint merma_id FK "solo lo defectuoso"
   }
 </pre>
     </div>
@@ -563,6 +624,7 @@ erDiagram
           <li>Envíos, aprobación de mermas y conteos</li>
           <li>Promociones, parámetros, usuarios y equipos</li>
           <li>Alertas y cierre forzado de caja</li>
+          <li>Aprueba devoluciones y decide qué categorías las admiten</li>
         </ul>
       </div>
       <div class="role">
@@ -572,6 +634,7 @@ erDiagram
           <li>Ventas, promociones y anulaciones</li>
           <li>Recibir envíos, reportar mermas, contar</li>
           <li>Ve diferencias de caja y reportes de venta</li>
+          <li>Solicita devoluciones y ejecuta las aprobadas</li>
         </ul>
       </div>
       <div class="role">
@@ -581,6 +644,7 @@ erDiagram
           <li>Vende, sube precios y aplica promociones</li>
           <li>Abre y cierra caja (arqueo ciego)</li>
           <li>Recibe envíos, reporta mermas, cuenta</li>
+          <li>Solicita devoluciones y ejecuta las aprobadas</li>
         </ul>
       </div>
     </div>
@@ -605,7 +669,12 @@ erDiagram
       <div class="rule"><h3>Arqueo ciego, un solo reconteo</h3><p>Quien cierra nunca ve el monto esperado ni la diferencia. Si el primer conteo no cuadra, la caja no se cierra y queda anotado; el segundo debe llevar justificación y cierra con lo contado. Su ticket trae solo lo contado, el retiro y el fondo.</p></div>
       <div class="rule"><h3>Tipo de cambio sin errores de dedo</h3><p>Solo se registra el de hoy. Si se aleja más de 5 % del último registrado (parámetro) pide una confirmación explícita, y quien lo confirma deja una alerta al administrador; el primero que se registra debe estar entre 20 y 60 córdobas por dólar.</p></div>
       <div class="rule"><h3>Reportes sin romper el arqueo ciego</h3><p>Cada quien ve en los reportes solo sus sucursales, y el costo y el margen solo con su permiso. Quien no ve las diferencias de caja tampoco ve las ventas ni los cobros de un turno que sigue abierto.</p></div>
-      <div class="rule"><h3>Original y copia</h3><p>Cada impresión de un ticket de venta o de cierre queda anotada, con quién la hizo. La primera es el original; desde la segunda el ticket sale marcado como COPIA.</p></div>
+      <div class="rule"><h3>Original y copia</h3><p>Cada impresión de un ticket de venta, de cierre o de devolución queda anotada, con quién la hizo. La primera es el original; desde la segunda el ticket sale marcado como COPIA.</p></div>
+      <div class="rule"><h3>Qué se devuelve</h3><p>Solo artículos de una categoría que admite devolución: nunca piezas de piercing, perforaciones ni paquetes. Dentro del plazo (7 días), por línea y cantidad, sin pasar de lo vendido menos lo ya devuelto o apartado en otra solicitud.</p></div>
+      <div class="rule"><h3>Devolución en tres pasos</h3><p>La sucursal solicita, solo el administrador aprueba o rechaza, y la aprobada se ejecuta en una caja abierta. Si no se ejecuta en 3 días se cancela sola. La factura original no se modifica y cada devolución toma su número sin saltos al ejecutarse.</p></div>
+      <div class="rule"><h3>Se devuelve lo que se pagó, como se pagó</h3><p>El monto es lo pagado por esas unidades, con la promoción en proporción y sin perder centavos. La parte pagada en efectivo sale de la caja y cuenta en el arqueo; la pagada con tarjeta o transferencia la transfiere el administrador y no pasa por la caja.</p></div>
+      <div class="rule"><h3>Cambio con saldo</h3><p>El cambio es una venta nueva, sin promoción, donde lo devuelto entra como «saldo por cambio»: no es dinero, no se elige al cobrar y no entra al arqueo. Esa venta no se anula.</p></div>
+      <div class="rule"><h3>Lo devuelto vuelve al inventario</h3><p>Entra al stock de la sucursal donde se ejecuta, al costo con que se vendió; lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex.</p></div>
       <div class="rule"><h3>Foto mensual del inventario</h3><p>Al cambiar de mes se guarda cuánto valía la mercadería, por ubicación y categoría. Las cantidades salen del kardex: son las del cierre aunque la foto se tome tarde.</p></div>
       <div class="rule"><h3>La caja sale del equipo</h3><p>La sucursal, la caja y el turno de una venta o de un cierre no los manda la pantalla: salen del equipo registrado de la sesión. Solo el administrador, sin caja en su equipo, la elige.</p></div>
       <div class="rule"><h3>Siempre un administrador</h3><p>No se puede desactivar ni degradar al último ADMIN. 5 intentos fallidos bloquean 15 minutos.</p></div>
@@ -638,13 +707,14 @@ erDiagram
           <tr><td>Caja</td><td class="mono">fn_caja_de_sesion · fn_turno_de_sesion · fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar · fn_set_tipo_cambio</td><td>Caja del equipo, apertura, arqueo ciego con un reconteo, retiro, fondo, alertas y tipo de cambio del día</td></tr>
           <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables y equipos autorizados</td></tr>
           <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
-          <tr><td>Reportes</td><td class="mono">fn_ventas_reporte · fn_reporte_ventas · fn_top_productos · fn_foto_inventario_mensual</td><td>Qué ventas puede ver cada quien en un reporte, ventas por día, semana o mes, ranking y foto mensual del inventario valorizado</td></tr>
-          <tr><td>Tickets</td><td class="mono">fn_registrar_impresion_venta · fn_registrar_impresion_cierre</td><td>Anotan cada impresión de un ticket: la primera es el original y las siguientes, copias</td></tr>
+          <tr><td>Devoluciones</td><td class="mono">fn_venta_no_devoluble · fn_lineas_devolubles · fn_solicitar_devolucion · fn_resolver_devolucion · fn_cancelar_devolucion · fn_vencer_devoluciones · fn_ejecutar_devolucion · fn_registrar_transferencia_devolucion · fn_proporcion_efectivo · fn_reparto_devolucion · fn_puede_ver_devolucion · fn_set_categoria_devolucion</td><td>Qué se puede devolver de una factura y cuánto vale, la solicitud, su aprobación, su vencimiento, la ejecución en caja (inventario, número, efectivo o venta del cambio) y la transferencia del administrador</td></tr>
+          <tr><td>Reportes</td><td class="mono">fn_ventas_reporte · fn_devoluciones_reporte · fn_reporte_ventas · fn_top_productos · fn_foto_inventario_mensual</td><td>Qué ventas y qué devoluciones puede ver cada quien en un reporte, ventas por día, semana o mes, ranking y foto mensual del inventario valorizado</td></tr>
+          <tr><td>Tickets</td><td class="mono">fn_registrar_impresion_venta · fn_registrar_impresion_cierre · fn_registrar_impresion_devolucion</td><td>Anotan cada impresión de un ticket: la primera es el original y las siguientes, copias</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_ventas_perforacion</code>, <code>v_ventas_gama</code>, <code>v_ventas_promocion</code>, <code>v_ventas_sobreprecio</code>, <code>v_piezas_consumidas_paquete</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_compras</code>, <code>v_compras_mensual_proveedor</code>, <code>v_envios</code>, <code>v_envios_por_recibir</code>, <code>v_mermas</code>, <code>v_precios_perforacion</code>, <code>v_turnos</code>, <code>v_alertas_pendientes</code>, <code>v_usuarios_admin</code>, <code>v_roles_admin</code>, <code>v_promociones_admin</code>.</p>
+    <p class="lede" style="font-size:14px">Vistas: <code>v_ventas_linea</code>, <code>v_devoluciones_linea</code>, <code>v_ventas_diarias</code>, <code>v_ventas_semanales</code>, <code>v_ventas_mensuales</code>, <code>v_ventas_categoria_mensual</code>, <code>v_ventas_perforacion</code>, <code>v_ventas_gama</code>, <code>v_ventas_promocion</code>, <code>v_ventas_sobreprecio</code>, <code>v_piezas_consumidas_paquete</code>, <code>v_cobros_metodo_diario</code>, <code>v_stock_actual</code>, <code>v_inventario_valorizado</code>, <code>v_compras</code>, <code>v_compras_mensual_proveedor</code>, <code>v_envios</code>, <code>v_envios_por_recibir</code>, <code>v_mermas</code>, <code>v_precios_perforacion</code>, <code>v_turnos</code>, <code>v_alertas_pendientes</code>, <code>v_usuarios_admin</code>, <code>v_roles_admin</code>, <code>v_promociones_admin</code>.</p>
   </section>
 
-  <footer>Esquema v1.1, con las funciones que agregaron los pasos B2 a B5 del backend (octubre de 2026). Archivos: db/01_esquema.sql · db/02_seed.sql · db/03_datos_demo.sql · db/04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
+  <footer>Esquema v1.1, con lo que agregaron los pasos B2 a B8 del backend (octubre de 2026). Archivos: db/01_esquema.sql · db/02_seed.sql · db/03_datos_demo.sql · db/04_pruebas.sql. Reportes en hora de Managua; la semana inicia el lunes.</footer>
 </div>

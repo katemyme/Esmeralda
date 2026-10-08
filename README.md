@@ -9,7 +9,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja) y B7 (reportes, exportación y tareas programadas) |
+| Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios) |
 | Frontend (React + Vite, PWA) | Pendiente |
 
 ## Estructura

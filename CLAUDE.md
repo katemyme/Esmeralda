@@ -33,19 +33,32 @@ _Actualizado el 2026-10-08._
   las decisiones tomadas al programarlo. La **foto mensual del inventario se queda** (el dueño lo confirmó).
 - **Agregado el 2026-10-08, a pedido del dueño:** los reportes de compras por proveedor y de piezas consumidas en
   paquetes (solo con `REPORTES_COSTOS`) y el historial del tipo de cambio (`GET /api/tipo-cambio/historial`).
-- **Sigue: B8** (devoluciones y cambios de ventas de turnos ya cerrados). Las reglas las dio el dueño el
-  2026-10-08; falta que apruebe el plan (tablas, funciones, rutas y permisos) antes de programar. Al terminar B8:
-  etiqueta `backend-completo` y respaldo con `git bundle` en `C:\Respaldos`.
-- **Después:** el frontend, solo cuando el dueño lo pida (no empezarlo).
-- Pruebas en verde: 524 de base de datos y 479 del backend. Nada se ha subido a GitHub.
+- **Terminado, pendiente de revisión del dueño: B8** (devoluciones y cambios de ventas de turnos ya cerrados).
+  El dueño dio las reglas y aprobó el plan el 2026-10-08, con sus ajustes (están en «Decisiones de negocio clave»,
+  «Devoluciones y cambios»); se programó completo ese mismo día. Con B8 el backend queda completo: etiqueta
+  `backend-completo` y respaldo en `C:\Respaldos\esmeralda-backend-completo.bundle`.
+- Por confirmar con el dueño (B8): en un **cambio por algo más barato**, lo que sobra se devuelve con la misma
+  regla que una devolución (lo pagado en efectivo, en efectivo; lo pagado con tarjeta o transferencia, por
+  transferencia del administrador). Su regla original decía «en efectivo» y su ajuste del reembolso «según cómo
+  pagó» no mencionaba el cambio: se aplicó la segunda a los dos casos. Si lo quiere siempre en efectivo, es una
+  línea en `fn_ejecutar_devolucion` (`v_efectivo`).
+- **Sigue:** el frontend, solo cuando el dueño lo pida (no empezarlo).
+- Pruebas en verde: 657 de base de datos y 534 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
 - Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); inventario
   valorizado a una fecha cualquiera (solo hoy y el cierre de cada mes); la foto de un mes si el servidor estuvo
   apagado durante todo el mes siguiente (solo se toma la del mes anterior); comparar con el periodo anterior y
   gráficas (eso es del frontend); en los PDF, los caracteres fuera del alfabeto latino (fuentes estándar).
-- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-07: el control del tipo de cambio y todo
-  lo de B7, con dos tablas nuevas) la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
+- Fuera de B8: avisar al administrador cuando una devolución aprobada vence (se cancela sola, sin alerta); que el
+  administrador corrija una solicitud (aprueba o rechaza completa: para corregir se cancela y se hace otra); la
+  casilla «admite devolución» en la plantilla de la carga inicial (las categorías nuevas nacen sin ella y se
+  marca en el panel); devolver en dólares (siempre en córdobas); revisar si en la caja hay efectivo suficiente
+  antes de ejecutar (el arqueo es a ciegas). Sin probar con equipo real: el QR se leyó con un decodificador por
+  programa (da el número de factura), pero no impreso en papel térmico y escaneado; los PDF nuevos no se vieron
+  en pantalla (solo se prueba su estructura y sus renglones).
+- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-08: todo lo de B8, con dos tablas nuevas)
+  la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
 
@@ -78,7 +91,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      524 pruebas de reglas de negocio
+db/04_pruebas.sql      657 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -91,7 +104,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Antes de cada operación el backend ejecuta `SET LOCAL app.usuario_id = '<id>'` (auditoría).
 - Cada `fn_*` valida permisos (`fn_exigir_permiso`) y ubicación (`fn_exigir_sucursal`).
 - Tablas de movimiento son de solo inserción: `movimiento_inventario`, `venta_detalle`, `venta_pago`,
-  `cierre_caja_detalle`. Las ventas se anulan, no se borran.
+  `cierre_caja_detalle`. Las ventas se anulan, no se borran. Una devolución tampoco se borra ni se reescribe:
+  solo avanza de estado (`tg_devolucion_proteger`).
 - Para cambiar el esquema: editar `db/01_esquema.sql` (y `02_seed.sql` si aplica), agregar pruebas en
   `db/04_pruebas.sql` y correr `bash db/scripts/probar.sh` (Windows: `db\scripts\probar.cmd`) hasta ver
   `*** TODAS LAS PRUEBAS PASARON ***`. (La línea `ERROR: Venta LBR-MANUAL...` es esperada: prueba un trigger diferido.)
@@ -116,7 +130,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Caja: un turno al día por sucursal, compartido. Arqueo ciego por denominación; retiro de efectivo;
   lo que queda es el fondo del día siguiente. Diferencia > C$100 → justificación + alerta.
 - Roles: ADMIN (todo), ENCARGADO (ventas, anulaciones, recibir, reportar mermas, contar, ver
-  diferencias), VENDEDOR (vender, subir precio, promociones, caja, recibir, reportar mermas, contar).
+  diferencias), VENDEDOR (vender, subir precio, promociones, caja, recibir, reportar mermas, contar). Los dos
+  últimos solicitan devoluciones y ejecutan las aprobadas (`DEVOLUCIONES_REGISTRAR`); aprobarlas es solo del ADMIN.
 - Acceso: el admin entra desde cualquier equipo; encargados y vendedores solo desde un **equipo registrado**
   (caja o tablet) de una de sus sucursales (`fn_equipo_autorizado`). La sesión dura 12 h si se abrió en un
   equipo registrado y 7 días si no (parámetros `SESION_HORAS_EQUIPO`, `SESION_DIAS_SIN_EQUIPO`); renovar no la
@@ -177,6 +192,42 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Reportes extra incluidos:** productos más vendidos, perforaciones con pieza contra solo servicio, ventas
     por gama, promociones y sobreprecios. Desde el 2026-10-08, además, compras por proveedor y piezas
     consumidas en paquetes: solo para el administrador, porque muestran costos.
+- Devoluciones y cambios (B8; reglas y ajustes del dueño del 2026-10-08), todas en la base:
+  - **Solo para ventas de un turno ya cerrado:** con el turno abierto la venta se anula, como antes. La factura
+    original nunca se modifica.
+  - **Qué se devuelve:** nunca piezas de piercing, perforaciones ni paquetes. Lo decide la casilla
+    `categoria.admite_devolucion`, que solo marca el administrador (`DEVOLUCIONES_APROBAR`, no
+    `PRODUCTOS_GESTIONAR`); una categoría nueva nace sin ella. En los datos iniciales: joyería, accesorios,
+    perfumería y cuidado posterior, sí; los tres de piercing y las perforaciones, no.
+  - **Plazo:** `DEVOLUCION_DIAS_MAX` (7) días calendario de Managua desde el día de la venta, contados al crear
+    la solicitud. Parcial por línea y cantidad, sin pasar de lo vendido menos lo ya devuelto y lo **apartado** en
+    solicitudes pendientes o aprobadas.
+  - **Tres pasos:** (1) la sucursal solicita (tipo, líneas con su estado bueno o defectuoso, motivo y, obligatorios,
+    nombre y teléfono del cliente) y queda una alerta para el administrador; (2) solo el administrador aprueba o
+    rechaza (rechazar pide comentario); (3) la aprobada se ejecuta en la caja abierta de la sucursal donde esté el
+    cliente, que puede ser otra. Quien la solicitó o el administrador la pueden cancelar antes de ejecutarla.
+  - **La aprobada vence:** `DEVOLUCION_APROBADA_DIAS` (3). Pasado su último día la cancela sola la tarea
+    programada (`fn_vencer_devoluciones`) y libera lo apartado.
+  - **Monto:** lo que de verdad se pagó por esas unidades, con la promoción descontada en proporción, en
+    córdobas. El reparto no pierde centavos: devuelta por partes, una factura devuelve exactamente lo pagado.
+  - **Reembolso según cómo se pagó la factura:** la parte pagada en efectivo (C$ o US$) sale en córdobas de la
+    caja del turno y cuenta en lo esperado del arqueo; la parte pagada con tarjeta o transferencia la transfiere
+    el administrador, queda anotada con su referencia y no pasa por la caja; en pagos mixtos, en proporción.
+  - **Cambio:** una venta nueva (cualquier producto, **sin promoción**: si no, se podría devolver algo a precio
+    completo y llevarse lo mismo rebajado) donde lo devuelto entra como el método de pago interno «Saldo por
+    cambio». Si lo nuevo cuesta más, la diferencia se paga con los métodos normales; si cuesta menos, lo que
+    sobra se reembolsa como en una devolución. Lo que se lleva se elige al ejecutar, no al solicitar. Esa venta
+    no se anula; lo comprado en ella se puede devolver después.
+  - **Inventario:** lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo
+    con que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex.
+  - **Número propio sin saltos:** `DEV-<sucursal>-000001` (`sucursal.ultimo_numero_devolucion`), tomado al
+    ejecutarse; rechazadas, canceladas y fallidas no toman número. Ticket de 80 mm con la firma del cliente.
+  - **Reportes:** las ventas van netas (ventas menos devoluciones) por la fecha de la devolución, y se le restan
+    a quien hizo la venta original y a su sucursal; el dinero sale de la sucursal donde se ejecutó. Hay un
+    reporte de devoluciones con su motivo; el nombre y el teléfono del cliente solo los ve el administrador.
+  - **Arqueo ciego:** la vendedora ve el monto de cada devolución (tiene que entregarlo), nunca sumas. En el
+    ticket de cierre y en los reportes, las devoluciones de un turno abierto solo con `CAJA_VER_DIFERENCIAS`.
+  - **Ticket de venta con QR:** lleva el número de factura en un código QR para buscar la venta al devolver.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -184,7 +235,8 @@ Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseñ
 ## Etapa actual: backend (`backend/`)
 
 Stack: Node 22.12+ (desarrollo en Node 24) + TypeScript, **NestJS**, **Kysely** + `pg` (consultas tipadas; llama a las `fn_*`),
-Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (reportes y tickets en PDF), argon2id para contraseñas, JWT de acceso (15 min) + refresh en cookie httpOnly
+Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (reportes y tickets en PDF), qrcode (el QR del
+ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh en cookie httpOnly
 (hash SHA-256 en tabla `sesion`), pruebas con Jest + supertest contra una BD de prueba.
 
 | Paso | Contenido |
@@ -196,6 +248,7 @@ Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (r
 | B5 ✅ | Inventario: compras, envíos/recepción, mermas, conteos (y carga inicial desde Excel) |
 | B6 ✅ | POS y caja: venta, cobro, apertura, cierre, ticket |
 | B7 ✅ | Reportes, exportación (Excel/PDF), tickets en PDF, tareas programadas (`fn_alertar_cajas_sin_cerrar`, foto mensual) |
+| B8 ✅ | Devoluciones y cambios de ventas de turnos cerrados, casilla de las categorías, QR en el ticket, ventas netas |
 
 ### Convenciones del backend
 
@@ -324,14 +377,51 @@ Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (r
     `POST /api/turnos/:id/imprimir` anotan la impresión dentro de la misma transacción que arma el PDF y
     devuelven cuál es en `X-Ticket-Impresion`. El ticket de cierre imprime lo que entrega `fn_ticket_cierre`:
     no decide nada por su cuenta.
-  - `TareasService` corre `fn_alertar_cajas_sin_cerrar` y `fn_foto_inventario_mensual` al arrancar y cada 15
-    minutos (un `setInterval`, sin dependencias). En las pruebas no corre solo: llamar a `ejecutar(ahora)`.
+  - `TareasService` corre `fn_alertar_cajas_sin_cerrar`, `fn_foto_inventario_mensual` y (B8)
+    `fn_vencer_devoluciones` al arrancar y cada 15 minutos (un `setInterval`, sin dependencias). En las pruebas
+    no corre solo: llamar a `ejecutar(ahora)`.
   - Pruebas: `test/reportes.e2e-spec.ts` trabaja en la sucursal `RPT` (las ventas antiguas se insertan directo
     en la base, porque la API siempre vende «ahora»; crea el rol `ANALISTA_RPT` y lo elimina en `afterAll`) y
     `test/tareas.e2e-spec.ts` en la sucursal `TAR`. `comoBytes` (`test/utilidades.ts`) lee un archivo
     descargado. Las pruebas de PDF solo revisan su estructura (tamaño de página, número de páginas); el
     contenido se prueba en los renglones y en el Excel. Para ver cómo queda un PDF, generarlo a un archivo
     temporal y abrirlo.
+- Devoluciones y cambios (B8): módulo `devoluciones/` (rutas `/api/devoluciones...`), la casilla en
+  `categorias/` (`PUT /api/categorias/:id/admite-devolucion`) y el QR en `exportacion/`.
+  - Tablas `devolucion` y `devolucion_detalle` (sección 6.2 del esquema); funciones en la sección 12. Las reglas
+    viven ahí: `fn_lineas_devolubles` (qué queda por devolver de cada línea y cuánto vale) y
+    `fn_venta_no_devoluble` (anulada, turno abierto o plazo vencido) sirven a la búsqueda y a
+    `fn_solicitar_devolucion`; `fn_proporcion_efectivo` dice qué parte de una venta se pagó en efectivo (sigue el
+    «saldo por cambio» hasta la venta de origen) y de ahí sale el reparto efectivo/transferencia.
+  - El «saldo por cambio» es un `metodo_pago` con `interno = true`: no sale en `/api/metodos-pago`, no se acepta
+    en los `pagos` de una venta ni en el conteo del cierre, y `fn_resumen_turno` no lo cuenta. Solo lo pone
+    `fn_registrar_venta` cuando la llama `fn_ejecutar_devolucion` (marca `app.ejecutando_cambio`, como
+    `app.confirmando_compra`). Toda consulta nueva de pagos o cobros debe excluir `m.interno`.
+  - El efectivo de una devolución **no** es un `caja_movimiento`: `fn_resumen_turno` resta
+    `devolucion.monto_efectivo` del turno donde se ejecutó. `monto_total = monto_saldo + monto_efectivo +
+    monto_transferencia` (CHECK).
+  - `GET /api/devoluciones/venta?numero=` es la única ruta que muestra una venta de otra sucursal (hace falta
+    para devolver donde aparezca el cliente): trae solo lo necesario, sin costos. Alcance de lo demás: el
+    administrador ve todas; quien registra, las de sus sucursales (donde se solicitó o se ejecutó) y, por su id,
+    cualquiera aprobada (`fn_puede_ver_devolucion`); una ajena responde 404. La lista no trae sumas.
+  - `POST /api/devoluciones/:id/ejecutar`: el turno sale de `exigirTurno()` como en una venta. Devolución: `{}`
+    (el esquema acepta que no venga cuerpo). Cambio: `items`, `pagos` y `clave_idempotencia` de la venta nueva;
+    con la misma clave responde 200 `repetida: true`, y con la de otra venta, 409 `CLAVE_REUTILIZADA`.
+  - `reembolso` en la devolución: `definitivo: false` es lo previsto para una devolución sin ejecutar
+    (`fn_reparto_devolucion`); en un cambio sin ejecutar es null (depende de lo que se lleve el cliente).
+  - Ticket de devolución: `devoluciones/ticket-devolucion.ts` (renglones) → `ticketPdf`; se anota con
+    `fn_registrar_impresion_devolucion`. El renglón `{ tipo: 'qr', contenido }` de `ticket-pdf.ts` dibuja el QR
+    (30 mm, `exportacion/qr.ts`); la venta trae el texto en `ticket.qr` para que la pantalla dibuje el suyo.
+  - Reportes: las líneas de un reporte (`this.lineas(c)`) son las de venta **más** las devueltas en negativo
+    (`v_devoluciones_linea`, con `es_devolucion`); cuáles entran lo decide `fn_devoluciones_reporte`, que recibe
+    de qué sucursal se habla: `'VENTA'` (la de la venta original: ventas netas), `'CAJA'` (donde se ejecutó:
+    cobros) o `'AMBAS'` (reporte de devoluciones). Contar ventas con `filter (where not l.es_devolucion)`.
+  - `TareasService.ejecutar()` llama también a `fn_vencer_devoluciones` (`devoluciones_vencidas`).
+  - Pruebas: `test/devoluciones.e2e-spec.ts` trabaja en las sucursales `DEA` y `DEB` (crea el rol `CAJERO_DVE` y
+    lo elimina en `afterAll`); para probar el vencimiento cambia `vence_el` en la base y corre la tarea a la
+    hora real. En `db/04_pruebas.sql`, para mover la fecha de una venta se desactiva `tg_venta_proteger` dentro
+    de una transacción que se deshace. Una alerta de ejemplo en una prueba no debe llevar el id de un turno
+    real (la tarea de cajas sin cerrar no lo alertaría): usar uno que no exista.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
