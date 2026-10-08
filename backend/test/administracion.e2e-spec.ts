@@ -806,7 +806,8 @@ describe('Panel de administración', () => {
           {
             tipo: 'CAJA_SIN_CERRAR',
             titulo: 'Panel: la caja sigue abierta',
-            detalle: JSON.stringify({ turno_id: 7 }),
+            // un turno que no existe: con uno real, la tarea de cajas sin cerrar no lo alertaría
+            detalle: JSON.stringify({ turno_id: 999999 }),
             sucursal_id: ids.lam,
           },
           {
@@ -838,7 +839,7 @@ describe('Panel de administración', () => {
         id: alertas.caja,
         tipo: 'CAJA_SIN_CERRAR',
         titulo: 'Panel: la caja sigue abierta',
-        detalle: { turno_id: 7 },
+        detalle: { turno_id: 999999 },
         sucursal: { id: ids.lam, codigo: 'LAM', nombre: 'Multicentro Las Américas' },
         creada_at: expect.any(String),
         atendida_at: null,

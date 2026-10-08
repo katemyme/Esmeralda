@@ -75,13 +75,19 @@ export interface VentaDetalle extends VentaResumen {
   /** Vuelto entregado, en córdobas. */
   vuelto: string;
   anulacion: { fecha: Date; motivo: string; anulada_por: UsuarioReferido } | null;
-  /** Encabezado y pie del ticket (parámetros NEGOCIO_NOMBRE, NEGOCIO_RUC y TICKET_LEYENDA). */
+  /** Si la venta nació de un cambio: la devolución que la pagó (en `pagos`, el "saldo por cambio"). */
+  cambio: { devolucion_id: number; numero: string } | null;
+  /**
+   * Encabezado y pie del ticket (parámetros NEGOCIO_NOMBRE, NEGOCIO_RUC y TICKET_LEYENDA). `qr` es
+   * el texto del código QR que va al pie: el número de factura, para buscar la venta al devolver.
+   */
   ticket: {
     negocio: string | null;
     ruc: string | null;
     direccion: string | null;
     telefono: string | null;
     leyenda: string | null;
+    qr: string;
   };
 }
 
@@ -115,6 +121,8 @@ interface FilaVenta {
   motivo_anulacion: string | null;
   anulada_por_id: number | null;
   anulada_por: string | null;
+  cambio_id: number | null;
+  cambio_numero: string | null;
   negocio: string | null;
   ruc: string | null;
   leyenda: string | null;
@@ -262,12 +270,17 @@ export class VentasService {
               anulada_por: { id: fila.anulada_por_id, nombre_completo: fila.anulada_por },
             }
           : null,
+      cambio:
+        fila.cambio_id !== null && fila.cambio_numero !== null
+          ? { devolucion_id: fila.cambio_id, numero: fila.cambio_numero }
+          : null,
       ticket: {
         negocio: fila.negocio,
         ruc: fila.ruc,
         direccion: fila.sucursal_direccion,
         telefono: fila.sucursal_telefono,
         leyenda: fila.leyenda,
+        qr: fila.numero,
       },
     };
   }
@@ -362,6 +375,7 @@ export class VentasService {
              pm.id as promocion_id, pm.nombre as promocion,
              v.fecha_anulacion, v.motivo_anulacion,
              ua.id as anulada_por_id, ua.nombre_completo as anulada_por,
+             dc.id as cambio_id, dc.numero as cambio_numero,
              (select fn_parametro_txt('NEGOCIO_NOMBRE')) as negocio,
              (select fn_parametro_txt('NEGOCIO_RUC')) as ruc,
              (select fn_parametro_txt('TICKET_LEYENDA')) as leyenda
@@ -372,6 +386,7 @@ export class VentasService {
         join usuario u on u.id = v.vendedor_id
         left join promocion pm on pm.id = v.promocion_id
         left join usuario ua on ua.id = v.anulada_por
+        left join devolucion dc on dc.venta_cambio_id = v.id
         ${donde(alcance, ...condiciones)}
        order by v.id desc
        limit ${limite}`.execute(this.bd.db);

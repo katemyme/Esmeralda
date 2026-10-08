@@ -5,7 +5,12 @@ import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { esquemaActiva, idEntero, type DatosActiva } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
 import { CategoriasService, type CategoriaCatalogo } from './categorias.service';
-import { esquemaCategoria, type DatosCategoria } from './esquemas';
+import {
+  esquemaAdmiteDevolucion,
+  esquemaCategoria,
+  type DatosAdmiteDevolucion,
+  type DatosCategoria,
+} from './esquemas';
 
 /** /api/categorias — catálogo: rubros en que se agrupan los productos. */
 @Controller('categorias')
@@ -47,5 +52,25 @@ export class CategoriasController {
     @Body(new ValidacionZod(esquemaActiva)) datos: DatosActiva,
   ): Promise<{ categoria: CategoriaCatalogo }> {
     return { categoria: await this.categorias.cambiarActiva(admin.id, id, datos.activa) };
+  }
+
+  /**
+   * La casilla "admite devolución": si lo vendido de esta categoría se puede devolver o cambiar.
+   * La marca solo quien aprueba las devoluciones (el administrador). Las perforaciones, nunca.
+   */
+  @Put(':id/admite-devolucion')
+  @RequierePermiso('DEVOLUCIONES_APROBAR')
+  async cambiarAdmiteDevolucion(
+    @UsuarioActual() admin: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+    @Body(new ValidacionZod(esquemaAdmiteDevolucion)) datos: DatosAdmiteDevolucion,
+  ): Promise<{ categoria: CategoriaCatalogo }> {
+    return {
+      categoria: await this.categorias.cambiarAdmiteDevolucion(
+        admin.id,
+        id,
+        datos.admite_devolucion,
+      ),
+    };
   }
 }

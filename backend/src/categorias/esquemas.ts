@@ -10,3 +10,9 @@ export const esquemaCategoria = z.object({
   descripcion: textoOpcional(200, 'La descripción es demasiado larga'),
 });
 export type DatosCategoria = z.output<typeof esquemaCategoria>;
+
+/** Cuerpo de la casilla "admite devolución": `{ "admite_devolucion": true }`. */
+export const esquemaAdmiteDevolucion = z.object({
+  admite_devolucion: z.boolean({ error: 'Indique "admite_devolucion": true o false' }),
+});
+export type DatosAdmiteDevolucion = z.output<typeof esquemaAdmiteDevolucion>;

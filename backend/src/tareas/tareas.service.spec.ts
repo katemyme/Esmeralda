@@ -4,7 +4,11 @@ import type { Configuracion } from '../configuracion/configuracion';
 import { TareasService, type ResultadoTareas } from './tareas.service';
 
 const QUINCE_MINUTOS = 15 * 60 * 1000;
-const SIN_NOVEDAD: ResultadoTareas = { cajas_sin_cerrar: 0, foto_inventario: 0 };
+const SIN_NOVEDAD: ResultadoTareas = {
+  cajas_sin_cerrar: 0,
+  foto_inventario: 0,
+  devoluciones_vencidas: 0,
+};
 
 /** El servicio con `ejecutar()` reemplazado: aquí solo se prueba cuándo se llama. */
 function servicio(tareasProgramadas: boolean) {
@@ -73,11 +77,12 @@ describe('TareasService: cuándo corren las tareas', () => {
     await jest.advanceTimersByTimeAsync(2 * QUINCE_MINUTOS);
     expect(ejecutar).toHaveBeenCalledTimes(1); // la primera sigue en curso
 
-    terminar({ cajas_sin_cerrar: 2, foto_inventario: 5 });
+    terminar({ cajas_sin_cerrar: 2, foto_inventario: 5, devoluciones_vencidas: 1 });
     await jest.advanceTimersByTimeAsync(QUINCE_MINUTOS);
     expect(ejecutar).toHaveBeenCalledTimes(2);
     expect(anotado).toHaveBeenCalledWith('Cajas sin cerrar: 2 alerta(s) nueva(s)');
     expect(anotado).toHaveBeenCalledWith('Se guardó la foto mensual del inventario valorizado');
+    expect(anotado).toHaveBeenCalledWith('Devoluciones aprobadas que vencieron sin ejecutarse: 1');
     tareas.onApplicationShutdown();
   });
 });

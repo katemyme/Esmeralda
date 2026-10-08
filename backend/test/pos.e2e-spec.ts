@@ -636,12 +636,14 @@ describe('POS y caja', () => {
         ],
         vuelto: '300.00',
         anulacion: null,
+        cambio: null,
         ticket: {
           negocio: 'Esmeralda Experience',
           ruc: null,
           direccion: 'Plaza de pruebas',
           telefono: '2222-3333',
           leyenda: null,
+          qr: 'PVE-00000001', // el número de factura, para el código QR del ticket
         },
       });
       venta.a = body.venta.id;

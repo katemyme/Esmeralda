@@ -126,9 +126,28 @@ describe('Catálogo', () => {
       expect(categorias.find((c) => c.nombre === 'Piercing titanio')).toMatchObject({
         descripcion: 'Joyería de titanio ASTM F-136',
         activa: true,
+        admite_devolucion: false,
         productos: 1,
       });
       expect(categorias.find((c) => c.nombre === 'Perfumería')?.productos).toBe(0);
+      // Lo que se puede devolver o cambiar: joyería, accesorios, perfumería y cuidado posterior
+      const admite = (nombre: string) =>
+        categorias.find((c) => c.nombre === nombre)?.admite_devolucion;
+      for (const nombre of [
+        'Accesorios caballero',
+        'Accesorios dama',
+        'Cuidado posterior',
+        'Joyería estilo Dubái',
+        'Joyería plata 925',
+        'Joyería xuping',
+        'Perfumería',
+      ]) {
+        expect([nombre, admite(nombre)]).toEqual([nombre, true]);
+      }
+      // las piezas de piercing y las perforaciones, nunca
+      for (const nombre of ['Perforaciones', 'Piercing acero', 'Piercing bioflex']) {
+        expect([nombre, admite(nombre)]).toEqual([nombre, false]);
+      }
     });
 
     it('POST /api/categorias crea la categoría', async () => {
@@ -140,9 +159,56 @@ describe('Catálogo', () => {
         nombre: 'Relojes B4',
         descripcion: null,
         activa: true,
+        admite_devolucion: false, // nace sin la casilla: la marca el administrador
         productos: 0,
       });
       propio.categoria = body.categoria.id;
+    });
+
+    it('PUT /api/categorias/:id/admite-devolucion: la casilla, solo de quien aprueba devoluciones', async () => {
+      const ruta = `/api/categorias/${propio.categoria}/admite-devolucion`;
+      await request(http).put(ruta).send({ admite_devolucion: true }).expect(401);
+      await request(http)
+        .put(ruta)
+        .set('Authorization', `Bearer ${vera.acceso}`)
+        .send({ admite_devolucion: true })
+        .expect(403)
+        .expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: 'Permiso denegado: se requiere DEVOLUCIONES_APROBAR',
+        });
+      const invalida = await comoJefa('put', ruta).send({ admite_devolucion: 'si' }).expect(400);
+      expect(invalida.body.errores).toEqual([
+        { campo: 'admite_devolucion', mensaje: 'Indique "admite_devolucion": true o false' },
+      ]);
+      const marcada = await comoJefa('put', ruta).send({ admite_devolucion: true }).expect(200);
+      expect(marcada.body.categoria).toMatchObject({
+        id: propio.categoria,
+        admite_devolucion: true,
+      });
+      // editar la categoría no toca la casilla
+      const editada = await comoJefa('put', `/api/categorias/${propio.categoria}`)
+        .send({ nombre: 'Relojes B4' })
+        .expect(200);
+      expect(editada.body.categoria.admite_devolucion).toBe(true);
+      const desmarcada = await comoJefa('put', ruta).send({ admite_devolucion: false }).expect(200);
+      expect(desmarcada.body.categoria.admite_devolucion).toBe(false);
+
+      const { body } = await comoJefa('get', '/api/categorias').expect(200);
+      const perforaciones = (body.categorias as CategoriaCatalogo[]).find(
+        (c) => c.nombre === 'Perforaciones',
+      );
+      await comoJefa('put', `/api/categorias/${perforaciones?.id}/admite-devolucion`)
+        .send({ admite_devolucion: true })
+        .expect(422)
+        .expect({
+          codigo: 'REGLA_NEGOCIO',
+          mensaje: 'Las perforaciones nunca se devuelven ni se cambian',
+        });
+      await comoJefa('put', '/api/categorias/999999/admite-devolucion')
+        .send({ admite_devolucion: true })
+        .expect(422)
+        .expect({ codigo: 'REGLA_NEGOCIO', mensaje: 'La categoría 999999 no existe' });
     });
 
     it('nombre repetido → 409; datos inválidos → 400', async () => {

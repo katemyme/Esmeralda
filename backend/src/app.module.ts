@@ -11,6 +11,7 @@ import { FiltroErrores } from './comun/filtro-errores';
 import { ComprasModule } from './compras/compras.module';
 import { ConfiguracionModule } from './configuracion/configuracion.module';
 import { ConteosModule } from './conteos/conteos.module';
+import { DevolucionesModule } from './devoluciones/devoluciones.module';
 import { EnviosModule } from './envios/envios.module';
 import { EquiposModule } from './equipos/equipos.module';
 import { FotosModule } from './fotos/fotos.module';
@@ -66,6 +67,8 @@ import { VentasModule } from './ventas/ventas.module';
     // B7: reportes y tareas programadas
     ReportesModule,
     TareasModule,
+    // B8: devoluciones y cambios
+    DevolucionesModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

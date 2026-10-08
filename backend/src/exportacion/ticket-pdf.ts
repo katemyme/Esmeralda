@@ -1,16 +1,19 @@
 import PDFDocument from 'pdfkit';
 import { aBuffer } from './pdf';
+import { matrizQr } from './qr';
 
 type Documento = InstanceType<typeof PDFDocument>;
 
 /**
- * Un renglón de un ticket. Los tickets (de venta y de cierre) se arman como una lista de
- * renglones y aquí se dibujan; así su contenido se prueba sin leer el PDF.
+ * Un renglón de un ticket. Los tickets (de venta, de cierre y de devolución) se arman como una
+ * lista de renglones y aquí se dibujan; así su contenido se prueba sin leer el PDF.
  */
 export type Renglon =
   | { tipo: 'texto'; texto: string; centrado?: boolean; negrita?: boolean; grande?: boolean }
   /** Un texto a la izquierda y un monto (o un dato corto) a la derecha, en la misma línea. */
   | { tipo: 'par'; izquierda: string; derecha: string; negrita?: boolean }
+  /** Un código QR centrado con ese texto (el número de factura, para escanearlo al devolver). */
+  | { tipo: 'qr'; contenido: string }
   | { tipo: 'linea' }
   | { tipo: 'espacio' };
 
@@ -19,9 +22,35 @@ const PUNTOS_POR_MM = 72 / 25.4;
 const ANCHO = 80 * PUNTOS_POR_MM;
 const MARGEN = 4 * PUNTOS_POR_MM;
 const UTIL = ANCHO - 2 * MARGEN;
+/** El QR mide 30 mm de lado, contando el borde en blanco que necesita el lector. */
+const LADO_QR = 30 * PUNTOS_POR_MM;
+const BORDE_QR = 4; // módulos en blanco alrededor
 
 function fuente(doc: Documento, negrita = false, grande = false): void {
   doc.font(negrita ? 'Helvetica-Bold' : 'Helvetica').fontSize(grande ? 11 : 8);
+}
+
+/** Dibuja el QR con su esquina superior izquierda en (x, y): cada tramo negro de una fila, de un trazo. */
+function dibujarQr(doc: Documento, contenido: string, x: number, y: number): void {
+  const matriz = matrizQr(contenido);
+  const modulo = LADO_QR / (matriz.length + 2 * BORDE_QR);
+  matriz.forEach((fila, f) => {
+    let inicio = -1;
+    for (let c = 0; c <= fila.length; c++) {
+      const negro = c < fila.length && fila[c];
+      if (negro && inicio < 0) inicio = c;
+      if (!negro && inicio >= 0) {
+        doc.rect(
+          x + (BORDE_QR + inicio) * modulo,
+          y + (BORDE_QR + f) * modulo,
+          (c - inicio) * modulo,
+          modulo,
+        );
+        inicio = -1;
+      }
+    }
+  });
+  doc.fillColor('black').fill();
 }
 
 /** Dibuja el renglón en `y` (o solo lo mide, si `dibujar` es false) y devuelve cuánto ocupa. */
@@ -29,6 +58,9 @@ function colocar(doc: Documento, renglon: Renglon, y: number, dibujar: boolean):
   switch (renglon.tipo) {
     case 'espacio':
       return 6;
+    case 'qr':
+      if (dibujar) dibujarQr(doc, renglon.contenido, (ANCHO - LADO_QR) / 2, y);
+      return LADO_QR;
     case 'linea':
       if (dibujar) {
         doc

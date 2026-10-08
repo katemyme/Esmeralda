@@ -1,4 +1,5 @@
-import type { Renglon } from '../exportacion/ticket-pdf';
+import { matrizQr } from '../exportacion/qr';
+import { ticketPdf, type Renglon } from '../exportacion/ticket-pdf';
 import { renglonesTicketVenta } from './ticket-venta';
 import type { VentaDetalle } from './ventas.service';
 
@@ -68,12 +69,14 @@ const venta: VentaDetalle = {
   ],
   vuelto: '33.49',
   anulacion: null,
+  cambio: null,
   ticket: {
     negocio: 'Esmeralda Experience',
     ruc: 'J0310000000001',
     direccion: 'Multicentro Las Américas, Managua',
     telefono: '2222-3333',
     leyenda: 'Cambios dentro de los 3 días con su ticket.',
+    qr: 'LAM-00000012',
   },
 };
 
@@ -84,9 +87,11 @@ function comoTexto(renglones: Renglon[]): string[] {
       ? r.texto
       : r.tipo === 'par'
         ? `${r.izquierda} | ${r.derecha}`
-        : r.tipo === 'linea'
-          ? '---'
-          : '',
+        : r.tipo === 'qr'
+          ? `[QR ${r.contenido}]`
+          : r.tipo === 'linea'
+            ? '---'
+            : '',
   );
 }
 
@@ -118,6 +123,9 @@ describe('ticket de venta', () => {
       'Vuelto C$ | 33.49',
       '---',
       'Cambios dentro de los 3 días con su ticket.',
+      '---',
+      '[QR LAM-00000012]',
+      'LAM-00000012',
     ]);
     // el nombre del negocio y el total van destacados; las notas internas no se imprimen
     const renglones = renglonesTicketVenta(venta, 1);
@@ -160,6 +168,7 @@ describe('ticket de venta', () => {
         direccion: null,
         telefono: null,
         leyenda: null,
+        qr: 'LAM-00000012',
       },
     };
     const texto = comoTexto(renglonesTicketVenta(sencilla, 1));
@@ -169,8 +178,69 @@ describe('ticket de venta', () => {
       '---',
       'Factura LAM-00000012 | 07/10/2026 15:42',
     ]);
-    expect(texto.join('\n')).not.toMatch(/RUC|Tel\.|Cliente|Descuento|Vuelto/);
-    expect(texto.at(-1)).toBe('Tarjeta ref. 784512 | 300.00');
+    expect(texto.join('\n')).not.toMatch(/RUC|Tel\.|Cliente|Descuento|Vuelto|cambio/);
+    // después de los pagos solo queda el QR con el número de factura
+    expect(texto.slice(-4)).toEqual([
+      'Tarjeta ref. 784512 | 300.00',
+      '---',
+      '[QR LAM-00000012]',
+      'LAM-00000012',
+    ]);
+  });
+
+  it('al pie va el número de factura en un QR, para escanearlo en una devolución', async () => {
+    const renglones = renglonesTicketVenta(venta, 1);
+    expect(renglones.filter((r) => r.tipo === 'qr')).toEqual([
+      { tipo: 'qr', contenido: 'LAM-00000012' },
+    ]);
+    // Un QR de versión 1 (21 × 21): con sus tres esquinas de referencia y la cuarta libre
+    const matriz = matrizQr('LAM-00000012');
+    expect(matriz).toHaveLength(21);
+    expect(matriz.every((fila) => fila.length === 21)).toBe(true);
+    const esquina = (fila: number, columna: number) =>
+      [0, 1, 2, 3, 4, 5, 6].every((i) => matriz[fila][columna + i] && matriz[fila + i][columna]);
+    expect([esquina(0, 0), esquina(0, 14), esquina(14, 0)]).toEqual([true, true, true]);
+    expect(matriz[20].slice(14).every(Boolean)).toBe(false);
+    expect(matrizQr('LBR-00000345')).not.toEqual(matriz);
+
+    // En el PDF ocupa su lugar: el ticket con QR es 30 mm más largo que sin él
+    const alto = async (lista: Renglon[]) => {
+      const pdf = (await ticketPdf(lista, 'Ticket')).toString('latin1');
+      return Number(/\/MediaBox \[0 0 [\d.]+ ([\d.]+)\]/.exec(pdf)?.[1]);
+    };
+    const conQr = await alto(renglones);
+    const sinQr = await alto(renglones.filter((r) => r.tipo !== 'qr'));
+    expect(conQr - sinQr).toBeCloseTo((30 * 72) / 25.4, 0);
+  });
+
+  it('la venta de un cambio dice de qué devolución viene y lleva el saldo entre sus pagos', () => {
+    const deCambio: VentaDetalle = {
+      ...venta,
+      descuento: '0.00',
+      total: '1110.00',
+      promocion: null,
+      cambio: { devolucion_id: 4, numero: 'DEV-LAM-000004' },
+      pagos: [
+        {
+          metodo: { codigo: 'SALDO_CAMBIO', nombre: 'Saldo por cambio' },
+          moneda: 'NIO',
+          monto: '540.00',
+          tipo_cambio: '1.0000',
+          monto_nio: '540.00',
+          referencia: null,
+        },
+        { ...venta.pagos[1], monto: '570.00', monto_nio: '570.00' },
+      ],
+      vuelto: '0.00',
+    };
+    const texto = comoTexto(renglonesTicketVenta(deCambio, 1));
+    expect(texto.slice(6, 8)).toEqual([
+      'Factura LAM-00000012 | 07/10/2026 15:42',
+      'Por el cambio DEV-LAM-000004',
+    ]);
+    expect(texto).toEqual(
+      expect.arrayContaining(['Saldo por cambio | 540.00', 'Tarjeta ref. 784512 | 570.00']),
+    );
   });
 
   it('una venta anulada lo dice arriba, con quién la anuló y por qué', () => {
@@ -191,5 +261,7 @@ describe('ticket de venta', () => {
         'Motivo: La clienta se arrepintió',
       ]),
     );
+    // una venta anulada no se devuelve: su ticket no lleva el QR
+    expect(texto.join('\n')).not.toMatch(/QR/);
   });
 });

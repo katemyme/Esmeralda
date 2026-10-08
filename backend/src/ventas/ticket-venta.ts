@@ -5,7 +5,8 @@ import type { VentaDetalle } from './ventas.service';
 /**
  * Lo que lleva impreso el ticket de una venta, renglón por renglón. `impresion` es cuántas veces
  * se ha impreso contando esta: la primera es el original y desde la segunda lleva la palabra COPIA.
- * Una venta anulada lo dice arriba, con quién la anuló y por qué. Nunca lleva costos.
+ * Una venta anulada lo dice arriba, con quién la anuló y por qué. Nunca lleva costos. Al pie va el
+ * número de factura en un código QR.
  */
 export function renglonesTicketVenta(venta: VentaDetalle, impresion: number): Renglon[] {
   const renglones: Renglon[] = [];
@@ -26,6 +27,7 @@ export function renglonesTicketVenta(venta: VentaDetalle, impresion: number): Re
   if (venta.estado === 'ANULADA') centrado('VENTA ANULADA', true);
 
   par(`Factura ${venta.numero}`, fechaHora(venta.fecha));
+  if (venta.cambio) texto(`Por el cambio ${venta.cambio.numero}`);
   texto(`Caja: ${venta.caja.nombre}`);
   texto(`Atendió: ${venta.vendedor.nombre_completo}`);
   if (venta.cliente_nombre) {
@@ -70,6 +72,13 @@ export function renglonesTicketVenta(venta: VentaDetalle, impresion: number): Re
   if (venta.ticket.leyenda) {
     linea();
     centrado(venta.ticket.leyenda);
+  }
+  // El número de factura en un QR: se escanea para buscar la venta si el cliente vuelve a devolver
+  // o cambiar algo. Una venta anulada no se devuelve: no lo lleva.
+  if (venta.estado !== 'ANULADA') {
+    linea();
+    renglones.push({ tipo: 'qr', contenido: venta.ticket.qr });
+    centrado(venta.ticket.qr);
   }
   return renglones;
 }

@@ -142,6 +142,7 @@ y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tie
 | Ruta | Qué hace |
 |---|---|
 | `GET /api/categorias` · `POST` · `PUT /:id` · `PUT /:id/activa` | Categorías: `{ nombre, descripcion }`. "Perforaciones" es del sistema |
+| `PUT /api/categorias/:id/admite-devolucion` | `{ admite_devolucion }`: la casilla de si lo vendido de la categoría se puede devolver o cambiar. Solo con `DEVOLUCIONES_APROBAR` (el administrador); una categoría nueva nace sin ella |
 | `GET /api/gamas` · `POST` · `PUT /:id` · `PUT /:id/activa` | Gamas de pieza: `{ nombre, modo_precio: TABLA/PIEZA, orden }`. Una gama en uso no cambia de modo |
 | `GET /api/productos` | `?buscar=&categoria_id=&tipo=&estado=activos\|inactivos\|todos&limite=&desplazamiento=` → `{ productos, total }`, cada producto con sus variantes. Busca por nombre, SKU o código de barras |
 | `GET /api/productos/:id` | Un producto con sus variantes |
@@ -231,8 +232,10 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   llevar `justificacion` (mínimo 10 caracteres) y la caja se cierra con lo contado, con alerta al administrador.
 - **Ticket de cierre.** Quien cierra recibe lo que contó, lo que retiró y el fondo que dejó. Lo vendido y lo cobrado
   por método solo llegan con `CAJA_VER_DIFERENCIAS`; lo esperado y las diferencias, solo en `/api/turnos`.
-- **Ticket de venta.** La venta trae `ticket: { negocio, ruc, direccion, telefono, leyenda }` (parámetros
+- **Ticket de venta.** La venta trae `ticket: { negocio, ruc, direccion, telefono, leyenda, qr }` (parámetros
   `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA`, más los datos de la sucursal) para que la pantalla lo imprima.
+  `qr` es el texto del código QR del pie: el número de factura, para escanearlo si el cliente vuelve a devolver o
+  cambiar algo (el PDF ya lo dibuja; una venta anulada no lo lleva).
 - **Tickets en PDF.** `POST /api/ventas/:id/imprimir` y `POST /api/turnos/:id/imprimir` devuelven el ticket como
   PDF de una sola página de 80 mm de ancho (impresora térmica). Cada impresión queda anotada: la primera es el
   original y las siguientes llevan la palabra **COPIA**; la cabecera `X-Ticket-Impresion` dice cuál es (1, 2, 3…).
@@ -241,6 +244,46 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
   El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango
   responde 422 aunque venga confirmado.
+
+### Devoluciones y cambios
+
+Para ventas de un turno **ya cerrado** (con el turno abierto, la venta se anula). Son tres pasos: la sucursal la
+solicita, el administrador la aprueba o la rechaza, y ya aprobada se ejecuta en la caja abierta de la sucursal
+donde está el cliente, que puede ser otra que la de la venta. La factura original nunca se modifica.
+
+| Ruta | Permiso | Qué hace |
+|---|---|---|
+| `GET /api/devoluciones/venta?numero=` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | Busca la factura por su número (el QR del ticket; `lam-12` también vale), de la sucursal que sea: qué líneas se pueden devolver, cuántas quedan, lo pagado por unidad y las solicitudes que ya tiene |
+| `POST /api/devoluciones` | `DEVOLUCIONES_REGISTRAR` | 1) La solicitud: `{ venta_id, tipo: DEVOLUCION/CAMBIO, motivo, cliente_nombre, cliente_telefono, lineas: [{ detalle_id, cantidad, estado: BUENO/DEFECTUOSO }] }`. Queda pendiente, aparta lo pedido y deja una alerta al administrador |
+| `GET /api/devoluciones` · `GET /api/devoluciones/:id` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `?estado=&tipo=&sucursal_id=&desde=&hasta=&por_transferir=&buscar=&limite=&antes_de=` |
+| `POST /api/devoluciones/:id/resolver` | `DEVOLUCIONES_APROBAR` | 2) `{ aprobar, comentario }`: solo el administrador. Para rechazar, el comentario es obligatorio |
+| `POST /api/devoluciones/:id/cancelar` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `{ motivo }`: mientras no se haya ejecutado; quien la solicitó o el administrador |
+| `POST /api/devoluciones/:id/ejecutar` | `DEVOLUCIONES_REGISTRAR` | 3) En el turno abierto de la caja de la sesión. Devolución: `{}`. Cambio: `{ clave_idempotencia, items, pagos, notas }`, como una venta |
+| `POST /api/devoluciones/:id/transferencia` | `DEVOLUCIONES_APROBAR` | `{ referencia }`: el administrador anota la transferencia de lo que no salió de la caja |
+| `POST /api/devoluciones/:id/imprimir` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | El ticket de la devolución en PDF de 80 mm, con la firma del cliente (la reimpresión lleva COPIA) |
+
+- **Qué se devuelve.** Solo artículos con stock de una categoría con la casilla «admite devolución»: nunca piezas de
+  piercing, perforaciones ni paquetes. Por línea y cantidad, sin pasar de lo vendido menos lo ya devuelto y lo
+  apartado en otras solicitudes. Plazo: `DEVOLUCION_DIAS_MAX` (7) días calendario desde la venta, contados al
+  crear la solicitud.
+- **Monto.** Lo que de verdad se pagó por esas unidades, con la promoción descontada en proporción, en córdobas. El
+  reparto no pierde centavos: devuelta por partes, una factura devuelve exactamente lo que se pagó por ella.
+- **Aprobada.** Tiene `DEVOLUCION_APROBADA_DIAS` (3) días para ejecutarse (`vence_el`); después la tarea programada
+  la cancela sola y libera lo apartado. Aprobada, la puede ver y ejecutar cualquier sucursal.
+- **Reembolso según cómo se pagó la factura** (`reembolso: { saldo, efectivo, transferencia, definitivo }`): la
+  parte pagada en efectivo (córdobas o dólares) sale en córdobas de la caja del turno y cuenta en el arqueo; la
+  parte pagada con tarjeta o transferencia la transfiere el administrador (`por_transferir`, con alerta), queda con
+  su referencia y no pasa por la caja. Antes de ejecutar una devolución es lo previsto (`definitivo: false`).
+- **Cambio.** Es una venta nueva (sin promoción) en la que lo devuelto entra como el pago «Saldo por cambio». Si lo
+  nuevo cuesta más, la diferencia se paga con los métodos normales; si cuesta menos, lo que sobra se reembolsa como
+  en una devolución. Esa venta no se anula; lo comprado en ella se puede devolver después. Reintentar con la misma
+  `clave_idempotencia` responde lo mismo con `repetida: true`.
+- **Inventario.** Lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo con
+  que se vendió); lo defectuoso sale enseguida como merma ya aprobada.
+- **Número.** Cada devolución toma el suyo al ejecutarse, sin saltos: `DEV-<sucursal>-000001`.
+- **Arqueo ciego.** La vendedora ve el monto de cada devolución (tiene que entregarlo), nunca sumas ni lo esperado.
+  En el ticket de cierre, las devoluciones del turno y el efectivo que salió por ellas solo llegan con
+  `CAJA_VER_DIFERENCIAS`.
 
 ### Reportes
 
@@ -286,6 +329,8 @@ Al arrancar y cada 15 minutos el servidor corre dos funciones de la base (`TAREA
 - `fn_foto_inventario_mensual`: la primera vez que corre en un mes nuevo guarda la foto del inventario valorizado
   del mes que acaba de cerrar. Las cantidades salen del kardex (son las del cierre aunque el servidor haya estado
   apagado ese día); el costo y el precio de venta son los del momento en que se toma.
+- `fn_vencer_devoluciones`: cancela las devoluciones aprobadas que no se ejecutaron dentro de su plazo
+  (`DEVOLUCION_APROBADA_DIAS`) y libera lo que tenían apartado.
 
 Las alertas se ven en el panel (`GET /api/alertas`, `ALERTAS_VER`). Además de las anteriores, desde B7 hay una
 cuando alguien confirma un tipo de cambio fuera del límite (`TIPO_CAMBIO_FUERA_LIMITE`).

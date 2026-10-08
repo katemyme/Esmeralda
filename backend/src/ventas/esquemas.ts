@@ -19,7 +19,7 @@ const MENSAJE_PIEZAS = 'Envíe en "piezas" los ids de las piezas escaneadas del 
  * para cobrar más (nunca menos). Un paquete (perforación + pieza) lleva cantidad 1 y las piezas
  * que se escanearon.
  */
-const esquemaItem = z.object({
+export const esquemaItem = z.object({
   variante_id: idDeCuerpo('Indique el producto (variante_id)'),
   cantidad: cantidad('La cantidad debe ser un entero de 1 en adelante'),
   precio: monto(
@@ -33,7 +33,7 @@ const esquemaItem = z.object({
 });
 
 /** Un pago: una venta puede llevar varios (mixto). El vuelto lo calcula la base. */
-const esquemaPago = z.object({
+export const esquemaPago = z.object({
   metodo: codigoMetodoPago,
   moneda: moneda.default('NIO'),
   monto: montoPositivo('El monto de cada pago debe ser mayor que 0, con 2 decimales como máximo'),

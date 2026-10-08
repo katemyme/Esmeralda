@@ -9,11 +9,16 @@ export interface CategoriaCatalogo {
   nombre: string;
   descripcion: string | null;
   activa: boolean;
+  /** Lo vendido de esta categoría se puede devolver o cambiar (lo decide el administrador). */
+  admite_devolucion: boolean;
   /** Cuántos productos tiene (activos o no). */
   productos: number;
 }
 
-/** Categorías del catálogo. Las reglas las aplican fn_guardar_categoria y fn_set_categoria_activa. */
+/**
+ * Categorías del catálogo. Las reglas las aplican fn_guardar_categoria, fn_set_categoria_activa y
+ * fn_set_categoria_devolucion (la casilla "admite devolución": una categoría nueva nace sin ella).
+ */
 @Injectable()
 export class CategoriasService {
   constructor(private readonly bd: BaseDatosService) {}
@@ -45,6 +50,18 @@ export class CategoriasService {
     return this.buscar(id);
   }
 
+  /** La casilla es de quien aprueba las devoluciones (DEVOLUCIONES_APROBAR), no de quien edita el catálogo. */
+  async cambiarAdmiteDevolucion(
+    adminId: number,
+    id: number,
+    admite: boolean,
+  ): Promise<CategoriaCatalogo> {
+    await this.bd.transaccion(adminId, (trx) =>
+      sql`select fn_set_categoria_devolucion(${adminId}, ${id}, ${admite})`.execute(trx),
+    );
+    return this.buscar(id);
+  }
+
   private async buscar(id: number): Promise<CategoriaCatalogo> {
     const [categoria] = await this.consultar(id);
     if (!categoria) throw new NoEncontrado(`La categoría ${id} no existe`);
@@ -59,6 +76,7 @@ export class CategoriasService {
         'c.nombre',
         'c.descripcion',
         'c.activa',
+        'c.admite_devolucion',
         eb
           .selectFrom('producto as p')
           .select(eb.fn.countAll<number>().as('total'))
