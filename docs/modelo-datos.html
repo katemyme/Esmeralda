@@ -123,8 +123,8 @@
     <div class="meta">
       <span class="chip">49 tablas</span>
       <span class="chip">25 vistas</span>
-      <span class="chip">151 funciones</span>
-      <span class="chip">657 pruebas</span>
+      <span class="chip">152 funciones</span>
+      <span class="chip">665 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -147,7 +147,7 @@
   <section id="organizacion">
     <div class="section-head">
       <h2>Organización y seguridad</h2>
-      <p>La bodega es una ubicación sin caja. Cada equipo (PC de caja, tablet, celular) se registra una vez y queda ligado a su ubicación. Los parámetros del negocio se editan desde el panel y las alertas llegan al administrador.</p>
+      <p>La bodega es una ubicación sin caja. Cada equipo (PC de caja, tablet, celular) se registra una vez y queda ligado a su ubicación. Los parámetros del negocio se editan desde el panel y las alertas llegan al administrador; las marcadas «para la sucursal» son un aviso para quienes trabajan en ella (hoy, la devolución aprobada que venció) y cada quien atiende la suya.</p>
     </div>
     <div class="diagram wide">
 <pre class="mermaid">
@@ -238,6 +238,7 @@ erDiagram
     bigint id PK
     varchar tipo "MARGEN_BAJO, CAJA_DIFERENCIA..."
     jsonb detalle
+    boolean para_sucursal "aviso para la sucursal, no para el panel"
     timestamptz atendida_at
   }
 </pre>
@@ -706,8 +707,8 @@ erDiagram
           <tr><td>Conteos</td><td class="mono">fn_iniciar_conteo · fn_conteo_registrar · fn_enviar_conteo · fn_conteo_diferencias · fn_aplicar_conteo · fn_cancelar_conteo</td><td>Conteo físico con la tablet</td></tr>
           <tr><td>Caja</td><td class="mono">fn_caja_de_sesion · fn_turno_de_sesion · fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar · fn_set_tipo_cambio</td><td>Caja del equipo, apertura, arqueo ciego con un reconteo, retiro, fondo, alertas y tipo de cambio del día</td></tr>
           <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables y equipos autorizados</td></tr>
-          <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
-          <tr><td>Devoluciones</td><td class="mono">fn_venta_no_devoluble · fn_lineas_devolubles · fn_solicitar_devolucion · fn_resolver_devolucion · fn_cancelar_devolucion · fn_vencer_devoluciones · fn_ejecutar_devolucion · fn_registrar_transferencia_devolucion · fn_proporcion_efectivo · fn_reparto_devolucion · fn_puede_ver_devolucion · fn_set_categoria_devolucion</td><td>Qué se puede devolver de una factura y cuánto vale, la solicitud, su aprobación, su vencimiento, la ejecución en caja (inventario, número, efectivo o venta del cambio) y la transferencia del administrador</td></tr>
+          <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_puede_ver_alerta · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
+          <tr><td>Devoluciones</td><td class="mono">fn_venta_no_devoluble · fn_lineas_devolubles · fn_solicitar_devolucion · fn_resolver_devolucion · fn_cancelar_devolucion · fn_vencer_devoluciones · fn_ejecutar_devolucion · fn_registrar_transferencia_devolucion · fn_proporcion_efectivo · fn_reparto_devolucion · fn_puede_ver_devolucion · fn_set_categoria_devolucion</td><td>Qué se puede devolver de una factura y cuánto vale, la solicitud, su aprobación, su vencimiento (con alerta para el administrador y para la sucursal que la solicitó), la ejecución en caja (inventario, número, efectivo o venta del cambio) y la transferencia del administrador</td></tr>
           <tr><td>Reportes</td><td class="mono">fn_ventas_reporte · fn_devoluciones_reporte · fn_reporte_ventas · fn_top_productos · fn_foto_inventario_mensual</td><td>Qué ventas y qué devoluciones puede ver cada quien en un reporte, ventas por día, semana o mes, ranking y foto mensual del inventario valorizado</td></tr>
           <tr><td>Tickets</td><td class="mono">fn_registrar_impresion_venta · fn_registrar_impresion_cierre · fn_registrar_impresion_devolucion</td><td>Anotan cada impresión de un ticket: la primera es el original y las siguientes, copias</td></tr>
         </tbody>

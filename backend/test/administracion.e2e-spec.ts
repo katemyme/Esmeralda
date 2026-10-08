@@ -126,6 +126,7 @@ describe('Panel de administración', () => {
       ['get', '/api/parametros'],
       ['put', '/api/parametros/SESION_HORAS_EQUIPO'],
       ['get', '/api/alertas'],
+      ['get', '/api/alertas/sucursal'],
       ['get', '/api/sucursales'],
     ];
     for (const [metodo, ruta] of rutas) {
@@ -794,6 +795,7 @@ describe('Panel de administración', () => {
         .selectFrom('alerta')
         .select((eb) => eb.fn.countAll<number>().as('total'))
         .where('atendida_at', 'is', null)
+        .where('para_sucursal', '=', false) // los avisos para una sucursal no salen en el panel
         .executeTakeFirstOrThrow();
       return fila.total;
     }

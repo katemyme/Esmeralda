@@ -1633,6 +1633,37 @@ SELECT pg_temp.afirma((SELECT estado = 'CANCELADA' AND cancelada_por IS NULL AND
                       'la vencida queda cancelada (sin usuario: venció sola) y libera lo apartado; las demás no se tocan');
 SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s5, :t_dva2), 'está cancelada');
 
+\echo 'La que vence deja dos alertas: una para el administrador y otra para la sucursal que la solicitó'
+SELECT pg_temp.afirma((SELECT count(*) = 2 AND count(*) FILTER (WHERE para_sucursal) = 1
+                              AND bool_and(ubicacion = 'Sucursal Devoluciones A')
+                              AND bool_and(titulo = format('Venció la devolución aprobada de la factura %s: no se ejecutó hasta el %s',
+                                                           (SELECT numero FROM venta WHERE id = :vb), to_char(:'hoy'::date + 3, 'DD/MM/YYYY')))
+                              AND bool_and((detalle->>'venta_id')::bigint = :vb AND (detalle->>'solicitada_por')::bigint = :dora
+                                           AND detalle->>'tipo' = 'DEVOLUCION' AND (detalle->>'vence_el')::date = :'hoy'::date + 3)
+                         FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_VENCIDA' AND (detalle->>'devolucion_id')::bigint = :s5),
+                      'al vencer quedan dos alertas pendientes: la del panel y la de la sucursal que la solicitó');
+SELECT pg_temp.afirma(fn_vencer_devoluciones(now() + interval '4 days') = 0
+                  AND (SELECT count(*) = 2 FROM alerta WHERE tipo = 'DEVOLUCION_VENCIDA'),
+                      'la tarea no la vuelve a vencer ni repite las alertas (las que se cancelan a mano no dejan alerta)');
+SELECT id AS al_panel FROM alerta WHERE tipo = 'DEVOLUCION_VENCIDA' AND (detalle->>'devolucion_id')::bigint = :s5 AND NOT para_sucursal \gset
+SELECT id AS al_suc   FROM alerta WHERE tipo = 'DEVOLUCION_VENCIDA' AND (detalle->>'devolucion_id')::bigint = :s5 AND para_sucursal \gset
+SELECT pg_temp.afirma(fn_puede_ver_alerta(:dora, :al_suc) AND fn_puede_ver_alerta(:elsa, :al_suc) AND NOT fn_puede_ver_alerta(:beto, :al_suc)
+                  AND NOT fn_puede_ver_alerta(:dora, :al_panel) AND NOT fn_puede_ver_alerta(:elsa, :al_panel)
+                  AND fn_puede_ver_alerta(:admin, :al_suc) AND fn_puede_ver_alerta(:admin, :al_panel)
+                  AND NOT fn_puede_ver_alerta(:admin, 999999),
+                      'la alerta de la sucursal la ve quien trabaja en ella; la del panel, solo quien tiene ALERTAS_VER');
+SELECT pg_temp.espera_error(format('SELECT fn_atender_alerta(%s, %s)', :beto, :al_suc), 'ALERTAS_VER');
+SELECT pg_temp.espera_error(format('SELECT fn_atender_alerta(%s, %s)', :dora, :al_panel), 'ALERTAS_VER');
+SELECT fn_atender_alerta(:dora, :al_suc);
+SELECT pg_temp.afirma((SELECT atendida_por = :dora FROM alerta WHERE id = :al_suc)
+                  AND (SELECT atendida_at IS NULL FROM alerta WHERE id = :al_panel),
+                      'la sucursal atiende la suya y la del administrador sigue pendiente');
+SELECT fn_atender_alerta(:admin, :al_panel);
+SELECT pg_temp.afirma((SELECT atendida_por = :admin FROM alerta WHERE id = :al_panel)
+                  AND NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_VENCIDA'),
+                      'el administrador atiende la suya');
+SELECT pg_temp.espera_error($q$INSERT INTO alerta (tipo, titulo, para_sucursal) VALUES ('PRUEBA', 'Aviso sin sucursal', true)$q$, 'ck_alerta_para_sucursal');
+
 \echo 'S6: cambio por algo más caro (la venta original se pagó con tarjeta)'
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[]', NULL, NULL, NULL, NULL, NULL, 400)$q$, :dora, :t_dva2, :dperf),
                             'El saldo por cambio solo se aplica al ejecutar una devolución aprobada');

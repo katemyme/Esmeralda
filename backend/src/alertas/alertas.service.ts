@@ -1,10 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { sql } from 'kysely';
+import { sql, type RawBuilder } from 'kysely';
 import { BaseDatosService } from '../base-datos/base-datos.service';
 import { NoEncontrado } from '../comun/no-encontrado';
 import type { FiltroAlertas } from './esquemas';
 
-/** Una alerta para el administrador (margen bajo, diferencias de caja o de envío, sesión reutilizada...). */
+/**
+ * Una alerta para el administrador (margen bajo, diferencias de caja o de envío, sesión
+ * reutilizada...) o un aviso para quienes trabajan en una sucursal.
+ */
 export interface AlertaAdmin {
   id: number;
   tipo: string;
@@ -50,16 +53,47 @@ function aAlerta(fila: FilaAlerta): AlertaAdmin {
   };
 }
 
-/** Alertas del panel. Las crea la base al aplicar las reglas; aquí se consultan y se atienden. */
+export interface ListaAlertas {
+  alertas: AlertaAdmin[];
+  total_pendientes: number;
+}
+
+/** Alertas. Las crea la base al aplicar las reglas; aquí se consultan y se atienden. */
 @Injectable()
 export class AlertasService {
   constructor(private readonly bd: BaseDatosService) {}
 
-  /** Alertas de la más reciente a la más antigua, y cuántas siguen pendientes en total. */
-  async listar(
-    filtro: FiltroAlertas,
-  ): Promise<{ alertas: AlertaAdmin[]; total_pendientes: number }> {
-    let consulta = this.consulta().orderBy('a.id', 'desc').limit(filtro.limite);
+  /** Alertas del panel, de la más reciente a la más antigua, y cuántas siguen pendientes en total. */
+  listar(filtro: FiltroAlertas): Promise<ListaAlertas> {
+    return this.lista(filtro, sql<boolean>`not a.para_sucursal`);
+  }
+
+  /**
+   * Los avisos para quienes trabajan en la sucursal (la devolución aprobada que venció): cada quien
+   * ve los de sus sucursales. No salen en el panel, que tiene su propia alerta.
+   */
+  listarDeSucursal(usuarioId: number, filtro: FiltroAlertas): Promise<ListaAlertas> {
+    return this.lista(
+      filtro,
+      sql<boolean>`a.para_sucursal and fn_puede_operar_sucursal(${usuarioId}, a.sucursal_id)`,
+    );
+  }
+
+  /**
+   * Marca la alerta como atendida (si ya lo estaba, queda como estaba) y la devuelve. La base
+   * decide si le toca: las del panel piden ALERTAS_VER; las de una sucursal, trabajar en ella.
+   */
+  async atender(usuarioId: number, id: number): Promise<AlertaAdmin> {
+    await this.bd.transaccion(usuarioId, (trx) =>
+      sql`select fn_atender_alerta(${usuarioId}, ${id})`.execute(trx),
+    );
+    const fila = await this.consulta().where('a.id', '=', id).executeTakeFirst();
+    if (!fila) throw new NoEncontrado(`La alerta ${id} no existe`);
+    return aAlerta(fila);
+  }
+
+  private async lista(filtro: FiltroAlertas, alcance: RawBuilder<boolean>): Promise<ListaAlertas> {
+    let consulta = this.consulta().where(alcance).orderBy('a.id', 'desc').limit(filtro.limite);
     if (filtro.estado === 'pendientes') consulta = consulta.where('a.atendida_at', 'is', null);
     if (filtro.estado === 'atendidas') consulta = consulta.where('a.atendida_at', 'is not', null);
     if (filtro.tipo) consulta = consulta.where('a.tipo', '=', filtro.tipo);
@@ -69,22 +103,13 @@ export class AlertasService {
     const [filas, pendientes] = await Promise.all([
       consulta.execute(),
       this.bd.db
-        .selectFrom('alerta')
+        .selectFrom('alerta as a')
         .select((eb) => eb.fn.countAll<number>().as('total'))
-        .where('atendida_at', 'is', null)
+        .where(alcance)
+        .where('a.atendida_at', 'is', null)
         .executeTakeFirstOrThrow(),
     ]);
     return { alertas: filas.map(aAlerta), total_pendientes: pendientes.total };
-  }
-
-  /** Marca la alerta como atendida (si ya lo estaba, queda como estaba) y la devuelve. */
-  async atender(adminId: number, id: number): Promise<AlertaAdmin> {
-    await this.bd.transaccion(adminId, (trx) =>
-      sql`select fn_atender_alerta(${adminId}, ${id})`.execute(trx),
-    );
-    const fila = await this.consulta().where('a.id', '=', id).executeTakeFirst();
-    if (!fila) throw new NoEncontrado(`La alerta ${id} no existe`);
-    return aAlerta(fila);
   }
 
   private consulta() {

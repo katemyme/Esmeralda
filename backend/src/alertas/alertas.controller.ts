@@ -4,10 +4,13 @@ import { RequierePermiso } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { idEntero } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
-import { AlertasService, type AlertaAdmin } from './alertas.service';
+import { AlertasService, type AlertaAdmin, type ListaAlertas } from './alertas.service';
 import { esquemaFiltroAlertas, type FiltroAlertas } from './esquemas';
 
-/** /api/alertas — panel de administración: avisos que la base genera para el administrador. */
+/**
+ * /api/alertas — avisos que genera la base: los del panel de administración y los que son para
+ * quienes trabajan en una sucursal.
+ */
 @Controller('alertas')
 export class AlertasController {
   constructor(private readonly alertas: AlertasService) {}
@@ -17,17 +20,26 @@ export class AlertasController {
   @RequierePermiso('ALERTAS_VER')
   listar(
     @Query(new ValidacionZod(esquemaFiltroAlertas)) filtro: FiltroAlertas,
-  ): Promise<{ alertas: AlertaAdmin[]; total_pendientes: number }> {
+  ): Promise<ListaAlertas> {
     return this.alertas.listar(filtro);
   }
 
+  /** Los avisos de las sucursales de quien pregunta (no pide permiso). Mismos filtros que el panel. */
+  @Get('sucursal')
+  listarDeSucursal(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Query(new ValidacionZod(esquemaFiltroAlertas)) filtro: FiltroAlertas,
+  ): Promise<ListaAlertas> {
+    return this.alertas.listarDeSucursal(usuario.id, filtro);
+  }
+
+  /** Sin @RequierePermiso: la base decide (ALERTAS_VER, o trabajar en la sucursal si la alerta es para ella). */
   @Post(':id/atender')
-  @RequierePermiso('ALERTAS_VER')
   @HttpCode(HttpStatus.OK)
   async atender(
-    @UsuarioActual() admin: UsuarioAutenticado,
+    @UsuarioActual() usuario: UsuarioAutenticado,
     @Param('id', idEntero()) id: number,
   ): Promise<{ alerta: AlertaAdmin }> {
-    return { alerta: await this.alertas.atender(admin.id, id) };
+    return { alerta: await this.alertas.atender(usuario.id, id) };
   }
 }

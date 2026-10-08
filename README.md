@@ -124,8 +124,9 @@ a un usuario aplica de inmediato.
 | `PUT /api/equipos/:id/activo` | `SUCURSALES_GESTIONAR` | `{ activo }`: desactivar un equipo cierra sus sesiones y ya nadie entra desde él |
 | `GET /api/parametros` | `PARAMETROS_GESTIONAR` | Parámetros generales con su tipo (número, hora, opción, texto) |
 | `PUT /api/parametros/:clave` | `PARAMETROS_GESTIONAR` | `{ valor }` (texto, número o `null` para dejarlo vacío) |
-| `GET /api/alertas` | `ALERTAS_VER` | `?estado=pendientes\|atendidas\|todas&tipo=&sucursal_id=&limite=&antes_de=` → alertas y `total_pendientes` |
-| `POST /api/alertas/:id/atender` | `ALERTAS_VER` | Marca la alerta como atendida |
+| `GET /api/alertas` | `ALERTAS_VER` | `?estado=pendientes\|atendidas\|todas&tipo=&sucursal_id=&limite=&antes_de=` → alertas del panel y `total_pendientes` |
+| `GET /api/alertas/sucursal` | (sesión) | Los avisos para quienes trabajan en la sucursal (hoy: la devolución aprobada que venció). Mismos filtros; cada quien ve los de sus sucursales. No salen en el panel |
+| `POST /api/alertas/:id/atender` | `ALERTAS_VER`, o trabajar en la sucursal si el aviso es para ella | Marca la alerta como atendida (lo decide la base: `fn_atender_alerta`) |
 | `GET /api/sucursales` | (sesión) | Ubicaciones donde el usuario puede operar, con sus cajas (para los formularios) |
 | `POST /api/sucursales` · `PUT /api/sucursales/:id` · `PUT /api/sucursales/:id/activa` | `SUCURSALES_GESTIONAR` | `{ codigo, nombre, direccion, telefono }`. No se desactiva con existencias, turno abierto o envíos en tránsito |
 | `POST /api/sucursales/:id/cajas` · `PUT /api/cajas/:id` · `PUT /api/cajas/:id/activa` | `SUCURSALES_GESTIONAR` | Cajas de una sucursal: `{ nombre }` |
@@ -329,7 +330,7 @@ donde cada sección es una tabla: `{ clave, titulo, columnas: [{ clave, titulo, 
 
 ### Tareas programadas
 
-Al arrancar y cada 15 minutos el servidor corre dos funciones de la base (`TAREAS_PROGRAMADAS=false` lo apaga):
+Al arrancar y cada 15 minutos el servidor corre tres funciones de la base (`TAREAS_PROGRAMADAS=false` lo apaga):
 
 - `fn_alertar_cajas_sin_cerrar`: una alerta por cada caja que sigue abierta después de la hora del parámetro
   `CAJA_HORA_ALERTA_CIERRE` (21:30) o desde un día anterior. Al cerrar la caja la alerta queda atendida.
@@ -337,10 +338,16 @@ Al arrancar y cada 15 minutos el servidor corre dos funciones de la base (`TAREA
   del mes que acaba de cerrar. Las cantidades salen del kardex (son las del cierre aunque el servidor haya estado
   apagado ese día); el costo y el precio de venta son los del momento en que se toma.
 - `fn_vencer_devoluciones`: cancela las devoluciones aprobadas que no se ejecutaron dentro de su plazo
-  (`DEVOLUCION_APROBADA_DIAS`) y libera lo que tenían apartado.
+  (`DEVOLUCION_APROBADA_DIAS`) y libera lo que tenían apartado. Por cada una deja dos alertas
+  `DEVOLUCION_VENCIDA`: una en el panel del administrador y otra para la sucursal que la solicitó.
 
 Las alertas se ven en el panel (`GET /api/alertas`, `ALERTAS_VER`). Además de las anteriores, desde B7 hay una
 cuando alguien confirma un tipo de cambio fuera del límite (`TIPO_CAMBIO_FUERA_LIMITE`).
+
+Una alerta marcada `para_sucursal` es un aviso para quienes trabajan en esa sucursal: no sale en el panel y se
+consulta en `GET /api/alertas/sucursal`, sin permiso especial. El panel y la sucursal tienen cada uno su alerta
+y cada quien atiende la suya (que la vendedora marque la suya como vista no le quita la suya al administrador).
+Un aviso para la sucursal no lleva montos.
 
 ### Carga inicial desde Excel
 

@@ -43,6 +43,7 @@ export interface Alerta {
   creada_at: Generated<Timestamp>;
   detalle: Generated<Json>;
   id: Generated<number>;
+  para_sucursal: Generated<boolean>;
   sucursal_id: number | null;
   tipo: string;
   titulo: string;
@@ -532,6 +533,7 @@ export interface VAlertasPendientes {
   creada_at: Timestamp | null;
   detalle: Json | null;
   id: number | null;
+  para_sucursal: boolean | null;
   tipo: string | null;
   titulo: string | null;
   ubicacion: string | null;

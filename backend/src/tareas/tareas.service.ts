@@ -28,7 +28,8 @@ const CADA_15_MINUTOS = 15 * 60 * 1000;
  * - fn_foto_inventario_mensual: la primera vez que corre en un mes nuevo guarda la foto del
  *   inventario valorizado del mes que acaba de cerrar.
  * - fn_vencer_devoluciones: cancela las devoluciones aprobadas que no se ejecutaron dentro de su
- *   plazo (parámetro DEVOLUCION_APROBADA_DIAS) y libera lo que tenían apartado.
+ *   plazo (parámetro DEVOLUCION_APROBADA_DIAS), libera lo que tenían apartado y deja una alerta
+ *   para el administrador y otra para la sucursal que la solicitó.
  * Se apagan con TAREAS_PROGRAMADAS=false.
  */
 @Injectable()

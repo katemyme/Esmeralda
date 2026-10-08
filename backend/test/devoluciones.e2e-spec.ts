@@ -4,7 +4,7 @@ import { sql } from 'kysely';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import type { App } from 'supertest/types';
-import type { AlertaAdmin } from '../src/alertas/alertas.service';
+import type { AlertaAdmin, ListaAlertas } from '../src/alertas/alertas.service';
 import { BaseDatosService } from '../src/base-datos/base-datos.service';
 import type { TicketCierre, TurnoDetalle } from '../src/caja/caja.service';
 import type {
@@ -130,6 +130,12 @@ describe('Devoluciones y cambios', () => {
       `/api/alertas?tipo=${tipo}&sucursal_id=${ids.a}&estado=${estado}`,
     ).expect(200);
     return body.alertas as AlertaAdmin[];
+  }
+
+  /** Los avisos para la sucursal de quien pregunta (no son los del panel). */
+  async function alertasDeSucursal(acceso: string, consulta = ''): Promise<ListaAlertas> {
+    const { body } = await con('get', `/api/alertas/sucursal${consulta}`, acceso).expect(200);
+    return body as ListaAlertas;
   }
 
   /** Lo esperado en efectivo (C$) de un turno: solo lo ve quien tiene CAJA_VER_DIFERENCIAS. */
@@ -950,6 +956,66 @@ describe('Devoluciones y cambios', () => {
         [dev.s3, 'CANCELADA'],
         [dev.s2, 'EJECUTADA'],
       ]);
+    });
+
+    it('la que vence deja dos alertas: una en el panel y otra para la sucursal que la solicitó', async () => {
+      const titulo = `Venció la devolución aprobada de la factura DEA-00000002: no se ejecutó hasta el ${sumarDias(hoy, -1).split('-').reverse().join('/')}`;
+      const delPanel = await alertas('DEVOLUCION_VENCIDA');
+      expect(delPanel).toEqual([
+        expect.objectContaining({
+          titulo,
+          detalle: {
+            devolucion_id: dev.s4,
+            venta_id: venta.v2,
+            numero: 'DEA-00000002',
+            tipo: 'DEVOLUCION',
+            vence_el: sumarDias(hoy, -1),
+            solicitada_por: ids.dora,
+          },
+          sucursal: { id: ids.a, codigo: 'DEA', nombre: SUC_A },
+          atendida_at: null,
+        }),
+      ]);
+
+      // Quienes trabajan en la sucursal que la solicitó ven la suya sin entrar al panel
+      const deDora = await alertasDeSucursal(dora.acceso);
+      expect(deDora).toEqual({
+        alertas: [{ ...delPanel[0], id: expect.any(Number) }],
+        total_pendientes: 1,
+      });
+      const [aviso] = deDora.alertas;
+      expect(aviso.id).not.toBe(delPanel[0].id);
+      expect(await alertasDeSucursal(elsa.acceso)).toEqual(deDora);
+      expect(await alertasDeSucursal(beto.acceso)).toEqual({ alertas: [], total_pendientes: 0 });
+      await con('get', '/api/alertas', dora.acceso).expect(403);
+
+      // Cada quien atiende la suya: ni la de otra sucursal ni la del panel
+      const sinPermiso = {
+        codigo: 'PERMISO_DENEGADO',
+        mensaje: 'Permiso denegado: se requiere ALERTAS_VER',
+      };
+      await con('post', `/api/alertas/${aviso.id}/atender`, beto.acceso)
+        .expect(403)
+        .expect(sinPermiso);
+      await con('post', `/api/alertas/${delPanel[0].id}/atender`, dora.acceso)
+        .expect(403)
+        .expect(sinPermiso);
+      const atendida = await con('post', `/api/alertas/${aviso.id}/atender`, dora.acceso).expect(
+        200,
+      );
+      expect(atendida.body.alerta).toMatchObject({
+        id: aviso.id,
+        atendida_at: expect.any(String),
+        atendida_por: { id: ids.dora, nombre_completo: 'Dora Devoluciones' },
+      });
+      expect(await alertasDeSucursal(elsa.acceso)).toEqual({ alertas: [], total_pendientes: 0 });
+      const yaAtendidas = await alertasDeSucursal(dora.acceso, '?estado=atendidas');
+      expect(yaAtendidas.alertas.map((a) => a.id)).toEqual([aviso.id]);
+
+      // La del administrador sigue pendiente hasta que él la atiende
+      expect((await alertas('DEVOLUCION_VENCIDA')).map((a) => a.id)).toEqual([delPanel[0].id]);
+      await comoJefa('post', `/api/alertas/${delPanel[0].id}/atender`).expect(200);
+      expect(await alertas('DEVOLUCION_VENCIDA')).toEqual([]);
     });
 
     it('rechazada con su comentario: no aparta nada ni se ejecuta', async () => {

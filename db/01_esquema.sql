@@ -560,6 +560,9 @@ CREATE TRIGGER tg_compra_gasto_proteger BEFORE INSERT OR UPDATE OR DELETE ON com
 
 -- ---------------------------------------------------------------------
 -- 4.2 Alertas para el administrador (margen bajo, diferencias, caja sin cerrar...)
+--   Las ve en su panel quien tiene ALERTAS_VER. Las marcadas para_sucursal son, en cambio, un aviso
+--   para quienes trabajan en esa sucursal (no salen en el panel): si algo le interesa a los dos se
+--   crean dos alertas, y cada quien atiende la suya.
 -- ---------------------------------------------------------------------
 CREATE TABLE alerta (
   id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -567,10 +570,12 @@ CREATE TABLE alerta (
   titulo        varchar(200) NOT NULL,
   detalle       jsonb        NOT NULL DEFAULT '{}'::jsonb,
   sucursal_id   integer      REFERENCES sucursal(id),
+  para_sucursal boolean      NOT NULL DEFAULT false,
   creada_at     timestamptz  NOT NULL DEFAULT now(),
   atendida_por  bigint       REFERENCES usuario(id),
   atendida_at   timestamptz,
-  CONSTRAINT ck_alerta_atendida CHECK ((atendida_por IS NULL) = (atendida_at IS NULL))
+  CONSTRAINT ck_alerta_atendida CHECK ((atendida_por IS NULL) = (atendida_at IS NULL)),
+  CONSTRAINT ck_alerta_para_sucursal CHECK (NOT para_sucursal OR sucursal_id IS NOT NULL)
 );
 CREATE INDEX ix_alerta_pendiente ON alerta (creada_at DESC) WHERE atendida_at IS NULL;
 
@@ -3345,12 +3350,26 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'La compra % no existe', p_compra; END IF;
 END $$;
 
-CREATE OR REPLACE FUNCTION fn_atender_alerta(p_admin bigint, p_alerta bigint)
+-- ¿Puede el usuario ver y atender esta alerta? Quien tiene ALERTAS_VER, todas. Las que son para
+-- una sucursal (alerta.para_sucursal), también quien trabaja en ella.
+CREATE OR REPLACE FUNCTION fn_puede_ver_alerta(p_usuario bigint, p_alerta bigint) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM alerta a
+     WHERE a.id = p_alerta
+       AND ( fn_tiene_permiso(p_usuario, 'ALERTAS_VER')
+          OR (a.para_sucursal AND fn_puede_operar_sucursal(p_usuario, a.sucursal_id)) ))
+$$;
+
+CREATE OR REPLACE FUNCTION fn_atender_alerta(p_usuario bigint, p_alerta bigint)
 RETURNS void
 LANGUAGE plpgsql AS $$
 BEGIN
-  PERFORM fn_exigir_permiso(p_admin, 'ALERTAS_VER');
-  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+  -- Una alerta que no es de su sucursal (o que no existe) pide el permiso del panel
+  IF NOT fn_puede_ver_alerta(p_usuario, p_alerta) THEN
+    PERFORM fn_exigir_permiso(p_usuario, 'ALERTAS_VER');
+  END IF;
+  UPDATE alerta SET atendida_por = p_usuario, atendida_at = now()
    WHERE id = p_alerta AND atendida_at IS NULL;
 END $$;
 
@@ -3381,7 +3400,7 @@ SELECT date_trunc('month', fecha_factura)::date AS mes, proveedor, moneda,
  GROUP BY 1, proveedor, moneda;
 
 CREATE OR REPLACE VIEW v_alertas_pendientes AS
-SELECT a.id, a.tipo, a.titulo, a.detalle, s.nombre AS ubicacion, a.creada_at
+SELECT a.id, a.tipo, a.titulo, a.detalle, s.nombre AS ubicacion, a.creada_at, a.para_sucursal
   FROM alerta a LEFT JOIN sucursal s ON s.id = a.sucursal_id
  WHERE a.atendida_at IS NULL
  ORDER BY a.creada_at DESC;
@@ -4873,16 +4892,32 @@ BEGIN
 END $$;
 
 -- Para ejecutar periódicamente (tarea programada del backend): la solicitud aprobada que pasó de
--- su día límite sin ejecutarse se cancela sola y libera lo apartado. Devuelve cuántas venció.
+-- su día límite sin ejecutarse se cancela sola y libera lo apartado. Por cada una quedan dos
+-- alertas iguales: una en el panel del administrador y otra para la sucursal que la solicitó (cada
+-- quien atiende la suya). Devuelve cuántas venció.
 CREATE OR REPLACE FUNCTION fn_vencer_devoluciones(p_ahora timestamptz DEFAULT now()) RETURNS integer
 LANGUAGE plpgsql AS $$
-DECLARE n integer;
+DECLARE d record; n integer := 0;
 BEGIN
-  UPDATE devolucion
-     SET estado = 'CANCELADA', cancelada_at = p_ahora,
-         motivo_cancelacion = format('Venció: estaba aprobada y no se ejecutó hasta el %s', to_char(vence_el, 'DD/MM/YYYY'))
-   WHERE estado = 'APROBADA' AND vence_el < (p_ahora AT TIME ZONE 'America/Managua')::date;
-  GET DIAGNOSTICS n = ROW_COUNT;
+  FOR d IN
+    UPDATE devolucion x
+       SET estado = 'CANCELADA', cancelada_at = p_ahora,
+           motivo_cancelacion = format('Venció: estaba aprobada y no se ejecutó hasta el %s', to_char(x.vence_el, 'DD/MM/YYYY'))
+     WHERE x.estado = 'APROBADA' AND x.vence_el < (p_ahora AT TIME ZONE 'America/Managua')::date
+    RETURNING x.id, x.venta_id, x.tipo, x.vence_el, x.sucursal_solicitud_id, x.solicitada_por
+  LOOP
+    n := n + 1;
+    INSERT INTO alerta (tipo, titulo, detalle, sucursal_id, para_sucursal)
+    SELECT 'DEVOLUCION_VENCIDA',
+           format('Venció %s de la factura %s: no se ejecutó hasta el %s',
+                  CASE d.tipo WHEN 'CAMBIO' THEN 'el cambio aprobado' ELSE 'la devolución aprobada' END,
+                  v.numero, to_char(d.vence_el, 'DD/MM/YYYY')),
+           jsonb_build_object('devolucion_id', d.id, 'venta_id', d.venta_id, 'numero', v.numero, 'tipo', d.tipo,
+                              'vence_el', d.vence_el, 'solicitada_por', d.solicitada_por),
+           d.sucursal_solicitud_id, p.para_sucursal
+      FROM venta v CROSS JOIN (VALUES (false), (true)) AS p(para_sucursal)
+     WHERE v.id = d.venta_id;
+  END LOOP;
   RETURN n;
 END $$;
 
