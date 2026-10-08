@@ -6,7 +6,7 @@ import { exigirTurnoParaVenta } from '../caja/sesion-caja';
 import { donde, patronContiene, referencia, veOrigen } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
-import { ticketPdf } from '../exportacion/ticket-pdf';
+import { armarTicket, type FormatoTicket, type TicketListo } from '../exportacion/ticket-formato';
 import type { DatosRegistrarVenta, FiltroVentas } from './esquemas';
 import { renglonesTicketVenta } from './ticket-venta';
 
@@ -351,15 +351,21 @@ export class VentasService {
   async imprimir(
     usuario: UsuarioAutenticado,
     id: number,
-  ): Promise<{ pdf: Buffer; numero: string; impresion: number }> {
+    formato: FormatoTicket = 'pdf',
+  ): Promise<TicketListo & { numero: string }> {
     const venta = await this.buscar(usuario, id); // una venta que el usuario no puede ver responde 404
     return this.bd.transaccion(usuario.id, async (trx) => {
       const { rows } = await sql<{ impresion: number }>`
         select fn_registrar_impresion_venta(${usuario.id}, ${id}) as impresion`.execute(trx);
       const impresion = rows[0].impresion;
-      // Dentro de la transacción: si el PDF no se pudiera armar, la impresión no queda anotada
-      const pdf = await ticketPdf(renglonesTicketVenta(venta, impresion), `Ticket ${venta.numero}`);
-      return { pdf, numero: venta.numero, impresion };
+      // Dentro de la transacción: si el ticket no se pudiera armar, la impresión no queda anotada
+      const ticket = await armarTicket(
+        renglonesTicketVenta(venta, impresion),
+        impresion,
+        `Ticket ${venta.numero}`,
+        formato,
+      );
+      return { ...ticket, numero: venta.numero };
     });
   }
 

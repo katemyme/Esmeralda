@@ -299,6 +299,9 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   PDF de una sola página de 80 mm de ancho (impresora térmica). Cada impresión queda anotada: la primera es el
   original y las siguientes llevan la palabra **COPIA**; la cabecera `X-Ticket-Impresion` dice cuál es (1, 2, 3…).
   El de cierre sale reducido o completo según el permiso, igual que su versión en datos.
+- **Tickets por USB.** Las mismas rutas con `?formato=renglones` devuelven `{ impresion, renglones }`: el
+  contenido del ticket renglón por renglón (`texto`, `par`, `qr`, `linea`, `espacio`), para que la pantalla lo
+  traduzca a ESC/POS y lo mande directo a la impresora. Cuenta igual como impresión (original o copia).
 - **Tipo de cambio.** Si el valor se aleja del último registrado más que el parámetro `TIPO_CAMBIO_VARIACION_MAX`
   (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
   El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango

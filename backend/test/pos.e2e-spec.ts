@@ -1021,6 +1021,31 @@ describe('POS y caja', () => {
         '1',
       );
 
+      // Para la impresora por USB: los mismos renglones en JSON, y cuenta igual como impresión
+      const enRenglones = await conSesion(
+        'post',
+        `/api/ventas/${venta.a}/imprimir?formato=renglones`,
+        vera.acceso,
+      ).expect(200);
+      expect(enRenglones.headers['content-type']).toMatch(/application\/json/);
+      expect(enRenglones.headers['x-ticket-impresion']).toBe('4');
+      expect(enRenglones.body.impresion).toBe(4);
+      const renglones = enRenglones.body.renglones as {
+        tipo: string;
+        texto?: string;
+        contenido?: string;
+      }[];
+      expect(renglones).toContainEqual(expect.objectContaining({ tipo: 'texto', texto: 'COPIA' }));
+      expect(renglones).toContainEqual({ tipo: 'qr', contenido: 'PVE-00000001' });
+      const formatoMalo = await conSesion(
+        'post',
+        `/api/ventas/${venta.a}/imprimir?formato=word`,
+        vera.acceso,
+      ).expect(400);
+      expect(formatoMalo.body.errores).toEqual([
+        { campo: 'formato', mensaje: 'formato debe ser pdf o renglones' },
+      ]);
+
       // quien no puede ver la venta no la imprime, y su intento no cuenta
       await conSesion('post', `/api/ventas/${venta.a}/imprimir`, lola.acceso)
         .expect(404)
@@ -1033,7 +1058,13 @@ describe('POS y caja', () => {
         .where('venta_id', '=', venta.a)
         .orderBy('id')
         .execute();
-      expect(impresiones.map((i) => i.usuario_id)).toEqual([ids.vera, ids.enzo, ids.jefa]);
+      // la cuarta es la que Vera pidió como renglones: cuenta igual que las del PDF
+      expect(impresiones.map((i) => i.usuario_id)).toEqual([
+        ids.vera,
+        ids.enzo,
+        ids.jefa,
+        ids.vera,
+      ]);
     });
   });
 
@@ -1441,6 +1472,20 @@ describe('POS y caja', () => {
       const alto = (pdf: Buffer) =>
         Number(/\/MediaBox \[0 0 [\d.]+ ([\d.]+)\]/.exec(pdf.toString('latin1'))?.[1]);
       expect(alto(copia.body as Buffer)).toBeGreaterThan(alto(reducido));
+
+      // Como renglones (para la impresora por USB): mismo contenido y misma cuenta de impresiones
+      const enRenglones = await conSesion(
+        'post',
+        `/api/turnos/${propio.turno}/imprimir?formato=renglones`,
+        vera.acceso,
+      ).expect(200);
+      expect(enRenglones.body.impresion).toBe(3);
+      const textos = (enRenglones.body.renglones as { texto?: string; izquierda?: string }[]).map(
+        (r) => r.texto ?? r.izquierda ?? '',
+      );
+      expect(textos).toContain('COPIA');
+      // el ticket reducido de la vendedora no trae lo vendido ni lo cobrado
+      expect(textos.join(' ')).not.toMatch(/vendido|Ventas/i);
 
       await conSesion('post', `/api/turnos/${propio.turno}/imprimir`, lola.acceso)
         .expect(404)

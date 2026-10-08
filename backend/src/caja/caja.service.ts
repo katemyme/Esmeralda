@@ -5,7 +5,6 @@ import { BaseDatosService } from '../base-datos/base-datos.service';
 import { donde } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
-import { ticketPdf } from '../exportacion/ticket-pdf';
 import type {
   DatosAbrirTurno,
   DatosCerrarTurno,
@@ -13,6 +12,7 @@ import type {
   FiltroTurnos,
 } from './esquemas';
 import { cajaParaAbrir, exigirTurno, turnoDeSesion } from './sesion-caja';
+import { armarTicket, type FormatoTicket, type TicketListo } from '../exportacion/ticket-formato';
 import { renglonesTicketCierre } from './ticket-cierre';
 
 interface UsuarioReferido {
@@ -471,18 +471,21 @@ export class CajaService {
   async imprimirTicket(
     usuarioId: number,
     turnoId: number,
-  ): Promise<{ pdf: Buffer; impresion: number }> {
+    formato: FormatoTicket = 'pdf',
+  ): Promise<TicketListo> {
     const ticket = await this.ticket(usuarioId, turnoId); // 404 si es ajeno; 409 si sigue abierto
     return this.bd.transaccion(usuarioId, async (trx) => {
       const { rows } = await sql<{ impresion: number; negocio: string | null }>`
         select fn_registrar_impresion_cierre(${usuarioId}, ${turnoId}) as impresion,
                fn_parametro_txt('NEGOCIO_NOMBRE') as negocio`.execute(trx);
       const { impresion, negocio } = rows[0];
-      const pdf = await ticketPdf(
+      // Dentro de la transacción: si el ticket no se pudiera armar, la impresión no queda anotada
+      return armarTicket(
         renglonesTicketCierre(ticket, impresion, negocio),
+        impresion,
         `Cierre de caja, turno ${turnoId}`,
+        formato,
       );
-      return { pdf, impresion };
     });
   }
 

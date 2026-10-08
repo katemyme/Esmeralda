@@ -17,6 +17,12 @@ import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { idEntero } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
 import {
+  entregarTicket,
+  esquemaFormatoTicket,
+  type FormatoTicket,
+  type TicketEnRenglones,
+} from '../exportacion/ticket-formato';
+import {
   CajaService,
   type CajaAbierta,
   type Denominacion,
@@ -159,8 +165,9 @@ export class TurnosController {
   }
 
   /**
-   * El ticket de cierre en PDF para la impresora de 80 mm (reducido sin CAJA_VER_DIFERENCIAS). La
-   * primera vez es el original; las siguientes salen con la palabra COPIA (`X-Ticket-Impresion`).
+   * El ticket de cierre para la impresora de 80 mm (reducido sin CAJA_VER_DIFERENCIAS): en PDF o,
+   * con `?formato=renglones`, como renglones para imprimirlo por USB. La primera vez es el
+   * original; las siguientes salen con la palabra COPIA (`X-Ticket-Impresion`).
    */
   @Post(':id/imprimir')
   @RequierePermiso('CAJA_CERRAR', 'CAJA_VER_DIFERENCIAS')
@@ -168,15 +175,11 @@ export class TurnosController {
   async imprimir(
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Param('id', idEntero()) id: number,
+    @Query(new ValidacionZod(esquemaFormatoTicket)) consulta: { formato: FormatoTicket },
     @Res({ passthrough: true }) respuesta: Response,
-  ): Promise<StreamableFile> {
-    const { pdf, impresion } = await this.caja.imprimirTicket(usuario.id, id);
-    respuesta.setHeader('X-Ticket-Impresion', String(impresion));
-    return new StreamableFile(pdf, {
-      type: 'application/pdf',
-      disposition: `inline; filename="cierre-turno-${id}.pdf"`,
-      length: pdf.length,
-    });
+  ): Promise<StreamableFile | TicketEnRenglones> {
+    const ticket = await this.caja.imprimirTicket(usuario.id, id, consulta.formato);
+    return entregarTicket(respuesta, ticket, `cierre-turno-${id}`);
   }
 
   /** `{ motivo }`: cierra sin arqueo un turno que nadie cerró (se asume lo esperado). */
