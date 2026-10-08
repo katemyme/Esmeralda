@@ -1314,7 +1314,467 @@ SELECT pg_temp.afirma((SELECT sum(unidades) FROM inventario_cierre_mensual WHERE
                       'con todos los movimientos, la foto coincide con el inventario valorizado de hoy');
 SELECT pg_temp.espera_error(format('INSERT INTO inventario_cierre_mensual VALUES (%L, %s, 1, 1, 1, 1, now())', :'mes_actual'::date + 1, :pos), 'inventario_cierre_mensual_mes_check');
 
-\echo '\n=== 24. NUMERACIÓN DE FACTURAS: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 24. DEVOLUCIONES Y CAMBIOS (backend B8)'
+SELECT set_config('app.usuario_id', :'admin', false);
+-- Dos sucursales propias: se vende en la A y una devolución se puede ejecutar en la B
+SELECT fn_guardar_sucursal(:admin, NULL, 'dva', 'Sucursal Devoluciones A') AS dva \gset
+SELECT fn_guardar_sucursal(:admin, NULL, 'dvb', 'Sucursal Devoluciones B') AS dvb \gset
+SELECT fn_crear_caja(:admin, :dva, 'Caja 1') AS caja_dva \gset
+SELECT fn_crear_caja(:admin, :dvb, 'Caja 1') AS caja_dvb \gset
+SELECT fn_crear_usuario(:admin, 'Dora Devoluciones', 'dora.dev', 'hash-de-prueba', 'VENDEDOR', ARRAY[:dva]) AS dora \gset
+SELECT fn_crear_usuario(:admin, 'Beto Devoluciones', 'beto.dev', 'hash-de-prueba', 'VENDEDOR', ARRAY[:dvb]) AS beto \gset
+SELECT fn_crear_usuario(:admin, 'Elsa Devoluciones', 'elsa.dev', 'hash-de-prueba', 'ENCARGADO', ARRAY[:dva]) AS elsa \gset
+SELECT fn_crear_usuario(:admin, 'Lina Devoluciones', 'lina.dev', 'hash-de-prueba', 'ANALISTA', ARRAY[:dva, :dvb]) AS lina \gset
+SELECT fn_registrar_dispositivo(:admin, 'PC Caja DVA', 'CAJA', :dva, encode(sha256('dva-pc'), 'hex'), :caja_dva) AS pc_dva \gset
+SELECT fn_registrar_dispositivo(:admin, 'PC Caja DVB', 'CAJA', :dvb, encode(sha256('dvb-pc'), 'hex'), :caja_dvb) AS pc_dvb \gset
+
+-- La casilla "admite devolución" de las categorías
+SELECT pg_temp.afirma((SELECT count(*) = 4 AND bool_and(NOT admite_devolucion) FROM categoria
+                         WHERE nombre IN ('Perforaciones', 'Piercing titanio', 'Piercing acero', 'Piercing bioflex')),
+                      'datos iniciales: las piezas de piercing y las perforaciones no admiten devolución');
+SELECT pg_temp.afirma((SELECT count(*) = 7 AND bool_and(admite_devolucion) FROM categoria
+                         WHERE nombre IN ('Cuidado posterior', 'Joyería plata 925', 'Joyería xuping', 'Joyería estilo Dubái',
+                                          'Accesorios dama', 'Accesorios caballero', 'Perfumería')),
+                      'datos iniciales: joyería, accesorios, perfumería y cuidado posterior sí la admiten');
+SELECT fn_guardar_categoria(:admin, NULL, 'Regalos DEV') AS cat_dev \gset
+SELECT pg_temp.afirma((SELECT NOT admite_devolucion FROM categoria WHERE id = :cat_dev), 'una categoría nueva nace sin admitir devoluciones');
+SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_devolucion(%s, %s, true)', :maria, :cat_dev), 'DEVOLUCIONES_APROBAR');
+-- administrar el catálogo no alcanza: la casilla es de quien aprueba las devoluciones
+SELECT fn_set_permisos_rol(:admin, 'ANALISTA', ARRAY['REPORTES_VER', 'PRODUCTOS_GESTIONAR']);
+SELECT fn_guardar_categoria(:rita, :cat_dev, 'Regalos DEV', 'Categoría de las pruebas de devoluciones');
+SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_devolucion(%s, %s, true)', :rita, :cat_dev), 'DEVOLUCIONES_APROBAR');
+SELECT pg_temp.afirma((SELECT NOT admite_devolucion AND descripcion IS NOT NULL FROM categoria WHERE id = :cat_dev), 'editar la categoría no toca la casilla');
+SELECT fn_set_permisos_rol(:admin, 'ANALISTA', ARRAY['REPORTES_VER']);
+SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_devolucion(%s, 999999, true)', :admin), 'La categoría 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_devolucion(%s, (SELECT id FROM categoria WHERE nombre = %L), true)', :admin, 'Perforaciones'),
+                            'Las perforaciones nunca se devuelven');
+SELECT fn_set_categoria_devolucion(:admin, :cat_dev, true);
+SELECT pg_temp.afirma((SELECT admite_devolucion FROM categoria WHERE id = :cat_dev), 'el administrador marca la casilla');
+
+-- Catálogo de la prueba: cadena C$600 (costo 200) y perfume C$400 (costo 150); promoción del 10 %
+SELECT fn_guardar_producto(:admin, NULL, :cat_dev, 'Regalo DEV') AS prod_dev \gset
+SELECT fn_crear_variante(:admin, :prod_dev, 'DEV-CAD', 600, 'Cadena', 200) AS dcad \gset
+SELECT fn_crear_variante(:admin, :prod_dev, 'DEV-PERF', 400, 'Perfume', 150) AS dperf \gset
+SELECT fn_movimiento_inventario(:admin, :dva, :dcad, 'AJUSTE_POSITIVO', 10, 'Existencias para las pruebas de devoluciones');
+SELECT fn_movimiento_inventario(:admin, :dva, :dperf, 'AJUSTE_POSITIVO', 10, 'Existencias para las pruebas de devoluciones');
+SELECT fn_movimiento_inventario(:admin, :dva, :aro, 'AJUSTE_POSITIVO', 5, 'Existencias para las pruebas de devoluciones');
+SELECT fn_guardar_promocion(:admin, NULL, 'Promo DEV 10 %', 'PORCENTAJE', 10) AS promo_dev \gset
+SELECT fn_set_promocion_activa(:admin, :promo_dev, true);
+SELECT fn_guardar_promocion(:admin, NULL, 'Promo DEV C$100', 'MONTO', 100) AS promo_monto \gset
+SELECT fn_set_promocion_activa(:admin, :promo_monto, true);
+SELECT pg_temp.afirma(fn_parametro_num('DEVOLUCION_DIAS_MAX') = 7 AND fn_parametro_num('DEVOLUCION_APROBADA_DIAS') = 3,
+                      'parámetros: 7 días para solicitar y 3 para ejecutar la aprobada');
+
+-- Las ventas (todas de Dora, en la sucursal A)
+SELECT fn_abrir_turno(:dora, :caja_dva, 1000, 0) AS t_dva1 \gset
+-- VA: cadena + perfume con la promoción del 10 % → C$900, en efectivo
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1}]', :dcad, :dperf)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":900}]', :promo_dev) AS va \gset
+-- VB: 3 perfumes (C$1200): C$400 en efectivo y C$800 con tarjeta
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":3}]', :dperf)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":400},{"metodo":"TARJETA","monto":800,"referencia":"V-800"}]') AS vb \gset
+-- VC: un aro de piercing y una perforación (nada de eso se devuelve)
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":1},{"variante_id":%s,"cantidad":1}]', :aro, :lob)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":5000}]') AS vc \gset
+-- VD: 2 cadenas con la promoción (C$1080), todo con tarjeta
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":2}]', :dcad)::jsonb,
+  '[{"metodo":"TARJETA","monto":1080,"referencia":"V-1080"}]', :promo_dev) AS vd \gset
+-- VE: una cadena pagada con US$ 20 (el vuelto, en córdobas)
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","moneda":"USD","monto":20}]') AS ve \gset
+-- VF: una cadena, mitad en efectivo y mitad por transferencia
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":300},{"metodo":"TRANSFERENCIA","monto":300,"referencia":"T-300"}]') AS vf \gset
+-- VG: 3 cadenas y un perfume (C$2200) con C$100 de rebaja → C$2100: el reparto no da centavos exactos
+SELECT fn_registrar_venta(:dora, :t_dva1, format('[{"variante_id":%s,"cantidad":3},{"variante_id":%s,"cantidad":1}]', :dcad, :dperf)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":2100}]', :promo_monto) AS vg \gset
+SELECT id AS vg_cad  FROM venta_detalle WHERE venta_id = :vg AND variante_id = :dcad  \gset
+SELECT id AS vg_perf FROM venta_detalle WHERE venta_id = :vg AND variante_id = :dperf \gset
+SELECT id AS va_cad  FROM venta_detalle WHERE venta_id = :va AND variante_id = :dcad  \gset
+SELECT id AS va_perf FROM venta_detalle WHERE venta_id = :va AND variante_id = :dperf \gset
+SELECT id AS vb_perf FROM venta_detalle WHERE venta_id = :vb \gset
+SELECT id AS vc_aro  FROM venta_detalle WHERE venta_id = :vc AND variante_id = :aro \gset
+SELECT id AS vc_lob  FROM venta_detalle WHERE venta_id = :vc AND variante_id = :lob \gset
+SELECT id AS vd_cad  FROM venta_detalle WHERE venta_id = :vd \gset
+SELECT id AS ve_cad  FROM venta_detalle WHERE venta_id = :ve \gset
+SELECT id AS vf_cad  FROM venta_detalle WHERE venta_id = :vf \gset
+
+-- Con el turno abierto la venta se anula: la devolución es para turnos ya cerrados
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'es de un turno que sigue abierto: se anula, no se devuelve');
+SELECT fn_cierre_forzado(:admin, :t_dva1, 'Cierre para las pruebas de devoluciones');
+SELECT pg_temp.afirma(fn_venta_no_devoluble(:va) IS NULL, 'cerrado el turno, la venta ya se puede devolver');
+
+-- Qué se puede devolver de cada factura y cuánto vale (lo pagado, con la promoción en proporción)
+SELECT pg_temp.afirma((SELECT count(*) = 2 AND bool_and(admite AND disponible = 1 AND devuelta = 0 AND apartada = 0 AND motivo_no IS NULL)
+                          AND sum(neto_linea) = 900
+                          AND max(neto_linea) FILTER (WHERE detalle_id = :va_cad) = 540
+                          AND max(neto_linea) FILTER (WHERE detalle_id = :va_perf) = 360
+                         FROM fn_lineas_devolubles(:va)),
+                      'la cadena de C$600 y el perfume de C$400 con 10 % de promoción valen C$540 y C$360 (suman lo pagado)');
+SELECT pg_temp.afirma((SELECT NOT admite AND motivo_no = 'La categoría "Piercing acero" no admite devoluciones' FROM fn_lineas_devolubles(:vc) WHERE detalle_id = :vc_aro)
+                  AND (SELECT NOT admite AND motivo_no = 'Las perforaciones y los paquetes no se devuelven ni se cambian' FROM fn_lineas_devolubles(:vc) WHERE detalle_id = :vc_lob),
+                      'una pieza de piercing y una perforación no se pueden devolver, y dice por qué');
+-- Centavos: lo pagado por la factura VG (C$2100) se reparte entre sus líneas y sus unidades sin perder ni uno
+SELECT pg_temp.afirma((SELECT max(neto_linea) FILTER (WHERE detalle_id = :vg_cad) = 1718.18 AND max(neto_linea) FILTER (WHERE detalle_id = :vg_perf) = 381.82
+                         FROM fn_lineas_devolubles(:vg)),
+                      'con una rebaja que no da centavos exactos, las líneas siguen sumando lo pagado: 1718.18 + 381.82 = 2100');
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vg, 'DEVOLUCION', 'Prueba de centavos: primera cadena', 'Rosa Cliente', '8333-4444',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vg_cad)::jsonb) AS r1 \gset
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vg, 'DEVOLUCION', 'Prueba de centavos: segunda cadena', 'Rosa Cliente', '8333-4444',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vg_cad)::jsonb) AS r2 \gset
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vg, 'DEVOLUCION', 'Prueba de centavos: lo que queda', 'Rosa Cliente', '8333-4444',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"},{"detalle_id":%s,"cantidad":1,"estado":"DEFECTUOSO"}]', :vg_perf, :vg_cad)::jsonb) AS r3 \gset
+SELECT pg_temp.afirma((SELECT monto_total FROM devolucion WHERE id = :r1) = 572.73 AND (SELECT monto_total FROM devolucion WHERE id = :r2) = 572.72
+                  AND (SELECT monto_total FROM devolucion WHERE id = :r3) = 954.55
+                  AND (SELECT sum(monto_total) FROM devolucion WHERE id IN (:r1, :r2, :r3)) = 2100,
+                      'devuelta por partes, una factura devuelve exactamente lo que se pagó por ella (572.73 + 572.72 + 954.55 = 2100)');
+SELECT fn_cancelar_devolucion(:dora, :r1, 'Era solo la prueba de centavos');
+SELECT fn_cancelar_devolucion(:dora, :r2, 'Era solo la prueba de centavos');
+SELECT fn_cancelar_devolucion(:dora, :r3, 'Era solo la prueba de centavos');
+SELECT pg_temp.afirma((SELECT fn_proporcion_efectivo(:va) = 1 AND fn_proporcion_efectivo(:vd) = 0 AND fn_proporcion_efectivo(:ve) = 1
+                              AND fn_proporcion_efectivo(:vf) = 0.5 AND round(fn_proporcion_efectivo(:vb), 4) = 0.3333),
+                      'cuánto de cada venta se pagó en efectivo (los dólares cuentan como efectivo y el vuelto se resta)');
+SELECT pg_temp.afirma((SELECT efectivo = 133.33 AND transferencia = 266.67 FROM fn_reparto_devolucion(:vb, 400))
+                  AND (SELECT efectivo = 360 AND transferencia = 0 FROM fn_reparto_devolucion(:va, 360))
+                  AND (SELECT efectivo = 0 AND transferencia = 540 FROM fn_reparto_devolucion(:vd, 540)),
+                      'el reembolso se reparte como se pagó: efectivo desde la caja y el resto por transferencia');
+
+-- Solicitud: quién puede y qué se le exige
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :rita, :'pc_dva', :va, :va_perf), 'DEVOLUCIONES_REGISTRAR');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :carlos, :'pc_dva', :va, :va_perf), 'equipo registrado y activo');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, NULL, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :va, :va_perf), 'equipo registrado y activo');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, 999999, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":1,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva'), 'La venta 999999 no existe');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'REGALO', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'Indique si es una devolución o un cambio');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'no', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'Escriba el motivo de la devolución');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', ' ', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'Escriba el nombre del cliente');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', NULL, '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'Escriba el teléfono del cliente');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[]')$q$,
+                                   :dora, :'pc_dva', :va), 'Indique al menos un producto para devolver');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :vb_perf), 'no es de la venta DVA-00000001');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"USADO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'BUENO o DEFECTUOSO');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":0,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'Cantidad inválida');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":2,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :va, :va_perf), 'solo queda(n) 1 por devolver');
+-- Nunca se devuelven ni se cambian piezas ni perforaciones
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'CAMBIO', 'Quiere otro modelo', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :vc, :vc_aro), 'no se puede devolver: la categoría "Piercing acero" no admite devoluciones');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'Se arrepintió de la perforación', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :vc, :vc_lob), 'las perforaciones y los paquetes no se devuelven ni se cambian');
+-- El plazo: 7 días calendario desde el día de la venta (parámetro DEVOLUCION_DIAS_MAX)
+BEGIN;
+ALTER TABLE venta DISABLE TRIGGER tg_venta_proteger;
+UPDATE venta SET fecha = now() - interval '7 days' WHERE id = :ve;
+SELECT pg_temp.afirma(fn_venta_no_devoluble(:ve) IS NULL, 'una venta de hace 7 días todavía se puede devolver');
+UPDATE venta SET fecha = now() - interval '8 days' WHERE id = :ve;
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó la cadena', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :dora, :'pc_dva', :ve, :ve_cad), 'el plazo de 7 días para devolverla venció el');
+SELECT fn_set_parametro(:admin, 'DEVOLUCION_DIAS_MAX', '10');
+SELECT pg_temp.afirma(fn_venta_no_devoluble(:ve) IS NULL, 'el plazo sale del parámetro: con 10 días, la de hace 8 entra');
+ROLLBACK;
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'DEVOLUCION_DIAS_MAX', '0'), 'no puede ser menor que 1');
+
+\echo 'S1: devolución de un perfume pagado en efectivo; se solicita en A y se ejecuta en B'
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :va, 'devolucion', '  No le gustó el aroma ', ' Carla Cliente ', '8888-1234',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"bueno"}]', :va_perf)::jsonb) AS s1 \gset
+SELECT pg_temp.afirma((SELECT estado = 'PENDIENTE' AND tipo = 'DEVOLUCION' AND monto_total = 360 AND sucursal_solicitud_id = :dva
+                              AND solicitada_por = :dora AND motivo = 'No le gustó el aroma' AND cliente_nombre = 'Carla Cliente'
+                              AND numero IS NULL AND monto_efectivo IS NULL
+                         FROM devolucion WHERE id = :s1)
+                  AND (SELECT count(*) = 1 AND bool_and(cantidad = 1 AND estado_producto = 'BUENO' AND monto = 360 AND movimiento_id IS NULL)
+                         FROM devolucion_detalle WHERE devolucion_id = :s1),
+                      'la solicitud queda pendiente, en la sucursal del equipo, con lo pagado por el perfume: C$360');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(titulo = 'Devolución por aprobar: factura DVA-00000001, C$ 360.00' AND ubicacion = 'Sucursal Devoluciones A')
+                         FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_PENDIENTE' AND (detalle->>'devolucion_id')::bigint = :s1),
+                      'al crearse la solicitud se genera una alerta para el administrador');
+SELECT pg_temp.afirma((SELECT apartada = 1 AND disponible = 0 AND devuelta = 0 AND motivo_no = 'Ya se devolvió o está en otra solicitud'
+                         FROM fn_lineas_devolubles(:va) WHERE detalle_id = :va_perf),
+                      'lo pedido en una solicitud pendiente queda apartado');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'CAMBIO', 'Ahora quiere cambiarlo', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
+                                   :elsa, :'pc_dva', :va, :va_perf), 'solo queda(n) 0 por devolver');
+SELECT pg_temp.afirma((SELECT subtotal = 1000 AND descuento = 100 AND total = 900 AND estado = 'COMPLETADA' FROM venta WHERE id = :va), 'la factura original no cambia');
+-- Solo el administrador aprueba o rechaza
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, true)', :dora, :s1), 'DEVOLUCIONES_APROBAR');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, true)', :elsa, :s1), 'DEVOLUCIONES_APROBAR');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, 999999, true)', :admin), 'La devolución 999999 no existe');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, false)', :admin, :s1), 'Para rechazar una devolución escriba el motivo');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, NULL)', :admin, :s1), 'Indique si la aprueba o la rechaza');
+SELECT fn_abrir_turno(:beto, :caja_dvb, 500, 0) AS t_dvb \gset
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :beto, :s1, :t_dvb), 'está pendiente: solo se ejecuta una aprobada');
+SELECT fn_resolver_devolucion(:admin, :s1, true, 'Proceda');
+SELECT pg_temp.afirma((SELECT estado = 'APROBADA' AND resuelta_por = :admin AND comentario = 'Proceda' AND vence_el = :'hoy'::date + 3 FROM devolucion WHERE id = :s1)
+                  AND NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_PENDIENTE' AND (detalle->>'devolucion_id')::bigint = :s1),
+                      'aprobada: tiene 3 días para ejecutarse y su alerta queda atendida');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, false, %L)', :admin, :s1, 'Mejor no'), 'ya fue aprobada');
+-- Se ejecuta en la caja abierta de la sucursal donde está el cliente (aquí, la B)
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :rita, :s1, :t_dvb), 'DEVOLUCIONES_REGISTRAR');
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s1, :t_dvb), 'no está asignado a la sucursal');
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s1, :t_dva1), 'No hay un turno abierto');
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":1}]')$q$, :beto, :s1, :t_dvb, :dcad),
+                            'es una devolución, no un cambio');
+SELECT pg_temp.afirma(fn_puede_ver_devolucion(:beto, :s1) AND fn_puede_ver_devolucion(:carlos, :s1) AND NOT fn_puede_ver_devolucion(:rita, :s1),
+                      'una aprobada la ve cualquier vendedor (se puede ejecutar donde aparezca el cliente); quien no registra devoluciones, no');
+SELECT fn_ejecutar_devolucion(:beto, :s1, :t_dvb);
+SELECT pg_temp.afirma((SELECT estado = 'EJECUTADA' AND numero = 'DEV-DVB-000001' AND sucursal_id = :dvb AND turno_id = :t_dvb AND ejecutada_por = :beto
+                              AND monto_saldo = 0 AND monto_efectivo = 360 AND monto_transferencia = 0 AND venta_cambio_id IS NULL
+                         FROM devolucion WHERE id = :s1),
+                      'ejecutada en la otra sucursal, con su número propio: como se pagó en efectivo, los C$360 salen de la caja');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dvb AND variante_id = :dperf) = 1
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dva AND variante_id = :dperf) = 5,
+                      'lo devuelto en buen estado entra al stock de la sucursal donde se ejecuta');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(m.tipo = 'DEVOLUCION' AND m.cantidad = 1 AND m.sucursal_id = :dvb AND m.costo_unitario = 150
+                                                       AND m.motivo = 'Devolución DEV-DVB-000001 de la factura DVA-00000001' AND dd.movimiento_id = m.id AND dd.merma_id IS NULL)
+                         FROM movimiento_inventario m JOIN devolucion_detalle dd ON dd.devolucion_id = m.devolucion_id
+                        WHERE m.devolucion_id = :s1),
+                      'queda en el kardex como DEVOLUCION, al costo con que se vendió');
+SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:t_dvb) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 140,
+                      'el efectivo devuelto cuenta en lo esperado del arqueo: 500 − 360 = 140');
+SELECT pg_temp.afirma((SELECT devuelta = 1 AND apartada = 0 AND disponible = 0 FROM fn_lineas_devolubles(:va) WHERE detalle_id = :va_perf)
+                  AND (SELECT subtotal = 1000 AND total = 900 AND estado = 'COMPLETADA' FROM venta WHERE id = :va)
+                  AND (SELECT count(*) = 2 FROM venta_detalle WHERE venta_id = :va),
+                      'la factura original sigue igual; el perfume ya consta como devuelto');
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :beto, :s1, :t_dvb), 'ya se ejecutó (DEV-DVB-000001)');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_transferencia_devolucion(%s, %s, %L)', :admin, :s1, 'BAC-1'), 'no tiene nada que transferir');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_devolucion(%s, %s, %L)', :admin, :s1, 'Ya no la quiere'), 'ya fue ejecutada y no se puede cancelar');
+-- Una devolución no se borra ni se reescribe
+SELECT pg_temp.espera_error(format('UPDATE devolucion SET monto_total = 1 WHERE id = %s', :s1), 'no se modifican');
+SELECT pg_temp.espera_error(format('UPDATE devolucion SET monto_efectivo = 0, monto_transferencia = 360 WHERE id = %s', :s1), 'ya se ejecutó: solo se le anota la transferencia');
+SELECT pg_temp.espera_error(format('UPDATE devolucion SET estado = %L WHERE id = %s', 'PENDIENTE', :s1), 'ya se ejecutó');
+SELECT pg_temp.espera_error(format('DELETE FROM devolucion WHERE id = %s', :s1), 'no se eliminan');
+SELECT pg_temp.espera_error(format('DELETE FROM devolucion_detalle WHERE devolucion_id = %s', :s1), 'no se eliminan');
+SELECT pg_temp.espera_error(format('UPDATE devolucion_detalle SET cantidad = 5 WHERE devolucion_id = %s', :s1), 'no se modifican');
+SELECT pg_temp.espera_error(format('INSERT INTO devolucion_detalle (devolucion_id, venta_detalle_id, cantidad, estado_producto, monto) VALUES (%s, %s, 1, %L, 1)', :s1, :va_cad, 'BUENO'),
+                            'se registran al crear la solicitud');
+SELECT pg_temp.espera_error(format('INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante, usuario_id) VALUES (%s, %s, %L, 1, 0, %s)', :dva, :dperf, 'DEVOLUCION', :admin),
+                            'ck_mov_devolucion');
+
+\echo 'S2: dos perfumes de una venta pagada 1/3 en efectivo; uno vuelve bueno y otro defectuoso'
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vb, 'DEVOLUCION', 'Uno venía con el atomizador roto', 'Luis Cliente', '7777-0000',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"DEFECTUOSO"},{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vb_perf, :vb_perf)::jsonb) AS s2 \gset
+SELECT pg_temp.afirma((SELECT monto_total = 800 FROM devolucion WHERE id = :s2)
+                  AND (SELECT count(*) = 2 AND bool_and(cantidad = 1 AND monto = 400) FROM devolucion_detalle WHERE devolucion_id = :s2),
+                      'una línea puede ir en parte buena y en parte defectuosa: 2 de 3 perfumes, C$800');
+SELECT fn_resolver_devolucion(:admin, :s2, true);
+SELECT fn_abrir_turno(:dora, :caja_dva, 5000, 0) AS t_dva2 \gset
+SELECT fn_ejecutar_devolucion(:dora, :s2, :t_dva2);
+SELECT pg_temp.afirma((SELECT numero = 'DEV-DVA-000001' AND monto_efectivo = 266.67 AND monto_transferencia = 533.33 AND monto_saldo = 0
+                              AND transferida_at IS NULL FROM devolucion WHERE id = :s2),
+                      'pago mixto: 1/3 de los C$800 sale en efectivo de la caja (266.67) y el resto queda para transferir (533.33)');
+SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:t_dva2) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 4733.33
+                  AND NOT EXISTS (SELECT 1 FROM fn_resumen_turno(:t_dva2) WHERE metodo <> 'Efectivo'),
+                      'al arqueo solo entra el efectivo: lo que se transfiere no pasa por la caja');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dva AND variante_id = :dperf) = 6,
+                      'entran los dos perfumes y el defectuoso sale enseguida: 5 + 2 − 1 = 6');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(me.estado = 'APROBADA' AND me.cantidad = 1 AND me.sucursal_id = :dva AND me.reportada_por = :dora
+                                                       AND me.resuelta_por = :admin AND me.motivo = 'Devuelto defectuoso (DEV-DVA-000001): Uno venía con el atomizador roto'
+                                                       AND mo.tipo = 'MERMA' AND mo.cantidad = -1 AND mo.costo_unitario = 150 AND dd.estado_producto = 'DEFECTUOSO')
+                         FROM devolucion_detalle dd JOIN merma me ON me.id = dd.merma_id JOIN movimiento_inventario mo ON mo.id = me.movimiento_id
+                        WHERE dd.devolucion_id = :s2)
+                  AND (SELECT count(*) = 2 AND sum(cantidad) = 2 FROM movimiento_inventario WHERE devolucion_id = :s2),
+                      'lo defectuoso entra como merma ya aprobada; todo queda en el kardex');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(titulo = 'Devolución DEV-DVA-000001: falta transferirle al cliente C$ 533.33' AND (detalle->>'monto')::numeric = 533.33)
+                         FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_TRANSFERENCIA' AND (detalle->>'devolucion_id')::bigint = :s2),
+                      'queda una alerta para que el administrador haga la transferencia');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_transferencia_devolucion(%s, %s, %L)', :dora, :s2, 'BAC-778899'), 'DEVOLUCIONES_APROBAR');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_transferencia_devolucion(%s, %s, %L)', :admin, :s2, ' x '), 'Escriba la referencia de la transferencia');
+SELECT fn_registrar_transferencia_devolucion(:admin, :s2, ' BAC-778899 ');
+SELECT pg_temp.afirma((SELECT transferencia_referencia = 'BAC-778899' AND transferida_por = :admin AND transferida_at IS NOT NULL FROM devolucion WHERE id = :s2)
+                  AND NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_TRANSFERENCIA' AND (detalle->>'devolucion_id')::bigint = :s2)
+                  AND (SELECT monto_esperado FROM fn_resumen_turno(:t_dva2) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 4733.33,
+                      'la transferencia queda anotada con su referencia y no mueve la caja');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_transferencia_devolucion(%s, %s, %L)', :admin, :s2, 'BAC-000'), 'ya está anotada (BAC-778899)');
+
+\echo 'Cancelar, rechazar y vencer: en los tres casos se libera lo apartado'
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vb, 'DEVOLUCION', 'El tercero tampoco le gustó', 'Luis Cliente', '7777-0000',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vb_perf)::jsonb) AS s3 \gset
+SELECT pg_temp.afirma((SELECT monto_total = 400 FROM devolucion WHERE id = :s3) AND (SELECT disponible = 0 AND apartada = 1 AND devuelta = 2 AND asignado = 1200 FROM fn_lineas_devolubles(:vb)),
+                      'la última unidad completa lo pagado por la línea: nunca se devuelve más de lo que se pagó');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_devolucion(%s, %s, %L)', :beto, :s3, 'No era mía'), 'Solo quien hizo la solicitud o el administrador');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_devolucion(%s, %s, %L)', :dora, :s3, 'no'), 'Escriba por qué se cancela');
+SELECT fn_cancelar_devolucion(:dora, :s3, 'El cliente se lo quedó');
+SELECT pg_temp.afirma((SELECT estado = 'CANCELADA' AND cancelada_por = :dora AND motivo_cancelacion = 'El cliente se lo quedó' FROM devolucion WHERE id = :s3)
+                  AND (SELECT disponible = 1 AND apartada = 0 FROM fn_lineas_devolubles(:vb))
+                  AND NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_PENDIENTE' AND (detalle->>'devolucion_id')::bigint = :s3),
+                      'quien la solicitó la cancela: se libera lo apartado y se atiende su alerta');
+SELECT pg_temp.espera_error(format('SELECT fn_cancelar_devolucion(%s, %s, %L)', :admin, :s3, 'Otra vez'), 'ya fue cancelada');
+SELECT pg_temp.espera_error(format('SELECT fn_resolver_devolucion(%s, %s, true)', :admin, :s3), 'ya fue cancelada');
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vb, 'DEVOLUCION', 'Insiste en devolver el tercero', 'Luis Cliente', '7777-0000',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vb_perf)::jsonb) AS s4 \gset
+SELECT fn_resolver_devolucion(:admin, :s4, false, 'El perfume viene usado');
+SELECT pg_temp.afirma((SELECT estado = 'RECHAZADA' AND comentario = 'El perfume viene usado' AND vence_el IS NULL FROM devolucion WHERE id = :s4)
+                  AND (SELECT disponible = 1 FROM fn_lineas_devolubles(:vb)),
+                      'rechazada con su comentario: no aparta nada');
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s4, :t_dva2), 'está rechazada: solo se ejecuta una aprobada');
+SELECT pg_temp.espera_error(format('UPDATE devolucion SET estado = %L WHERE id = %s', 'APROBADA', :s4), 'ya fue rechazada y no se modifica');
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vb, 'DEVOLUCION', 'Vuelve a pedir la devolución', 'Luis Cliente', '7777-0000',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vb_perf)::jsonb) AS s5 \gset
+SELECT fn_resolver_devolucion(:admin, :s5, true);
+SELECT pg_temp.afirma(fn_vencer_devoluciones() = 0 AND fn_vencer_devoluciones(now() + interval '3 days') = 0,
+                      'la aprobada sigue viva hasta su tercer día inclusive');
+BEGIN;
+UPDATE devolucion SET vence_el = :'hoy'::date - 1 WHERE id = :s5;
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s5, :t_dva2), 'venció el');
+ROLLBACK;
+SELECT pg_temp.afirma(fn_vencer_devoluciones(now() + interval '4 days') = 1, 'pasado el plazo, la tarea la cancela sola');
+SELECT pg_temp.afirma((SELECT estado = 'CANCELADA' AND cancelada_por IS NULL AND motivo_cancelacion LIKE 'Venció: estaba aprobada y no se ejecutó hasta el %' FROM devolucion WHERE id = :s5)
+                  AND (SELECT disponible = 1 AND apartada = 0 FROM fn_lineas_devolubles(:vb))
+                  AND (SELECT estado = 'EJECUTADA' FROM devolucion WHERE id = :s2),
+                      'la vencida queda cancelada (sin usuario: venció sola) y libera lo apartado; las demás no se tocan');
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s5, :t_dva2), 'está cancelada');
+
+\echo 'S6: cambio por algo más caro (la venta original se pagó con tarjeta)'
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[]', NULL, NULL, NULL, NULL, NULL, 400)$q$, :dora, :t_dva2, :dperf),
+                            'El saldo por cambio solo se aplica al ejecutar una devolución aprobada');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"SALDO_CAMBIO","monto":400}]')$q$, :dora, :t_dva2, :dperf),
+                            'Método de pago inválido: SALDO_CAMBIO');
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vd, 'CAMBIO', 'Prefiere dos perfumes', 'Marta Cliente', '8765-4321',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vd_cad)::jsonb) AS s6 \gset
+SELECT pg_temp.afirma((SELECT tipo = 'CAMBIO' AND monto_total = 540 FROM devolucion WHERE id = :s6)
+                  AND (SELECT titulo = 'Cambio por aprobar: factura DVA-00000004, C$ 540.00' FROM v_alertas_pendientes WHERE tipo = 'DEVOLUCION_PENDIENTE' AND (detalle->>'devolucion_id')::bigint = :s6),
+                      'cambio: una de las dos cadenas con promoción vale C$540');
+SELECT fn_resolver_devolucion(:admin, :s6, true);
+SELECT pg_temp.espera_error(format('SELECT fn_ejecutar_devolucion(%s, %s, %s)', :dora, :s6, :t_dva2), 'Para ejecutar un cambio indique lo que se lleva el cliente');
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":2}]', '[{"metodo":"EFECTIVO","monto":300}]')$q$, :dora, :s6, :t_dva2, :dperf),
+                            'necesita su clave de idempotencia');
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":2}]', '[{"metodo":"EFECTIVO","monto":100}]', gen_random_uuid())$q$, :dora, :s6, :t_dva2, :dperf),
+                            'Pago insuficiente: total C$ 800.00, pagado C$ 640.00');
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":2}]', '[{"metodo":"TARJETA","monto":300,"referencia":"V-1"}]', gen_random_uuid())$q$, :dora, :s6, :t_dva2, :dperf),
+                            'exceden el total');
+SELECT pg_temp.afirma((SELECT ultimo_numero_devolucion FROM sucursal WHERE id = :dva) = 1 AND (SELECT estado = 'APROBADA' FROM devolucion WHERE id = :s6)
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dva AND variante_id = :dcad) = 2
+                  AND (SELECT ultimo_numero_venta FROM sucursal WHERE id = :dva) = 7,
+                      'un cambio que falla no deja nada: ni número, ni inventario, ni venta');
+SELECT gen_random_uuid() AS clave6 \gset
+SELECT fn_ejecutar_devolucion(:dora, :s6, :t_dva2, format('[{"variante_id":%s,"cantidad":2}]', :dperf)::jsonb, '[{"metodo":"EFECTIVO","monto":300}]', :'clave6', 'Cambio de cadena por perfumes');
+SELECT venta_cambio_id AS v6 FROM devolucion WHERE id = :s6 \gset
+SELECT pg_temp.afirma((SELECT estado = 'EJECUTADA' AND numero = 'DEV-DVA-000002' AND monto_saldo = 540 AND monto_efectivo = 0 AND monto_transferencia = 0 FROM devolucion WHERE id = :s6)
+                  AND (SELECT turno_id = :t_dva2 AND vendedor_id = :dora AND subtotal = 800 AND descuento = 0 AND total = 800 AND promocion_id IS NULL
+                              AND cliente_nombre = 'Marta Cliente' AND clave_idempotencia = :'clave6' AND notas = 'Cambio de cadena por perfumes'
+                         FROM venta WHERE id = :v6),
+                      'el cambio es una venta nueva (sin promoción) y toma el siguiente número de devolución, sin saltos');
+SELECT pg_temp.afirma((SELECT count(*) = 3
+                              AND sum(vp.monto) FILTER (WHERE m.codigo = 'SALDO_CAMBIO') = 540
+                              AND sum(vp.monto) FILTER (WHERE m.es_efectivo AND NOT vp.es_vuelto) = 300
+                              AND sum(vp.monto) FILTER (WHERE vp.es_vuelto) = -40
+                         FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id WHERE vp.venta_id = :v6),
+                      'lo devuelto entra como "saldo por cambio" (C$540) y el cliente paga la diferencia: C$260 (dio 300, vuelto 40)');
+SELECT pg_temp.afirma((SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dva AND variante_id = :dcad) = 3
+                  AND (SELECT cantidad FROM stock_sucursal WHERE sucursal_id = :dva AND variante_id = :dperf) = 4,
+                      'vuelve la cadena y salen los dos perfumes');
+SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:t_dva2) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 4993.33
+                  AND NOT EXISTS (SELECT 1 FROM fn_resumen_turno(:t_dva2) WHERE metodo <> 'Efectivo'),
+                      'el saldo por cambio no es dinero: al arqueo solo entran los C$260 que pagó');
+SELECT pg_temp.espera_error(format('SELECT fn_anular_venta(%s, %s, %L)', :admin, :v6, 'Se equivocaron de perfume'), 'nació del cambio DEV-DVA-000002: no se anula');
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":2}]', '[{"metodo":"EFECTIVO","monto":300}]', %L)$q$, :dora, :s6, :t_dva2, :dperf, :'clave6'),
+                            'ya se ejecutó (DEV-DVA-000002)');
+
+\echo 'S7: cambio por algo más barato (venta pagada mitad en efectivo, mitad por transferencia)'
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :vf, 'CAMBIO', 'La quiere cambiar por un perfume', 'Nora Cliente', '8111-2222',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :vf_cad)::jsonb) AS s7 \gset
+SELECT fn_resolver_devolucion(:admin, :s7, true);
+SELECT pg_temp.espera_error(format($q$SELECT fn_ejecutar_devolucion(%s, %s, %s, '[{"variante_id":%s,"cantidad":1}]', '[]', %L)$q$, :dora, :s7, :t_dva2, :dperf, :'clave6'),
+                            'Esa clave de idempotencia ya es de otra venta');
+SELECT fn_ejecutar_devolucion(:dora, :s7, :t_dva2, format('[{"variante_id":%s,"cantidad":1}]', :dperf)::jsonb, '[]', gen_random_uuid());
+SELECT venta_cambio_id AS v7 FROM devolucion WHERE id = :s7 \gset
+SELECT pg_temp.afirma((SELECT numero = 'DEV-DVA-000003' AND monto_total = 600 AND monto_saldo = 400 AND monto_efectivo = 100 AND monto_transferencia = 100 FROM devolucion WHERE id = :s7)
+                  AND (SELECT total = 400 FROM venta WHERE id = :v7)
+                  AND (SELECT count(*) = 1 AND bool_and(m.codigo = 'SALDO_CAMBIO' AND vp.monto = 400) FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id WHERE vp.venta_id = :v7),
+                      'lo nuevo cuesta menos: C$400 de saldo y los C$200 que sobran se devuelven como se pagó (100 en efectivo, 100 por transferencia)');
+SELECT pg_temp.afirma((SELECT monto_esperado FROM fn_resumen_turno(:t_dva2) WHERE metodo = 'Efectivo' AND moneda = 'NIO') = 4893.33
+                  AND (SELECT titulo = 'Devolución DEV-DVA-000003: falta transferirle al cliente C$ 100.00' FROM v_alertas_pendientes
+                        WHERE tipo = 'DEVOLUCION_TRANSFERENCIA' AND (detalle->>'devolucion_id')::bigint = :s7),
+                      'los C$100 en efectivo salen de la caja y los otros C$100 quedan para transferir');
+
+\echo 'Cierre de la caja con devoluciones y cambios'
+SELECT pg_temp.espera_error(format($q$SELECT fn_cerrar_turno(%s, %s, '[{"moneda":"NIO","valor":1,"cantidad":4893}]', '[{"metodo":"SALDO_CAMBIO","monto":940}]')$q$, :dora, :t_dva2),
+                            'Método de pago o monto inválido en el arqueo: SALDO_CAMBIO');
+SELECT fn_cerrar_turno(:dora, :t_dva2, '[{"moneda":"NIO","valor":1,"cantidad":4893}]') AS ticket_dva2 \gset
+SELECT pg_temp.afirma((:'ticket_dva2'::jsonb->>'cerrado')::boolean
+                  AND (SELECT count(*) = 1 AND bool_and(m.es_efectivo AND d.moneda = 'NIO' AND d.monto_esperado = 4893.33 AND d.diferencia = -0.33)
+                         FROM cierre_caja_detalle d JOIN metodo_pago m ON m.id = d.metodo_pago_id WHERE d.turno_id = :t_dva2),
+                      'la caja cuadra contando lo que salió por las devoluciones (faltan 33 centavos: no hay monedas para eso)');
+SELECT pg_temp.afirma(NOT (:'ticket_dva2'::jsonb ?| ARRAY['devoluciones', 'devuelto_efectivo', 'saldo_cambio', 'cobros', 'total_vendido']),
+                      'arqueo ciego: el ticket de quien cierra no trae las devoluciones ni el efectivo que salió por ellas');
+SELECT pg_temp.afirma((SELECT (t->>'ventas')::integer = 2 AND (t->>'total_vendido')::numeric = 1200 AND (t->>'saldo_cambio')::numeric = 940
+                              AND (t->>'devoluciones')::integer = 3 AND (t->>'devuelto_efectivo')::numeric = 366.67
+                              AND jsonb_array_length(t->'cobros') = 1 AND (t->'cobros'->0->>'monto')::numeric = 260
+                         FROM fn_ticket_cierre(:t_dva2, true) t),
+                      'el ticket completo sí: 3 devoluciones, C$366.67 devueltos en efectivo, y lo vendido = cobrado (260) + saldo por cambio (940)');
+
+\echo 'S8: se devuelve algo comprado en un cambio'
+SELECT pg_temp.afirma(fn_proporcion_efectivo(:v6) = 0.325,
+                      'la venta del cambio se pagó con C$260 en efectivo y C$540 de saldo de una venta con tarjeta: 32.5 % en efectivo');
+SELECT id AS v6_perf FROM venta_detalle WHERE venta_id = :v6 \gset
+SELECT fn_solicitar_devolucion(:admin, NULL, :v6, 'DEVOLUCION', 'Uno de los perfumes del cambio no le gustó', 'Marta Cliente', '8765-4321',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :v6_perf)::jsonb) AS s8 \gset
+SELECT pg_temp.afirma((SELECT sucursal_solicitud_id = :dva AND monto_total = 400 FROM devolucion WHERE id = :s8),
+                      'el administrador, sin equipo registrado, la solicita en la sucursal de la venta');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, NULL, %s, 'DEVOLUCION', 'Otro perfume del cambio', 'Marta Cliente', '8765-4321', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', %s)$q$,
+                                   :admin, :v6, :v6_perf, :bod), 'no existe o no es de venta');
+SELECT fn_resolver_devolucion(:admin, :s8, true);
+SELECT fn_abrir_turno(:dora, :caja_dva, 4893, 0) AS t_dva3 \gset
+SELECT fn_ejecutar_devolucion(:dora, :s8, :t_dva3);
+SELECT pg_temp.afirma((SELECT numero = 'DEV-DVA-000004' AND monto_efectivo = 130 AND monto_transferencia = 270 FROM devolucion WHERE id = :s8),
+                      'se reembolsa siguiendo el dinero hasta la venta de origen: C$130 en efectivo y C$270 por transferencia');
+
+\echo 'Reportes e impresión'
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_devoluciones_reporte(:admin, :'hoy', :'hoy', :dva)) = 5
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:admin, :'hoy', :'hoy', :dvb)) = 0
+                  AND (SELECT count(*) = 1 AND bool_and(x = :s1) FROM fn_devoluciones_reporte(:admin, :'hoy', :'hoy', :dvb, 'CAJA') x)
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:admin, :'hoy', :'hoy', :dva, 'CAJA')) = 4
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:admin, :'hoy', :'hoy', :dvb, 'AMBAS')) = 1
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:admin, :'hoy'::date - 30, :'hoy'::date - 1, :dva)) = 0,
+                      'reportes: la devolución cuenta el día en que se ejecutó; para las ventas, en la sucursal de la venta original; para la caja, donde se ejecutó');
+SELECT pg_temp.afirma((SELECT count(*) = 3 AND bool_and(x IN (:s2, :s6, :s7)) FROM fn_devoluciones_reporte(:lina, :'hoy', :'hoy', NULL, 'AMBAS') x)
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:elsa, :'hoy', :'hoy', NULL, 'AMBAS')) = 5
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:rita, :'hoy', :'hoy', NULL, 'AMBAS')) = 0
+                  AND (SELECT count(*) FROM fn_devoluciones_reporte(:dora, :'hoy', :'hoy', NULL, 'AMBAS')) = 0,
+                      'reportes: sin CAJA_VER_DIFERENCIAS no entran las ejecutadas en un turno abierto; cada quien, sus sucursales; sin REPORTES_VER, ninguna');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(cantidad = -1 AND venta_neta = -360 AND costo = -150 AND margen = -210 AND subtotal_linea = -400
+                                                       AND vendedor_id = :dora AND sucursal_id = :dva AND dia = :'hoy' AND venta_id = :va AND detalle_id = :va_perf
+                                                       AND devolucion_numero = 'DEV-DVB-000001' AND estado_producto = 'BUENO')
+                         FROM v_devoluciones_linea WHERE devolucion_id = :s1)
+                  AND (SELECT sum(venta_neta) FROM (SELECT venta_neta FROM v_ventas_linea WHERE venta_id = :va
+                                                    UNION ALL SELECT venta_neta FROM v_devoluciones_linea WHERE venta_id = :va) x) = 540,
+                      'venta neta: la devolución resta con signo negativo, a la vendedora y a la sucursal de la venta original');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_devolucion(%s, 999999)', :admin), 'La devolución 999999 no existe');
+SELECT pg_temp.afirma(fn_registrar_impresion_devolucion(:beto, :s1) = 1, 'ticket de devolución: la primera impresión es el original');
+SELECT pg_temp.afirma(fn_registrar_impresion_devolucion(:dora, :s1) = 2 AND fn_registrar_impresion_devolucion(:admin, :s1) = 3,
+                      'ticket de devolución: las siguientes son copia (la imprime también la sucursal que la solicitó)');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_devolucion(%s, %s)', :carlos, :s1), 'No puede imprimir el ticket de la devolución');
+SELECT fn_solicitar_devolucion(:dora, :'pc_dva', :ve, 'DEVOLUCION', 'La cadena le queda corta', 'Ana Cliente', '8222-3333',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :ve_cad)::jsonb) AS s9 \gset
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_impresion_devolucion(%s, %s)', :dora, :s9), 'todavía no se ejecuta: el ticket sale al ejecutarla');
+SELECT pg_temp.espera_error(format('SELECT fn_registrar_transferencia_devolucion(%s, %s, %L)', :admin, :s9, 'BAC-1'), 'todavía no se ejecuta');
+SELECT pg_temp.afirma(NOT fn_puede_ver_devolucion(:beto, :s9) AND fn_puede_ver_devolucion(:elsa, :s9) AND fn_puede_ver_devolucion(:admin, :s9),
+                      'una solicitud pendiente la ven su sucursal y el administrador');
+SELECT pg_temp.espera_error(format('INSERT INTO ticket_impresion (venta_id, devolucion_id, usuario_id) VALUES (%s, %s, %s)', :va, :s1, :admin), 'ck_impresion_de');
+SELECT fn_cierre_forzado(:admin, :t_dvb, 'Cierre de la sucursal B de las pruebas de devoluciones');
+SELECT fn_cierre_forzado(:admin, :t_dva3, 'Cierre de la sucursal A de las pruebas de devoluciones');
+SELECT pg_temp.afirma((SELECT count(*) FROM fn_devoluciones_reporte(:lina, :'hoy', :'hoy', NULL, 'AMBAS')) = 5, 'reportes: cerrados los turnos, sus devoluciones ya entran para todos');
+
+\echo '\n=== 25. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+SELECT pg_temp.afirma((SELECT sum(ultimo_numero_devolucion) FROM sucursal) = 5
+                  AND NOT EXISTS (
+                        SELECT 1 FROM sucursal s
+                         WHERE (SELECT count(*) FROM devolucion d WHERE d.sucursal_id = s.id) <> s.ultimo_numero_devolucion
+                            OR EXISTS (SELECT 1 FROM generate_series(1, s.ultimo_numero_devolucion) n
+                                        WHERE NOT EXISTS (SELECT 1 FROM devolucion d
+                                                           WHERE d.sucursal_id = s.id
+                                                             AND d.numero = 'DEV-' || s.codigo || '-' || lpad(n::text, 6, '0'))))
+                  AND NOT EXISTS (SELECT 1 FROM devolucion WHERE estado <> 'EJECUTADA' AND numero IS NOT NULL),
+                  'en cada sucursal las devoluciones van del 1 al último número, sin saltos (rechazadas, canceladas y fallidas no toman número)');
 -- Después de todas las ventas de arriba (completadas, anuladas, rechazadas y repetidas con la misma clave)
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_venta) FROM sucursal) > 0
                   AND NOT EXISTS (

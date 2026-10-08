@@ -92,6 +92,34 @@ describe('ticket de cierre de caja', () => {
     ]);
   });
 
+  it('con devoluciones o cambios en el turno, el completo dice cuántos y el efectivo que salió', () => {
+    const conCambios: TicketCierre = {
+      ...completo,
+      saldo_cambio: '940.00',
+      devoluciones: 3,
+      devuelto_efectivo: '366.67',
+    };
+    const texto = comoTexto(renglonesTicketCierre(conCambios, 1, null));
+    expect(texto.slice(texto.indexOf('Cobrado'), -3)).toEqual([
+      'Cobrado',
+      'Efectivo C$ | 2,265.03',
+      'Efectivo US$ | 40.00',
+      'Tarjeta C$ | 1,100.00',
+      'Saldo por cambio C$ | 940.00',
+      '',
+      'Devoluciones y cambios',
+      'Ejecutados en el turno | 3',
+      'Efectivo devuelto C$ | 366.67',
+    ]);
+    // sin devoluciones ni saldo, esos renglones no salen; y el de quien cerró nunca los trae
+    const sinCambios = { ...completo, saldo_cambio: '0.00', devoluciones: 0 };
+    for (const ticket of [sinCambios, { ...reducido, devoluciones: 3, saldo_cambio: '940.00' }]) {
+      expect(comoTexto(renglonesTicketCierre(ticket, 1, null)).join('\n')).not.toMatch(
+        /Saldo por cambio|Devoluciones|devuelto/,
+      );
+    }
+  });
+
   it('ninguno trae lo esperado ni la diferencia', () => {
     for (const ticket of [reducido, completo]) {
       const texto = comoTexto(renglonesTicketCierre(ticket, 1, 'Esmeralda Experience')).join('\n');

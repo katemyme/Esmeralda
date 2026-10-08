@@ -64,6 +64,15 @@ export function renglonesTicketCierre(
     renglones.push({ tipo: 'espacio' });
     texto('Cobrado', true);
     porMetodo(ticket.cobros);
+    // Lo devuelto en un cambio que pagó parte de una venta: no es dinero que haya entrado
+    if (Number(ticket.saldo_cambio) > 0)
+      par('Saldo por cambio C$', monto(ticket.saldo_cambio ?? 0));
+    if ((ticket.devoluciones ?? 0) > 0) {
+      renglones.push({ tipo: 'espacio' });
+      texto('Devoluciones y cambios', true);
+      par('Ejecutados en el turno', String(ticket.devoluciones));
+      par('Efectivo devuelto C$', monto(ticket.devuelto_efectivo ?? 0));
+    }
   }
 
   linea();

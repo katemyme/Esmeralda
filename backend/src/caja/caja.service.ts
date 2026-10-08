@@ -60,9 +60,9 @@ export interface MontoPorMetodo {
 
 /**
  * Ticket de cierre (fn_ticket_cierre). Nunca trae el monto esperado ni la diferencia. Quien cerró
- * recibe lo que contó, lo que retiró y el fondo que dejó; las ventas y lo cobrado por método solo
- * llegan a quien tiene CAJA_VER_DIFERENCIAS. En un cierre forzado no hubo conteo: sin ese permiso
- * no trae montos.
+ * recibe lo que contó, lo que retiró y el fondo que dejó; las ventas, lo cobrado por método y las
+ * devoluciones del turno solo llegan a quien tiene CAJA_VER_DIFERENCIAS. En un cierre forzado no
+ * hubo conteo: sin ese permiso no trae montos.
  */
 export interface TicketCierre {
   turno_id: number;
@@ -82,7 +82,13 @@ export interface TicketCierre {
   anuladas?: number;
   total_vendido?: string;
   descuentos_promociones?: string;
+  /** Dinero cobrado de verdad: no incluye el saldo por cambio. total_vendido = cobros + saldo_cambio. */
   cobros?: MontoPorMetodo[];
+  /** Lo devuelto en cambios que se aplicó a ventas de este turno (no es dinero que entre a la caja). */
+  saldo_cambio?: string;
+  /** Devoluciones y cambios ejecutados en el turno, y el efectivo que salió de la caja por ellos. */
+  devoluciones?: number;
+  devuelto_efectivo?: string;
 }
 
 /** Un turno con su resultado. Solo para quien tiene CAJA_VER_DIFERENCIAS. */
@@ -221,6 +227,9 @@ interface TicketCrudo {
   total_vendido?: number;
   descuentos_promociones?: number;
   cobros?: { metodo: string; moneda: string; monto: number }[];
+  saldo_cambio?: number;
+  devoluciones?: number;
+  devuelto_efectivo?: number;
 }
 
 /** Monto de un JSON de la base → texto con 2 decimales, como el resto de los montos de la API. */
@@ -255,6 +264,9 @@ function aTicket(t: TicketCrudo): TicketCierre {
       total_vendido: monto(t.total_vendido ?? 0),
       descuentos_promociones: monto(t.descuentos_promociones ?? 0),
       cobros: montos(t.cobros),
+      saldo_cambio: monto(t.saldo_cambio ?? 0),
+      devoluciones: t.devoluciones ?? 0,
+      devuelto_efectivo: monto(t.devuelto_efectivo ?? 0),
     }),
   };
 }
@@ -511,11 +523,13 @@ export class CajaService {
     };
   }
 
+  /** Los que se eligen al cobrar: el interno (saldo por cambio) lo pone el sistema. */
   async metodosPago(): Promise<MetodoPago[]> {
     return this.bd.db
       .selectFrom('metodo_pago')
       .select(['codigo', 'nombre', 'es_efectivo', 'requiere_referencia'])
       .where('activo', '=', true)
+      .where('interno', '=', false)
       .orderBy('id')
       .execute();
   }

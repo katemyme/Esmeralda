@@ -31,7 +31,7 @@ export interface Existencia {
 export interface Movimiento {
   id: number;
   fecha: Date;
-  /** ENTRADA, VENTA, TRASLADO_SALIDA, TRASLADO_ENTRADA, AJUSTE_POSITIVO, AJUSTE_NEGATIVO, MERMA o ANULACION_VENTA. */
+  /** ENTRADA, VENTA, TRASLADO_SALIDA, TRASLADO_ENTRADA, AJUSTE_POSITIVO, AJUSTE_NEGATIVO, MERMA, ANULACION_VENTA o DEVOLUCION. */
   tipo: string;
   /** Con signo: positiva entra, negativa sale. */
   cantidad: number;
@@ -45,6 +45,7 @@ export interface Movimiento {
   venta_id: number | null;
   envio_id: number | null;
   compra_id: number | null;
+  devolucion_id: number | null;
 }
 
 interface FilaExistencia {
@@ -82,6 +83,7 @@ interface FilaMovimiento {
   venta_id: number | null;
   envio_id: number | null;
   compra_id: number | null;
+  devolucion_id: number | null;
 }
 
 function aMovimiento(f: FilaMovimiento): Movimiento {
@@ -99,6 +101,7 @@ function aMovimiento(f: FilaMovimiento): Movimiento {
     venta_id: f.venta_id,
     envio_id: f.envio_id,
     compra_id: f.compra_id,
+    devolucion_id: f.devolucion_id,
   };
 }
 
@@ -223,7 +226,7 @@ export class InventarioService {
              s.id as sucursal_id, s.codigo as sucursal_codigo, s.nombre as sucursal_nombre,
              va.id as variante_id, va.sku, pr.nombre || ' — ' || va.nombre as variante_nombre,
              u.id as usuario_id, u.nombre_completo as usuario_nombre,
-             m.venta_id, m.envio_id, m.compra_id
+             m.venta_id, m.envio_id, m.compra_id, m.devolucion_id
         from movimiento_inventario m
         join sucursal s on s.id = m.sucursal_id
         join variante va on va.id = m.variante_id

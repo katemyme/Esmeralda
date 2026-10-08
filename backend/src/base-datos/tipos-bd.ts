@@ -79,6 +79,7 @@ export interface CajaMovimiento {
 
 export interface Categoria {
   activa: Generated<boolean>;
+  admite_devolucion: Generated<boolean>;
   created_at: Generated<Timestamp>;
   descripcion: string | null;
   id: Generated<number>;
@@ -168,6 +169,50 @@ export interface Denominacion {
   valor: Numeric;
 }
 
+export interface Devolucion {
+  cancelada_at: Timestamp | null;
+  cancelada_por: number | null;
+  cliente_nombre: string;
+  cliente_telefono: string;
+  comentario: string | null;
+  ejecutada_at: Timestamp | null;
+  ejecutada_por: number | null;
+  estado: Generated<string>;
+  id: Generated<number>;
+  monto_efectivo: Numeric | null;
+  monto_saldo: Numeric | null;
+  monto_total: Numeric;
+  monto_transferencia: Numeric | null;
+  motivo: string;
+  motivo_cancelacion: string | null;
+  numero: string | null;
+  resuelta_at: Timestamp | null;
+  resuelta_por: number | null;
+  solicitada_at: Generated<Timestamp>;
+  solicitada_por: number;
+  sucursal_id: number | null;
+  sucursal_solicitud_id: number;
+  tipo: string;
+  transferencia_referencia: string | null;
+  transferida_at: Timestamp | null;
+  transferida_por: number | null;
+  turno_id: number | null;
+  vence_el: string | null;
+  venta_cambio_id: number | null;
+  venta_id: number;
+}
+
+export interface DevolucionDetalle {
+  cantidad: number;
+  devolucion_id: number;
+  estado_producto: string;
+  id: Generated<number>;
+  merma_id: number | null;
+  monto: Numeric;
+  movimiento_id: number | null;
+  venta_detalle_id: number;
+}
+
 export interface Dispositivo {
   activo: Generated<boolean>;
   caja_id: number | null;
@@ -255,6 +300,7 @@ export interface MetodoPago {
   codigo: string;
   es_efectivo: Generated<boolean>;
   id: Generated<number>;
+  interno: Generated<boolean>;
   nombre: string;
   requiere_referencia: Generated<boolean>;
 }
@@ -263,6 +309,7 @@ export interface MovimientoInventario {
   cantidad: number;
   compra_id: number | null;
   costo_unitario: Numeric | null;
+  devolucion_id: number | null;
   envio_id: number | null;
   fecha: Generated<Timestamp>;
   id: Generated<number>;
@@ -412,11 +459,13 @@ export interface Sucursal {
   nombre: string;
   telefono: string | null;
   tipo: Generated<string>;
+  ultimo_numero_devolucion: Generated<number>;
   ultimo_numero_venta: Generated<number>;
   updated_at: Generated<Timestamp>;
 }
 
 export interface TicketImpresion {
+  devolucion_id: number | null;
   id: Generated<number>;
   impreso_at: Generated<Timestamp>;
   turno_id: number | null;
@@ -541,6 +590,38 @@ export interface VComprasMensualProveedor {
   moneda: string | null;
   proveedor: string | null;
   total_factura: Numeric | null;
+}
+
+export interface VDevolucionesLinea {
+  cantidad: number | null;
+  categoria: string | null;
+  categoria_id: number | null;
+  costo: Numeric | null;
+  detalle_id: number | null;
+  devolucion_id: number | null;
+  devolucion_numero: string | null;
+  dia: string | null;
+  estado_producto: string | null;
+  fecha: Timestamp | null;
+  fecha_local: Timestamp | null;
+  margen: Numeric | null;
+  numero: string | null;
+  precio_lista: Numeric | null;
+  precio_unitario: Numeric | null;
+  producto: string | null;
+  producto_id: number | null;
+  sku: string | null;
+  sobreprecio: Numeric | null;
+  subtotal_linea: Numeric | null;
+  sucursal: string | null;
+  sucursal_id: number | null;
+  tipo: string | null;
+  variante: string | null;
+  variante_id: number | null;
+  vendedor: string | null;
+  vendedor_id: number | null;
+  venta_id: number | null;
+  venta_neta: Numeric | null;
 }
 
 export interface Venta {
@@ -900,6 +981,8 @@ export interface DB {
   conteo: Conteo;
   conteo_detalle: ConteoDetalle;
   denominacion: Denominacion;
+  devolucion: Devolucion;
+  devolucion_detalle: DevolucionDetalle;
   dispositivo: Dispositivo;
   envio: Envio;
   envio_detalle: EnvioDetalle;
@@ -932,6 +1015,7 @@ export interface DB {
   v_cobros_metodo_diario: VCobrosMetodoDiario;
   v_compras: VCompras;
   v_compras_mensual_proveedor: VComprasMensualProveedor;
+  v_devoluciones_linea: VDevolucionesLinea;
   v_envios: VEnvios;
   v_envios_por_recibir: VEnviosPorRecibir;
   v_inventario_valorizado: VInventarioValorizado;

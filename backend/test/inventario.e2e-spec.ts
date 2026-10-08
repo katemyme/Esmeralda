@@ -660,6 +660,7 @@ describe('Inventario', () => {
         venta_id: null,
         envio_id: null,
         compra_id: null,
+        devolucion_id: null,
       });
     });
 

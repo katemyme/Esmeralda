@@ -45,6 +45,8 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('VENTAS_MODIFICAR_PRECIO','Ventas',    'Cobrar por encima del precio establecido (nunca por debajo)'),
   ('PARAMETROS_GESTIONAR',  'Sistema',    'Editar parámetros generales del sistema'),
   ('VENTAS_ANULAR',         'Ventas',     'Anular ventas del turno abierto'),
+  ('DEVOLUCIONES_REGISTRAR','Ventas',     'Solicitar devoluciones y cambios de ventas de turnos cerrados, y ejecutar en caja los aprobados'),
+  ('DEVOLUCIONES_APROBAR',  'Ventas',     'Aprobar o rechazar devoluciones, anotar sus transferencias y decidir qué categorías las admiten'),
   ('CAJA_ABRIR',            'Caja',       'Abrir turno de caja'),
   ('CAJA_CERRAR',           'Caja',       'Cerrar turno de caja (arqueo)'),
   ('CAJA_MOVIMIENTOS',      'Caja',       'Registrar ingresos/egresos de efectivo'),
@@ -71,7 +73,7 @@ INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
   'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
   'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_PROMOCION','VENTAS_ANULAR',
-  'VENTAS_MODIFICAR_PRECIO',
+  'VENTAS_MODIFICAR_PRECIO','DEVOLUCIONES_REGISTRAR',
   'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','TIPO_CAMBIO_GESTIONAR',
   'REPORTES_VER')
 WHERE r.codigo = 'ENCARGADO';
@@ -79,7 +81,7 @@ WHERE r.codigo = 'ENCARGADO';
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
   'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
-  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO','VENTAS_PROMOCION',
+  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_MODIFICAR_PRECIO','VENTAS_PROMOCION','DEVOLUCIONES_REGISTRAR',
   'CAJA_ABRIR','CAJA_CERRAR')
 WHERE r.codigo = 'VENDEDOR';
 
@@ -90,6 +92,11 @@ INSERT INTO metodo_pago (codigo, nombre, es_efectivo, requiere_referencia) VALUE
   ('EFECTIVO',      'Efectivo',      true,  false),
   ('TARJETA',       'Tarjeta',       false, true),
   ('TRANSFERENCIA', 'Transferencia', false, true);
+
+-- Método interno: lo devuelto en un cambio, aplicado a la venta nueva. No se elige al cobrar ni se
+-- cuenta en el arqueo (no es dinero que entre a la caja).
+INSERT INTO metodo_pago (codigo, nombre, es_efectivo, requiere_referencia, interno) VALUES
+  ('SALDO_CAMBIO', 'Saldo por cambio', false, false, true);
 
 -- ---------------------------------------------------------------------
 -- Billetes y monedas para el conteo del cierre de caja
@@ -126,7 +133,11 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('NEGOCIO_RUC', NULL, 'TEXTO', NULL, true, NULL,
    'Número RUC que sale en el ticket de venta. Vacío = no se imprime.'),
   ('TICKET_LEYENDA', NULL, 'TEXTO', NULL, true, NULL,
-   'Texto al pie del ticket de venta (p. ej. la política de cambios). Vacío = sin leyenda.');
+   'Texto al pie del ticket de venta (p. ej. la política de cambios). Vacío = sin leyenda.'),
+  ('DEVOLUCION_DIAS_MAX', '7', 'NUMERO', NULL, false, 1,
+   'Días después de la venta en que todavía se puede solicitar una devolución o un cambio.'),
+  ('DEVOLUCION_APROBADA_DIAS', '3', 'NUMERO', NULL, false, 1,
+   'Días que tiene una devolución aprobada para ejecutarse en caja; después se cancela sola.');
 
 -- ---------------------------------------------------------------------
 -- Gamas de pieza para paquetes de perforación
@@ -139,19 +150,21 @@ INSERT INTO gama (nombre, modo_precio, orden) VALUES
 
 -- ---------------------------------------------------------------------
 -- Categorías (rubros de Esmeralda)
+--   admite_devolucion: las piezas de piercing y las perforaciones nunca se devuelven ni se cambian;
+--   joyería, accesorios, perfumería y cuidado posterior, sí (lo cambia el administrador en el panel).
 -- ---------------------------------------------------------------------
-INSERT INTO categoria (nombre, descripcion) VALUES
-  ('Perforaciones',        'Servicios de perforación (no manejan inventario)'),
-  ('Piercing titanio',     'Joyería de titanio ASTM F-136'),
-  ('Piercing acero',       'Joyería de acero quirúrgico y de diseño'),
-  ('Piercing bioflex',     'Joyería de bioflex'),
-  ('Cuidado posterior',    'NeilMed Piercing Aftercare y otros'),
-  ('Joyería plata 925',    'Plata 925'),
-  ('Joyería xuping',       'Xuping'),
-  ('Joyería estilo Dubái', 'Estilo Dubái'),
-  ('Accesorios dama',      'Accesorios para dama'),
-  ('Accesorios caballero', 'Accesorios para caballero'),
-  ('Perfumería',           'Perfumes');
+INSERT INTO categoria (nombre, descripcion, admite_devolucion) VALUES
+  ('Perforaciones',        'Servicios de perforación (no manejan inventario)', false),
+  ('Piercing titanio',     'Joyería de titanio ASTM F-136',                    false),
+  ('Piercing acero',       'Joyería de acero quirúrgico y de diseño',          false),
+  ('Piercing bioflex',     'Joyería de bioflex',                               false),
+  ('Cuidado posterior',    'NeilMed Piercing Aftercare y otros',               true),
+  ('Joyería plata 925',    'Plata 925',                                        true),
+  ('Joyería xuping',       'Xuping',                                           true),
+  ('Joyería estilo Dubái', 'Estilo Dubái',                                     true),
+  ('Accesorios dama',      'Accesorios para dama',                             true),
+  ('Accesorios caballero', 'Accesorios para caballero',                        true),
+  ('Perfumería',           'Perfumes',                                         true);
 
 -- ---------------------------------------------------------------------
 -- Administrador inicial
