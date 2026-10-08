@@ -51,9 +51,20 @@ _Actualizado el 2026-10-08._
   **celular Android del negocio** (el del dueño), registrado como equipo («Celular del negocio»): tiene todo,
   con PIN y bloqueo, e imprime por WebUSB con un adaptador OTG. Por eso las pantallas de caja y venta se
   diseñan **primero para celular**. La impresora la prueba más adelante.
-- **Sigue: F2a** (caja y venta). Su plan se le presentó el 2026-10-08 y está **pendiente de su OK**: no
-  programar antes.
-- Pruebas en verde: 715 de base de datos, 571 del backend y, en el frontend, 28 de Vitest y 7 recorridos de
+- **F2a aprobada en plan (2026-10-08), en dos partes.** Decisiones del dueño: las dos sucursales operan desde
+  el inicio, cada una con su celular del negocio registrado y su Xprinter XP-T80A por USB (cada uno abre y
+  cierra solo su caja; su cola solo muestra sus tickets); también debe funcionar una **PC de caja con Windows**
+  (driver de Xprinter, Chrome con `--kiosk-printing`, gaveta por el driver); la cola imprime aunque la pantalla
+  esté bloqueada mientras el equipo esté abierto; botón «No imprimir» en la cola anotando quién, y al cerrar el
+  turno lo que quede en la cola se marca solo como «no impreso»; Wake Lock en el equipo abierto.
+- **Terminada, pendiente de su revisión: F2a parte 1 (caja y consulta de precios)**, hecha el 2026-10-08.
+  **No empezar la parte 2 (venta, tickets y cola) hasta su OK.**
+- **Cómo revisa el dueño:** sobre todo en su PC con Chrome en `localhost`, con la vista de celular (F12) y
+  varias ventanas (normal, incógnito y otro perfil) como equipos distintos; la cámara, con la webcam; la
+  impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
+  solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
+  registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
+- Pruebas en verde: 715 de base de datos, 571 del backend y, en el frontend, 43 de Vitest y 13 recorridos de
   Playwright. Nada se ha subido a GitHub.
 - Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
   «Este equipo» la imprime el dueño cuando la tenga; los acentos dependen de cómo venga configurada), la cámara
@@ -303,7 +314,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 | Fase | Contenido |
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
-| F2a | Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
+| F2a | En dos partes: (1) caja y consulta de precios, hecha; (2) venta, tickets y cola. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
@@ -388,6 +399,19 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   regla de forma del backend (contraseña, PIN) para avisar antes de enviar.
 - Diseño: primero tablet (menú a la izquierda desde 768 px); en celular el menú va abajo con «Más». Usar
   etiquetas `<label htmlFor>` (no envolver el control): las pruebas buscan por etiqueta.
+- Caja (F2a parte 1): `pantallas/Caja.tsx` (abrir, tipo de cambio de hoy con el 409 `CONFIRMACION_REQUERIDA`,
+  movimientos, cierre por denominaciones con el 422 `CONTEO_NO_CUADRA` y su único reconteo, ticket),
+  `pantallas/Turnos.tsx` (historial con diferencias y cierre forzado: solo con `CAJA_VER_DIFERENCIAS`) y
+  `pantallas/Consulta.tsx` (buscador + escáner). El administrador sin equipo elige la caja y todas sus
+  llamadas llevan `caja_id`. Las cuentas de la pantalla van en centavos (`util/dinero.ts`) y solo suman lo
+  que la persona escribe: nada de esperados.
+- Imprimir un ticket: `<BotonImprimir ruta="/turnos/9/imprimir" />`. Decide el modo con `modoDeImpresion()`
+  (`usb` solo en Android con WebUSB; si no, `dialogo`): por USB pide `?formato=renglones` y los traduce con
+  `comandosDeTicket()`; por diálogo pide el PDF (`apiArchivo`) y lo imprime desde un marco oculto. Guarda lo
+  pedido: reintentar no vuelve a llamar a la API (no sale COPIA). La conexión con la impresora se comparte
+  (`impresoraLista()`, `conectarImpresora()`, `imprimirPorUsb()` en `equipo/imprimir.ts`).
+- Pantalla encendida: `equipo/despierta.tsx` (`PantallaDespierta` envuelve la app; `useDespierta()` da el
+  estado). Activa con sesión en un equipo registrado o en su pantalla de PIN con el equipo abierto.
 - Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
   falla, para poder reintentar el mismo ticket sin que cuente como copia; ESC/POS con
   `@point-of-sale/receipt-printer-encoder`, 48 columnas, mapa de páginas `xprinter`) y
@@ -398,7 +422,8 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 - Pruebas: `src/**/*.spec.{ts,tsx}` con Vitest + Testing Library; `App.spec.tsx` monta la app completa contra una
   API simulada con MSW (cada respuesta se crea nueva: un cuerpo no se lee dos veces). Recorridos en `e2e/` con
   Playwright contra el backend real: `e2e/servidor-api.mjs` recrea `esmeralda_ui_test`, compila el backend y lo
-  levanta en el puerto 3100; van en orden y con un solo trabajador (`tablet.spec.ts` y luego `celular.spec.ts`).
+  levanta en el puerto 3100; van en orden y con un solo trabajador (`tablet.spec.ts`, `celular.spec.ts` y
+  `caja.spec.ts`, que registra un celular del negocio en cada sucursal y trabaja con las dos a la vez).
   Para ver cómo queda una pantalla: una captura con Playwright a un archivo temporal.
 
 ## Etapa terminada: backend (`backend/`)

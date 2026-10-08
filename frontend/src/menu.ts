@@ -24,11 +24,11 @@ export interface OpcionMenu {
   /** Basta con tener uno (de los que valen en esta sesión). Vacío: la ve todo el mundo. */
   permisos: readonly string[];
   /** Fase en que se construye. Lo que no es de la fase actual sale marcado «Pronto». */
-  fase: 'F1' | 'F2a' | 'F2b' | 'F3' | 'F3b' | 'F4' | 'F5';
+  fase: 'F1' | 'F2a1' | 'F2a2' | 'F2b' | 'F3' | 'F3b' | 'F4' | 'F5';
 }
 
 /** Hasta qué fase están hechas las pantallas. */
-export const FASES_LISTAS: ReadonlySet<OpcionMenu['fase']> = new Set(['F1']);
+export const FASES_LISTAS: ReadonlySet<OpcionMenu['fase']> = new Set(['F1', 'F2a1']);
 
 /**
  * El menú completo, en el orden en que se muestra. Cada quien ve solo lo que sus permisos le dan
@@ -42,21 +42,21 @@ export const MENU: readonly OpcionMenu[] = [
     titulo: 'Vender',
     icono: ShoppingCart,
     permisos: ['VENTAS_REGISTRAR'],
-    fase: 'F2a',
+    fase: 'F2a2',
   },
   {
     ruta: '/caja',
     titulo: 'Caja',
     icono: Wallet,
-    permisos: ['CAJA_ABRIR', 'CAJA_CERRAR'],
-    fase: 'F2a',
+    permisos: ['CAJA_ABRIR', 'CAJA_CERRAR', 'CAJA_VER_DIFERENCIAS'],
+    fase: 'F2a1',
   },
   {
     ruta: '/consulta',
     titulo: 'Precios y existencias',
     icono: Search,
     permisos: ['PRODUCTOS_VER'],
-    fase: 'F2a',
+    fase: 'F2a1',
   },
   {
     ruta: '/devoluciones',

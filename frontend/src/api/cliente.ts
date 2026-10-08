@@ -30,6 +30,14 @@ export function mensajeDeError(error: unknown): string {
   return 'Ocurrió un error inesperado. Vuelva a intentarlo.';
 }
 
+/** Como `mensajeDeError`, pero si la API rechazó campos concretos dice qué pasó con cada uno. */
+export function detalleDeError(error: unknown): string {
+  if (error instanceof ErrorApi && error.errores.length > 0) {
+    return error.errores.map((e) => e.mensaje).join(' ');
+  }
+  return mensajeDeError(error);
+}
+
 type Metodo = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 interface Opciones {
@@ -121,8 +129,8 @@ export function renovarSesion(): Promise<RespuestaSesion | null> {
   return renovacionEnCurso;
 }
 
-/** Hace una solicitud a la API y devuelve su respuesta ya leída (`undefined` si no trae cuerpo). */
-export async function api<T>(metodo: Metodo, ruta: string, opciones: Opciones = {}): Promise<T> {
+/** Envía la solicitud; si el token venció lo renueva y la repite una vez. Lanza `ErrorApi` si falla. */
+async function solicitar(metodo: Metodo, ruta: string, opciones: Opciones): Promise<Response> {
   let respuesta = await enviar(metodo, ruta, opciones);
   if (respuesta.status === 401 && !opciones.publica) {
     // El token de acceso venció (dura 15 minutos): se renueva y se repite la solicitud una vez
@@ -134,6 +142,24 @@ export async function api<T>(metodo: Metodo, ruta: string, opciones: Opciones = 
     respuesta = await enviar(metodo, ruta, opciones);
   }
   if (!respuesta.ok) throw await comoError(respuesta);
+  return respuesta;
+}
+
+/** Hace una solicitud a la API y devuelve su respuesta ya leída (`undefined` si no trae cuerpo). */
+export async function api<T>(metodo: Metodo, ruta: string, opciones: Opciones = {}): Promise<T> {
+  const respuesta = await solicitar(metodo, ruta, opciones);
   if (respuesta.status === 204) return undefined as T;
   return (await respuesta.json()) as T;
+}
+
+/**
+ * Para lo que la API entrega como archivo (un ticket o un reporte en PDF): hay que pedirlo con el
+ * token, así que un enlace normal no sirve. Devuelve el archivo para abrirlo o imprimirlo.
+ */
+export async function apiArchivo(
+  metodo: Metodo,
+  ruta: string,
+  opciones: Opciones = {},
+): Promise<Blob> {
+  return (await solicitar(metodo, ruta, opciones)).blob();
 }

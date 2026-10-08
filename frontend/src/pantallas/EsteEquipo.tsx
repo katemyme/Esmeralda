@@ -1,20 +1,20 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQuery } from '@tanstack/react-query';
-import { Camera, Download, Printer, TabletSmartphone } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Camera, Download, Printer, Sun, TabletSmartphone } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { api, mensajeDeError } from '../api/cliente';
 import type { Equipo, SucursalConCajas } from '../api/tipos';
 import { EscanerCamara } from '../equipo/EscanerCamara';
+import { useDespierta } from '../equipo/despierta';
 import {
-  elegirImpresora,
-  impresoraAutorizada,
-  mensajeDeImpresora,
-  navegadorImprimePorUsb,
-  paginaDePrueba,
-  type Impresora,
-} from '../equipo/impresora';
+  conectarImpresora,
+  impresoraLista,
+  imprimirPorUsb,
+  modoDeImpresion,
+} from '../equipo/imprimir';
+import { mensajeDeImpresora, navegadorImprimePorUsb, paginaDePrueba } from '../equipo/impresora';
 import { tienePermiso, useSesion, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Boton, Campo, Etiqueta, Selector, Tarjeta } from '../ui/basicos';
 import { formatoFechaHora } from '../util/formato';
@@ -195,31 +195,30 @@ function PruebaDeCamara() {
 }
 
 function PruebaDeImpresora({ equipo }: { equipo: string }) {
-  const impresora = useRef<Impresora | null>(null);
   const [nombre, setNombre] = useState<string | null>(null);
   const [gaveta, setGaveta] = useState(false);
   const [ocupado, setOcupado] = useState(false);
   const [resultado, setResultado] = useState<{ tipo: 'exito' | 'error'; texto: string } | null>(
     null,
   );
+  const porUsb = modoDeImpresion() === 'usb';
 
   useEffect(() => {
     // La que ya se autorizó antes en este equipo se reconecta sola
-    void impresoraAutorizada()
-      .then((autorizada) => {
-        if (!autorizada) return;
-        impresora.current = autorizada;
-        setNombre(autorizada.nombre);
-      })
-      .catch(() => {});
-    return () => void impresora.current?.desconectar().catch(() => {});
-  }, []);
+    if (!porUsb) return;
+    void impresoraLista().then((lista) => setNombre(lista?.nombre ?? null));
+  }, [porUsb]);
 
-  if (!navegadorImprimePorUsb()) {
+  if (!porUsb) {
     return (
       <Aviso tipo="info">
-        Este navegador no imprime por USB. La impresora de tickets se usa desde la tablet (Chrome en
-        Android), conectada con su cable.
+        <p className="font-semibold">Este equipo imprime por el diálogo de imprimir</p>
+        <p className="font-normal">
+          {navegadorImprimePorUsb()
+            ? 'En una computadora la impresora la maneja su driver: los tickets salen por el diálogo de imprimir, o directo si Chrome se abre en modo quiosco (--kiosk-printing).'
+            : 'Este navegador no imprime por USB. La impresión directa es del celular o la tablet Android del mostrador, con Chrome.'}{' '}
+          Para probarlo, cierre un turno de caja e imprima su ticket.
+        </p>
       </Aviso>
     );
   }
@@ -238,15 +237,14 @@ function PruebaDeImpresora({ equipo }: { equipo: string }) {
 
   const conectar = () =>
     hacer(async () => {
-      impresora.current = await elegirImpresora();
-      setNombre(impresora.current.nombre);
-      return `Impresora conectada: ${impresora.current.nombre}.`;
+      const elegida = await conectarImpresora();
+      setNombre(elegida.nombre);
+      return `Impresora conectada: ${elegida.nombre}.`;
     });
 
   const imprimir = () =>
     hacer(async () => {
-      if (!impresora.current) throw new Error('Conecte primero la impresora.');
-      await impresora.current.enviar(
+      await imprimirPorUsb(
         paginaDePrueba({ equipo, fecha: formatoFechaHora(new Date().toISOString()), gaveta }),
       );
       return 'La página de prueba se envió a la impresora. Revise en el papel los acentos, el código QR y el corte.';
@@ -279,6 +277,34 @@ function PruebaDeImpresora({ equipo }: { equipo: string }) {
       </div>
     </>
   );
+}
+
+const DESPIERTA = {
+  inactivo: {
+    tipo: 'info',
+    texto:
+      'No hace falta aquí: la pantalla se mantiene encendida solo en un equipo registrado, mientras está abierto.',
+  },
+  activo: {
+    tipo: 'exito',
+    texto: 'La pantalla se mantiene encendida mientras el equipo esté abierto.',
+  },
+  'no-disponible': {
+    tipo: 'aviso',
+    texto:
+      'Este navegador no puede mantener la pantalla encendida. Use Chrome y desactive el apagado automático de la pantalla en los ajustes del equipo.',
+  },
+  perdido: {
+    tipo: 'aviso',
+    texto:
+      'El equipo dejó de mantener la pantalla encendida (suele ser el ahorro de batería). Toque «Mantener encendida» en el aviso de arriba.',
+  },
+} as const;
+
+/** ¿La pantalla se queda encendida? De eso dependen la cola de tickets y la impresión automática. */
+function PantallaEncendida() {
+  const estado = DESPIERTA[useDespierta()];
+  return <Aviso tipo={estado.tipo}>{estado.texto}</Aviso>;
 }
 
 /** Lo que hay que saber de este equipo: si está registrado, la app, la cámara y la impresora. */
@@ -329,6 +355,10 @@ export function EsteEquipo() {
 
       <Seccion icono={<Download className="size-6" aria-hidden />} titulo="Aplicación">
         <Instalacion />
+      </Seccion>
+
+      <Seccion icono={<Sun className="size-6" aria-hidden />} titulo="Pantalla encendida">
+        <PantallaEncendida />
       </Seccion>
 
       <Seccion icono={<Camera className="size-6" aria-hidden />} titulo="Cámara">

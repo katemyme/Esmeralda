@@ -428,10 +428,17 @@ y crea categorías, perforaciones con sus precios, productos, inventario inicial
 
 ## Frontend
 
-Las pantallas: React + Vite, instalables como aplicación (PWA) en la tablet y en el celular. Hecha la **fase F1**
-(la base): inicio de sesión, cambio de la contraseña temporal, pantalla de PIN y bloqueo por inactividad,
-registro del equipo, menú según los permisos de la sesión, centro de alertas y la pantalla «Este equipo»
-(prueba de cámara y de impresora). Lo demás del menú aparece marcado «Pronto».
+Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, la tablet y la computadora.
+
+- **F1, la base:** inicio de sesión, cambio de la contraseña temporal, pantalla de PIN y bloqueo por
+  inactividad, registro del equipo, menú según los permisos de la sesión, centro de alertas y la pantalla
+  «Este equipo» (cámara, impresora, pantalla encendida).
+- **F2a, primera parte (caja y consulta de precios):** abrir el turno contando a ciegas, tipo de cambio de hoy
+  (con confirmación si se aleja), entradas y salidas de efectivo, cierre a ciegas por billetes y monedas con un
+  solo reconteo, ticket de cierre impreso, historial de turnos con sus diferencias y cierre forzado (para quien
+  puede verlos), y el buscador de precios y existencias con escáner.
+
+Lo demás del menú aparece marcado «Pronto».
 
 Requisitos: Node 22.12 o superior y el backend corriendo (`npm run start:dev` en `backend/`).
 
@@ -456,8 +463,12 @@ npm run dev              # http://localhost:5173 (reenvía /api al backend, en h
   registrado la pantalla se bloquea tras `PANTALLA_BLOQUEO_MINUTOS` sin uso y vuelve a la pantalla de PIN.
 - **Menú.** Sale de los permisos que la API entrega para esa sesión (`src/menu.ts`): desde el celular llegan
   menos permisos y el menú sale más corto, sin reglas aparte.
-- **Impresora.** Por USB directo desde Chrome (WebUSB, ESC/POS): `src/equipo/impresora.ts`. Solo en la tablet
-  Android o en una computadora con Chrome; en iPhone no existe.
+- **Impresión.** Cada equipo imprime como le toca (`src/equipo/imprimir.ts`): el celular o la tablet Android,
+  directo por USB en ESC/POS (WebUSB); la PC de caja y los demás, el PDF de 80 mm por el diálogo de imprimir.
+  El diálogo siempre queda de respaldo. El ticket se pide una sola vez: reintentar no lo marca como copia.
+- **Pantalla encendida.** En un equipo registrado y abierto la app pide al navegador que no apague la pantalla
+  (Wake Lock); si no se puede o se pierde, lo avisa arriba y en «Este equipo».
+- **Arqueo a ciegas.** Ninguna pantalla de la vendedora muestra lo esperado, la diferencia ni lo vendido.
 
 ### Probar en la tablet y en el celular (túnel de Cloudflare)
 
@@ -472,3 +483,54 @@ cloudflared tunnel --url http://localhost:5173  # con el backend y `npm run dev`
 El comando muestra una dirección `https://….trycloudflare.com`: se abre en la tablet o en el celular. Mientras
 el túnel está encendido esa dirección es accesible desde internet (pide iniciar sesión); se apaga con Ctrl+C.
 Para probar la aplicación **instalada**, usar `npm run build && npm run preview` y apuntar el túnel al puerto 4173.
+
+### Preparar el celular del mostrador
+
+Cada sucursal tiene un celular Android del negocio, con Chrome, que hace de caja y lleva la impresora.
+
+1. **Registrarlo.** El administrador entra en ese celular, va a «Este equipo» y lo registra como «Celular del
+   negocio» de su sucursal. Después conviene instalar la aplicación (menú ⋮ de Chrome → «Instalar aplicación»).
+2. **Que la pantalla no se apague.** La cola de tickets y la impresión automática necesitan la app abierta y la
+   pantalla encendida. La app ya se lo pide a Chrome; en Android, además:
+   - Ajustes → Pantalla → Tiempo de espera de la pantalla: el máximo.
+   - Ajustes → Batería: ahorro de batería desactivado.
+   - Ajustes → Aplicaciones → Chrome → Batería: «Sin restricciones» (no optimizar).
+   - Opcional: en Opciones de desarrollador, «Pantalla siempre activa mientras se carga».
+   - No bloquear el celular con su botón: para dejar la caja se usa el candado de la app.
+3. **Conectar la impresora (Xprinter XP-T80A).** Con un hub USB-C OTG con carga: el cargador al puerto de carga
+   del hub (PD), el cable USB de la impresora a un puerto USB del hub, y el hub al celular. El celular carga
+   mientras imprime.
+4. **Autorizarla.** En «Este equipo» → «Conectar impresora», elegirla en la lista y aceptar la pregunta de
+   Android (marcar «usar siempre», si la ofrece). Imprimir la página de prueba: deben salir bien los acentos,
+   el código QR y el corte. Si se desconecta el cable, puede volver a pedir el permiso.
+5. **Cada día:** la primera persona entra con su usuario y contraseña (eso abre el equipo); las demás, con su
+   PIN. Al final, «Cerrar el equipo». Si aparece el aviso «La pantalla de este equipo puede apagarse», tocar
+   «Mantener encendida» y revisar el ahorro de batería.
+
+### Preparar una PC de caja
+
+Una computadora con Windows también puede ser la caja. Ahí la impresora la maneja su driver, y Chrome imprime
+el ticket (PDF de 80 mm) sin mostrar el diálogo.
+
+1. **Instalar el driver** de la Xprinter (el del fabricante, serie XP-80) con la impresora conectada por USB, e
+   imprimir la página de prueba de Windows.
+2. **Configurarla** en Configuración → Impresoras → la Xprinter → Preferencias de impresión:
+   - Papel de 80 mm (rollo), sin márgenes.
+   - Corte al final del documento.
+   - Gaveta de dinero: «abrir antes de imprimir» (cuando haya gaveta conectada a la impresora).
+   - Dejarla como **impresora predeterminada**.
+3. **Crear el acceso directo de Chrome** (clic derecho en el escritorio → Nuevo → Acceso directo) con este destino,
+   cambiando la dirección por la del sistema:
+
+   ```
+   "C:\Program Files\Google\Chrome\Application\chrome.exe" --kiosk-printing --user-data-dir="C:\EsmeraldaCaja" --app=https://DIRECCION-DEL-SISTEMA
+   ```
+
+   `--kiosk-printing` hace que imprima directo en la predeterminada; `--user-data-dir` le da a la caja su propio
+   perfil de Chrome (sin él, si ya hay otro Chrome abierto, la opción no se aplica).
+4. **Registrar el equipo** abriendo el sistema desde ese acceso directo (el registro queda en ese perfil): el
+   administrador entra, «Este equipo» → registrar como «Caja», con su sucursal y su caja.
+5. **La primera vez**, imprimir un ticket abriendo Chrome sin `--kiosk-printing` para dejar en el diálogo:
+   márgenes «Ninguno» y sin encabezados ni pies de página. Chrome lo recuerda.
+
+Sin el acceso directo todo funciona igual, solo que cada ticket muestra el diálogo de imprimir.

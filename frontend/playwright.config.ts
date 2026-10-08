@@ -36,6 +36,13 @@ export default defineConfig({
         isMobile: true,
       },
     },
+    {
+      // Las dos sucursales a la vez, cada una con su celular del negocio
+      name: 'caja',
+      testMatch: 'caja.spec.ts',
+      dependencies: ['celular'],
+      use: { browserName: 'chromium', hasTouch: true },
+    },
   ],
   webServer: [
     {

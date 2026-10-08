@@ -1,14 +1,17 @@
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { Hammer } from 'lucide-react';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { Disposicion } from './disposicion/Disposicion';
+import { PantallaDespierta } from './equipo/despierta';
 import { MENU, estaLista } from './menu';
 import { Acceso } from './pantallas/Acceso';
 import { Alertas } from './pantallas/Alertas';
+import { Caja } from './pantallas/Caja';
 import { CambiarPassword } from './pantallas/CambiarPassword';
 import { Inicio } from './pantallas/Inicio';
 import { MiPin } from './pantallas/MiPin';
+import { Turno, Turnos } from './pantallas/Turnos';
 import { tienePermiso, useSesion, useSesionActiva } from './sesion/sesion';
 import { Boton, Cargando, Tarjeta } from './ui/basicos';
 
@@ -17,9 +20,15 @@ const EsteEquipo = lazy(() =>
   import('./pantallas/EsteEquipo').then((modulo) => ({ default: modulo.EsteEquipo })),
 );
 
+// También aparte: trae el lector de códigos de la cámara
+const Consulta = lazy(() =>
+  import('./pantallas/Consulta').then((modulo) => ({ default: modulo.Consulta })),
+);
+
 const FASES = {
   F1: 'la base',
-  F2a: 'la fase de caja y venta',
+  F2a1: 'la parte de caja',
+  F2a2: 'la parte de venta y tickets',
   F2b: 'la fase de devoluciones y cambios',
   F3: 'la fase de inventario',
   F3b: 'la fase de códigos y etiquetas',
@@ -45,6 +54,12 @@ function EnConstruccion() {
       </p>
     </Tarjeta>
   );
+}
+
+/** Una pantalla que pide un permiso: sin él (escribiendo la dirección a mano) vuelve al inicio. */
+function ConPermiso({ permisos, children }: { permisos: string[]; children: ReactNode }) {
+  const sesion = useSesionActiva();
+  return tienePermiso(sesion, permisos) ? children : <Navigate to="/" replace />;
 }
 
 /** Cuando hay una versión nueva de la app, se avisa y se actualiza con un toque. */
@@ -87,6 +102,40 @@ function Contenido() {
           }
         />
         <Route path="mi-pin" element={<MiPin />} />
+        <Route
+          path="caja"
+          element={
+            <ConPermiso permisos={['CAJA_ABRIR', 'CAJA_CERRAR', 'CAJA_VER_DIFERENCIAS']}>
+              <Caja />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="caja/turnos"
+          element={
+            <ConPermiso permisos={['CAJA_VER_DIFERENCIAS']}>
+              <Turnos />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="caja/turnos/:id"
+          element={
+            <ConPermiso permisos={['CAJA_VER_DIFERENCIAS']}>
+              <Turno />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="consulta"
+          element={
+            <ConPermiso permisos={['PRODUCTOS_VER']}>
+              <Suspense fallback={<Cargando />}>
+                <Consulta />
+              </Suspense>
+            </ConPermiso>
+          }
+        />
         <Route path="*" element={<EnConstruccion />} />
       </Route>
     </Routes>
@@ -96,7 +145,9 @@ function Contenido() {
 export function App() {
   return (
     <BrowserRouter>
-      <Contenido />
+      <PantallaDespierta>
+        <Contenido />
+      </PantallaDespierta>
       <AvisoDeVersion />
     </BrowserRouter>
   );

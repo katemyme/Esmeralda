@@ -36,9 +36,11 @@ describe('menú según los permisos de la sesión', () => {
     expect(delAdmin).toEqual(expect.arrayContaining(['Administración', 'Reportes', 'Etiquetas']));
   });
 
-  it('en F1 solo están hechas el inicio, las alertas y «Este equipo»: lo demás sale marcado «Pronto»', () => {
+  it('están hechas la base, la caja y la consulta de precios: lo demás sale marcado «Pronto»', () => {
     expect(MENU.filter(estaLista).map((o) => o.titulo)).toEqual([
       'Inicio',
+      'Caja',
+      'Precios y existencias',
       'Alertas',
       'Este equipo',
     ]);
