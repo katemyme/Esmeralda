@@ -15,10 +15,10 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-07._
+_Actualizado el 2026-10-08._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
-  `guardado-b2`), **B3**, **B4**, **B5** y **B6** del backend. Con B5 se hizo también todo lo que había quedado fuera de
+  `guardado-b2`), **B3**, **B4**, **B5**, **B6** y **B7** del backend. Con B5 se hizo también todo lo que había quedado fuera de
   B3 y B4: sucursales y cajas, roles nuevos, desbloqueo, mínimo de parámetros, bitácora, fotos, historial de
   precios, búsqueda para la venta, existencias y la carga inicial desde Excel. El dueño aprobó B5 el 2026-10-06
   (reglas para desactivar sucursales y eliminar roles, visibilidad por sucursal, fotos públicas con nombre al
@@ -29,20 +29,18 @@ _Actualizado el 2026-10-07._
   de solo servicio de las perforaciones que ya existen (hecho); los envíos se quedan con su SEQUENCE (ahí los
   saltos no importan); el RUC y la leyenda del ticket quedan vacíos y él los llena en el panel. Pidió además un
   control del tipo de cambio (variación máxima con confirmación y rango del primero), ya hecho.
-- **Terminado, pendiente de revisión del dueño:** **B7** (reportes, exportación a Excel y PDF, tickets en PDF y
-  tareas programadas). El dueño aprobó el plan y sus decisiones el 2026-10-07 (están en «Decisiones de negocio
-  clave», «Reportes»); se programó completo ese mismo día. Con B7 el backend queda completo.
-- **Sigue:** el frontend, solo cuando el dueño lo pida (no empezarlo).
-- Pruebas en verde: 524 de base de datos y 472 del backend. Nada se ha subido a GitHub.
-- Por confirmar con el dueño: la **foto mensual del inventario**. Su respuesta sobre ese punto fue ambigua («no,
-  así está bien») y se leyó como «sí, también la foto mensual»: está hecha. Si no la quería, se quita sin tocar
-  lo demás (la tabla `inventario_cierre_mensual`, `fn_foto_inventario_mensual`, su llamada en `TareasService` y
-  `?mes=` en el reporte).
+- **B7 (reportes, exportación a Excel y PDF, tickets en PDF y tareas programadas) aprobado el 2026-10-08**, con
+  las decisiones tomadas al programarlo. La **foto mensual del inventario se queda** (el dueño lo confirmó).
+- **Agregado el 2026-10-08, a pedido del dueño:** los reportes de compras por proveedor y de piezas consumidas en
+  paquetes (solo con `REPORTES_COSTOS`) y el historial del tipo de cambio (`GET /api/tipo-cambio/historial`).
+- **Sigue: B8** (devoluciones y cambios de ventas de turnos ya cerrados). Las reglas las dio el dueño el
+  2026-10-08; falta que apruebe el plan (tablas, funciones, rutas y permisos) antes de programar. Al terminar B8:
+  etiqueta `backend-completo` y respaldo con `git bundle` en `C:\Respaldos`.
+- **Después:** el frontend, solo cuando el dueño lo pida (no empezarlo).
+- Pruebas en verde: 524 de base de datos y 479 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
-- Fuera de B6: devoluciones de ventas de un turno ya cerrado (fase 2) y un historial del tipo de cambio.
-- Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); reportes de
-  compras por proveedor y de piezas consumidas en paquetes (las vistas existen, no tienen ruta); inventario
+- Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); inventario
   valorizado a una fecha cualquiera (solo hoy y el cierre de cada mes); la foto de un mes si el servidor estuvo
   apagado durante todo el mes siguiente (solo se toma la del mes anterior); comparar con el periodo anterior y
   gráficas (eso es del frontend); en los PDF, los caracteres fuera del alfabeto latino (fuentes estándar).
@@ -177,7 +175,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Foto mensual:** las cantidades salen del kardex (suma de movimientos anteriores al cambio de mes), así
     que son las del cierre aunque la tarea corra tarde; el costo y el precio son los del momento en que se toma.
   - **Reportes extra incluidos:** productos más vendidos, perforaciones con pieza contra solo servicio, ventas
-    por gama, promociones y sobreprecios.
+    por gama, promociones y sobreprecios. Desde el 2026-10-08, además, compras por proveedor y piezas
+    consumidas en paquetes: solo para el administrador, porque muestran costos.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -290,6 +289,9 @@ Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (r
   - `PUT /api/tipo-cambio` acepta `confirmar` (solo `true` cuenta). Cuando la base pide la confirmación lanza el
     SQLSTATE `ESM02`, que `FiltroErrores` traduce a 409 `CONFIRMACION_REQUERIDA` con el mensaje de la base: la
     pantalla pregunta y reenvía con `confirmar: true`. Sirve para cualquier otra función que pida confirmar.
+  - `GET /api/tipo-cambio/historial` (`TIPO_CAMBIO_GESTIONAR`): un día por fila. La tabla `tipo_cambio` guarda
+    solo el último valor de cada día; lo registrado antes de una corrección sale de la bitácora (`auditoria`,
+    que anota cada cambio de esa tabla con su hora) y va en `registros`.
   - `test/pos.e2e-spec.ts` trabaja en una sucursal propia (`PVE`) con su caja, su PC de caja y su tablet; usa una
     pieza de gama Titanio (las otras pruebas cuentan las piezas y los precios de las gamas de acero) y al final
     deja el tipo de cambio como estaba (una prueba borra los registrados mientras dura y los repone: vale porque
@@ -309,6 +311,10 @@ Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (r
     fila de totales llega con `es_total = 1` y la separa `separar()`.
   - Rango (`reportes/periodo.ts`): `?periodo=dia|semana|mes` + `fecha`, o `desde` + `hasta` (hasta 366 días);
     sin nada, hoy. Días de Managua; la semana empieza el lunes. Una sucursal ajena responde 404.
+  - Los dos reportes que son solo de costos (`piezas-en-paquetes` y `compras-por-proveedor`) piden
+    `REPORTES_COSTOS` en la ruta. El de compras no es de ventas: sale de `v_compras` (confirmadas, por la fecha
+    de la factura), no lleva sucursal y lleva la condición del permiso en su `where`. La suma de las facturas
+    en su moneda solo existe por proveedor y moneda: en la fila de totales va en null.
   - En Excel los números van como números y las fechas como fechas (`horaDeManaguaEnUtc`: la hora de Managua
     escrita como si fuera UTC, porque Excel no maneja zonas). En los PDF se usan las fuentes estándar de pdfkit
     (Helvetica): solo caracteres latinos.
