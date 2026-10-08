@@ -45,14 +45,14 @@ _Actualizado el 2026-10-08._
 - **Backend para F1, terminado (2026-10-08):** acceso desde el celular (sin equipo registrado) con la venta, y
   cambio rápido de vendedora con PIN. El dueño aprobó los diseños ese día (están en «Decisiones de negocio
   clave», «Celular y PIN»). La etiqueta `backend-completo` y el respaldo se movieron a este punto.
-- **Terminada y probada por el dueño: F1 del frontend** (`frontend/`, la base). Hecha el 2026-10-08: ver «Etapa
-  actual: frontend». Ese día la probó en su computadora y en su iPhone por el túnel de Cloudflare y todo
-  funcionó (su única duda, las alertas vacías, era correcta: la base no tenía ninguna). Falta que diga
-  expresamente que la aprueba. **No empezar F2a hasta su OK**, y antes presentarle su plan.
-- **Cambio de equipo (dueño, 2026-10-08):** de momento no habrá tablet: en la sucursal se usará un
-  **dispositivo móvil**. Por confirmar con él si es Android o iPhone y si es del negocio (registrado) o el
-  personal de cada trabajadora: de eso depende la impresión (WebUSB solo existe en Chrome de Android) y que las
-  pantallas de caja de F2a se diseñen primero para celular. La impresora la prueba más adelante.
+- **F1 del frontend aprobada por el dueño el 2026-10-08** (`frontend/`, la base). La probó en su computadora y
+  en su celular por el túnel de Cloudflare.
+- **Cambio de equipo (dueño, 2026-10-08):** de momento no habrá tablet. El equipo de la sucursal será un
+  **celular Android del negocio** (el del dueño), registrado como equipo («Celular del negocio»): tiene todo,
+  con PIN y bloqueo, e imprime por WebUSB con un adaptador OTG. Por eso las pantallas de caja y venta se
+  diseñan **primero para celular**. La impresora la prueba más adelante.
+- **Sigue: F2a** (caja y venta). Su plan se le presentó el 2026-10-08 y está **pendiente de su OK**: no
+  programar antes.
 - Pruebas en verde: 715 de base de datos, 571 del backend y, en el frontend, 28 de Vitest y 7 recorridos de
   Playwright. Nada se ha subido a GitHub.
 - Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
