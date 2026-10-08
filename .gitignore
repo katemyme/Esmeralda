@@ -1,3 +1,4 @@
 *.png
+*.bundle
 node_modules/
 /modelo-datos.html
