@@ -358,6 +358,7 @@ export interface Permiso {
   descripcion: string;
   id: Generated<number>;
   modulo: string;
+  sin_equipo: Generated<boolean>;
 }
 
 export interface PrecioEspecialPaquete {
@@ -639,6 +640,7 @@ export interface Venta {
   motivo_anulacion: string | null;
   notas: string | null;
   numero: string;
+  origen: Generated<string>;
   promocion_id: number | null;
   subtotal: Numeric;
   sucursal_id: number;

@@ -22,6 +22,14 @@ export function veCostos(usuarioId: number): RawBuilder<boolean> {
   return sql<boolean>`(select fn_tiene_permiso(${usuarioId}, 'REPORTES_COSTOS'))`;
 }
 
+/**
+ * ¿Puede el usuario ver desde dónde se hizo cada venta (un equipo de la sucursal o un celular)?
+ * Solo el administrador: es quien administra los equipos (SUCURSALES_GESTIONAR).
+ */
+export function veOrigen(usuarioId: number): RawBuilder<boolean> {
+  return sql<boolean>`(select fn_tiene_permiso(${usuarioId}, 'SUCURSALES_GESTIONAR'))`;
+}
+
 /** `{ id, nombre }` si hay id, o null (para columnas de un LEFT JOIN). */
 export function referencia<T extends number | string>(
   id: T | null,

@@ -16,6 +16,7 @@ const venta: VentaDetalle = {
   descuento: '111.00',
   total: '999.00',
   articulos: 3,
+  origen: null,
   caja: { id: 1, nombre: 'Caja 1' },
   cliente_telefono: '8888-0000',
   notas: 'Clienta frecuente',

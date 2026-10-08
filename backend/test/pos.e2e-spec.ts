@@ -607,6 +607,7 @@ describe('POS y caja', () => {
         descuento: '0.00',
         total: '1200.00',
         articulos: 1,
+        origen: null, // desde dónde se vendió solo lo ve el administrador
         caja: { id: ids.caja, nombre: 'Caja 1' },
         cliente_telefono: '8888-0000',
         notas: null,
@@ -938,6 +939,7 @@ describe('POS y caja', () => {
         descuento: '0.00',
         total: '1200.00',
         articulos: 1,
+        origen: null,
       });
 
       const deEnzo = await conSesion(
@@ -1578,8 +1580,9 @@ describe('POS y caja', () => {
         .send({ activo: false })
         .expect(200);
       const rechazo = {
-        codigo: 'PERMISO_DENEGADO',
-        mensaje: 'Esta operación se hace desde un equipo registrado y activo de la sucursal',
+        codigo: 'EQUIPO_REQUERIDO',
+        mensaje:
+          'Esto solo se puede hacer desde un equipo registrado de la sucursal (la tablet o la caja)',
       };
       await conSesion('get', '/api/caja/turno', vera.enTablet).expect(403).expect(rechazo);
       await conSesion('post', '/api/caja/turno/abrir', vera.enTablet)

@@ -29,8 +29,21 @@ export interface DatosUsuario {
   username: string;
   rol: { codigo: string; nombre: string };
   debe_cambiar_password: boolean;
+  /** Los permisos que valen en esta sesión: desde el celular, solo los marcados sin equipo. */
   permisos: string[];
   sucursales: { id: number; codigo: string; nombre: string }[];
+}
+
+/**
+ * COMPLETO: un equipo registrado de su sucursal (o el administrador, desde donde sea). CELULAR:
+ * sin equipo registrado; solo valen los permisos marcados `sin_equipo`.
+ */
+export type AccesoSesion = 'COMPLETO' | 'CELULAR';
+
+export interface DatosSesion {
+  usuario: DatosUsuario;
+  equipo: DatosEquipo | null;
+  acceso: AccesoSesion;
 }
 
 /** Respuesta de login, refresh y cambio de contraseña. */
@@ -41,6 +54,7 @@ export interface RespuestaSesion {
   sesion_expira_at: string;
   usuario: DatosUsuario;
   equipo: DatosEquipo | null;
+  acceso: AccesoSesion;
 }
 
 /** Sesión abierta: la respuesta para el cliente más el token de renovación (va en una cookie). */
@@ -94,7 +108,7 @@ function errorDeLogin(resultado: ResultadoLogin, minutosBloqueo: number | null):
       return new HttpException(
         {
           codigo: 'EQUIPO_NO_AUTORIZADO',
-          mensaje: 'Solo puede iniciar sesión desde una caja o tablet registrada de su sucursal.',
+          mensaje: 'Este equipo está registrado para una sucursal que no es la suya.',
         },
         HttpStatus.FORBIDDEN,
       );
@@ -261,13 +275,10 @@ export class AutenticacionService {
     );
   }
 
-  /** Usuario (con permisos y sucursales) y equipo de una sesión. */
-  async datosSesion(
-    usuarioId: number,
-    dispositivoId: string | null,
-  ): Promise<{ usuario: DatosUsuario; equipo: DatosEquipo | null }> {
+  /** Usuario (con sus permisos en esta sesión y sus sucursales) y equipo de una sesión. */
+  async datosSesion(usuarioId: number, dispositivoId: string | null): Promise<DatosSesion> {
     const { db } = this.bd;
-    const [usuario, permisos, sucursales, equipo] = await Promise.all([
+    const [usuario, permisos, sucursales, equipo, acceso] = await Promise.all([
       db
         .selectFrom('usuario as u')
         .innerJoin('rol as r', 'r.id', 'u.rol_id')
@@ -284,7 +295,9 @@ export class AutenticacionService {
       db
         .selectFrom('permiso')
         .select('codigo')
-        .where(sql<boolean>`fn_tiene_permiso(${usuarioId}, codigo)`)
+        .where(
+          sql<boolean>`fn_permiso_en_sesion(${usuarioId}, codigo, ${dispositivoId}::uuid) = 'OK'`,
+        )
         .orderBy('codigo')
         .execute(),
       db
@@ -295,6 +308,8 @@ export class AutenticacionService {
         .orderBy('id')
         .execute(),
       dispositivoId ? buscarEquipo(db, dispositivoId) : null,
+      sql<{ completo: boolean }>`
+        select fn_equipo_autorizado(${usuarioId}, ${dispositivoId}::uuid) as completo`.execute(db),
     ]);
     return {
       usuario: {
@@ -307,6 +322,7 @@ export class AutenticacionService {
         sucursales,
       },
       equipo,
+      acceso: acceso.rows[0].completo ? 'COMPLETO' : 'CELULAR',
     };
   }
 
@@ -330,7 +346,7 @@ export class AutenticacionService {
     vence: Date,
     tokenRenovacion: string,
   ): Promise<SesionAbierta> {
-    const { usuario, equipo } = await this.datosSesion(usuarioId, dispositivoId);
+    const { usuario, equipo, acceso } = await this.datosSesion(usuarioId, dispositivoId);
     const autenticado: UsuarioAutenticado = {
       id: usuarioId,
       sesionId,
@@ -350,6 +366,7 @@ export class AutenticacionService {
         sesion_expira_at: vence.toISOString(),
         usuario,
         equipo,
+        acceso,
       },
     };
   }

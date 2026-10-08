@@ -254,21 +254,39 @@ describe('Autenticación y equipos', () => {
   });
 
   describe('encargados y vendedores', () => {
-    it('sin un equipo registrado no pueden entrar', async () => {
-      await login('ana.martinez', 'Demo#2026').expect(403).expect({
-        codigo: 'EQUIPO_NO_AUTORIZADO',
-        mensaje: 'Solo puede iniciar sesión desde una caja o tablet registrada de su sucursal.',
-      });
+    it('sin un equipo registrado entran como desde su celular: 12 horas y solo lo que vale sin equipo', async () => {
+      const respuesta = await login('ana.martinez', 'Demo#2026').expect(200);
+      const { body } = respuesta;
+      expect(body).toMatchObject({ equipo: null, acceso: 'CELULAR' });
+      expect(body.usuario.permisos).toEqual([
+        'DEVOLUCIONES_REGISTRAR',
+        'INVENTARIO_CONTAR',
+        'INVENTARIO_RECIBIR',
+        'INVENTARIO_VER',
+        'PRODUCTOS_VER',
+        'VENTAS_MODIFICAR_PRECIO',
+        'VENTAS_PROMOCION',
+        'VENTAS_REGISTRAR',
+        'VENTAS_VER_PROPIAS',
+      ]);
+      expect(cercaDe(body.sesion_expira_at, 12 * HORA_MS)).toBe(true);
+      expect(app.get(JwtService).decode<ContenidoToken>(body.access_token).eq).toBeNull();
+      expect(cookiePuesta(respuesta, 'esmeralda_equipo')).toBeUndefined();
     });
 
-    it('desde el equipo de otra sucursal tampoco', async () => {
-      await login('ana.martinez', 'Demo#2026', equipos.tabletLbr).expect(403);
+    it('desde el equipo de otra sucursal no entran', async () => {
+      await login('ana.martinez', 'Demo#2026', equipos.tabletLbr).expect(403).expect({
+        codigo: 'EQUIPO_NO_AUTORIZADO',
+        mensaje: 'Este equipo está registrado para una sucursal que no es la suya.',
+      });
     });
 
     it('desde la caja de su sucursal: entra, con la sesión ligada al equipo por 12 horas', async () => {
       const respuesta = await login('ana.martinez', 'Demo#2026', equipos.cajaLam).expect(200);
       const { body } = respuesta;
       expect(body.equipo).toMatchObject({ nombre: 'Caja 1 Las Américas', caja_id: ids.cajaLam });
+      expect(body.acceso).toBe('COMPLETO');
+      expect(body.usuario.permisos).toContain('CAJA_ABRIR'); // desde el celular no lo tenía
       expect(body.usuario.rol.codigo).toBe('VENDEDOR');
       expect(body.usuario.permisos).toContain('VENTAS_REGISTRAR');
       expect(body.usuario.permisos).not.toContain('VENTAS_ANULAR');
@@ -311,7 +329,7 @@ describe('Autenticación y equipos', () => {
         select exito, motivo, dispositivo_id is not null as con_equipo from acceso_log
          where username_intentado = 'ana.martinez' order by id`.execute(bd.db);
       expect(rows).toEqual([
-        { exito: false, motivo: 'equipo no autorizado', con_equipo: false },
+        { exito: true, motivo: null, con_equipo: false },
         { exito: false, motivo: 'equipo no autorizado', con_equipo: true },
         { exito: true, motivo: null, con_equipo: true },
       ]);

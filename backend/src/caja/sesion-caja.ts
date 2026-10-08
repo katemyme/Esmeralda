@@ -52,11 +52,33 @@ export async function exigirTurno(
   cajaElegida: number | undefined,
 ): Promise<number> {
   const turno = await turnoDeSesion(bd, usuario, cajaElegida);
-  if (turno === null) {
-    throw new HttpException(
-      { codigo: 'SIN_TURNO_ABIERTO', mensaje: 'La caja no tiene un turno abierto: ábrala primero' },
-      HttpStatus.CONFLICT,
-    );
-  }
+  if (turno === null) throw sinTurnoAbierto();
   return turno;
+}
+
+function sinTurnoAbierto(): HttpException {
+  return new HttpException(
+    { codigo: 'SIN_TURNO_ABIERTO', mensaje: 'La caja no tiene un turno abierto: ábrala primero' },
+    HttpStatus.CONFLICT,
+  );
+}
+
+/**
+ * El turno en el que entra una venta (fn_turno_para_venta). Desde un equipo registrado, y para el
+ * administrador, es el de la sesión. Desde el celular es el turno abierto de una de sus
+ * sucursales: `cajaElegida` hace falta cuando hay más de una caja abierta. Es lo único de la caja
+ * que se hace desde el celular: abrir, cerrar, mover efectivo y ejecutar devoluciones siguen
+ * pasando por `exigirTurno()`, que pide el equipo.
+ */
+export async function exigirTurnoParaVenta(
+  bd: Kysely<DB>,
+  usuario: UsuarioAutenticado,
+  cajaElegida: number | undefined,
+): Promise<number> {
+  if (usuario.rol === 'ADMIN') exigirOrigen(usuario, cajaElegida);
+  const { rows } = await sql<{ turno: number | null }>`
+    select fn_turno_para_venta(${usuario.id}, ${usuario.equipo?.id ?? null}::uuid,
+                               ${cajaElegida ?? null}::integer) as turno`.execute(bd);
+  if (rows[0].turno === null) throw sinTurnoAbierto();
+  return rows[0].turno;
 }

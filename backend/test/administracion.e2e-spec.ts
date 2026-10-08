@@ -628,7 +628,7 @@ describe('Panel de administración', () => {
       expect(JSON.stringify(body)).not.toMatch(/token/);
     });
 
-    it('PUT /api/equipos/:id/activo: desactivar cierra sus sesiones y ya nadie entra desde él', async () => {
+    it('PUT /api/equipos/:id/activo: desactivar cierra sus sesiones y desde él ya solo se entra como desde un celular', async () => {
       const { body } = await comoJefa('put', `/api/equipos/${tablet.id}/activo`)
         .send({ activo: false })
         .expect(200);
@@ -638,8 +638,16 @@ describe('Panel de administración', () => {
         .post('/api/auth/refresh')
         .set('Cookie', `esmeralda_sesion=${rosa.sesion}`)
         .expect(401);
-      const rechazo = await login('rosa.gomez', rosa.password, tablet.token).expect(403);
-      expect(rechazo.body.codigo).toBe('EQUIPO_NO_AUTORIZADO');
+      // El equipo ya no cuenta como registrado: quien entre desde él lo hace sin equipo, con lo del celular
+      const comoCelular = await login('rosa.gomez', rosa.password, tablet.token).expect(200);
+      expect(comoCelular.body).toMatchObject({ equipo: null, acceso: 'CELULAR' });
+      expect(comoCelular.body.usuario.permisos).not.toContain('CAJA_ABRIR');
+      await request(http)
+        .post('/api/auth/logout')
+        .set(
+          'Cookie',
+          `esmeralda_sesion=${cookiePuesta(comoCelular, 'esmeralda_sesion')?.valor ?? ''}`,
+        );
       await request(http)
         .get('/api/equipos/actual')
         .set('Cookie', `esmeralda_equipo=${tablet.token}`)

@@ -14,12 +14,28 @@ import { sql } from 'kysely';
 import { BaseDatosService } from '../base-datos/base-datos.service';
 
 const PERMISOS_REQUERIDOS = 'esmeralda:permisos';
+const SOLO_EN_EQUIPO = 'esmeralda:solo-en-equipo';
+
+/** Lo que se le dice a quien intenta desde su celular algo que es de la tablet de la sucursal. */
+export const MENSAJE_EQUIPO_REQUERIDO =
+  'Esto solo se puede hacer desde un equipo registrado de la sucursal (la tablet o la caja)';
+
+export function errorEquipoRequerido(): HttpException {
+  return new HttpException(
+    { codigo: 'EQUIPO_REQUERIDO', mensaje: MENSAJE_EQUIPO_REQUERIDO },
+    HttpStatus.FORBIDDEN,
+  );
+}
 
 /**
- * Comprueba el permiso de las rutas marcadas @RequierePermiso() con las funciones de la base
- * (fn_exigir_permiso / fn_tiene_permiso). El permiso se consulta en cada solicitud (no viaja en el
- * token): cambiar los permisos de un rol, cambiar de rol a un usuario o desactivarlo aplica de
- * inmediato. Sin el permiso → 403 PERMISO_DENEGADO.
+ * Comprueba el permiso de las rutas marcadas @RequierePermiso() con la base (fn_permiso_en_sesion).
+ * El permiso se consulta en cada solicitud (no viaja en el token): cambiar los permisos de un rol,
+ * cambiar de rol a un usuario o desactivarlo aplica de inmediato. Sin el permiso → 403
+ * PERMISO_DENEGADO.
+ *
+ * El permiso depende también de dónde se abrió la sesión: desde un celular (sin equipo registrado)
+ * quien no es administrador solo usa los permisos marcados `sin_equipo`; con los demás, y en las
+ * rutas @SoloEnEquipo(), responde 403 EQUIPO_REQUERIDO.
  */
 @Injectable()
 export class GuardiaPermisos implements CanActivate {
@@ -29,27 +45,33 @@ export class GuardiaPermisos implements CanActivate {
   ) {}
 
   async canActivate(contexto: ExecutionContext): Promise<boolean> {
-    const permisos = this.reflector.getAllAndOverride<string[] | undefined>(PERMISOS_REQUERIDOS, [
-      contexto.getHandler(),
-      contexto.getClass(),
-    ]);
-    if (!permisos?.length) return true;
+    const destinos = [contexto.getHandler(), contexto.getClass()];
+    const permisos =
+      this.reflector.getAllAndOverride<string[] | undefined>(PERMISOS_REQUERIDOS, destinos) ?? [];
+    const soloEnEquipo =
+      this.reflector.getAllAndOverride<boolean | undefined>(SOLO_EN_EQUIPO, destinos) === true;
+    if (!permisos.length) return true;
 
     const usuario = contexto.switchToHttp().getRequest<Request>().usuario;
     if (!usuario) {
       throw new Error('@RequierePermiso() en una ruta sin sesión (¿marcada @Publica()?)');
     }
-    if (permisos.length === 1) {
-      await sql`select fn_exigir_permiso(${usuario.id}, ${permisos[0]})`.execute(this.bd.db);
-      return true;
-    }
-    // Varios permisos: basta con tener uno
-    const { rows } = await sql<{ alguno: boolean }>`
-      select exists (select 1 from unnest(${permisos}::text[]) as p(codigo)
-                      where fn_tiene_permiso(${usuario.id}, p.codigo)) as alguno`.execute(
-      this.bd.db,
-    );
-    if (!rows[0].alguno) {
+    const equipo = usuario.equipo?.id ?? null;
+    // Con varios permisos basta con que uno valga en esta sesión
+    const { rows } = await sql<{
+      estado: 'OK' | 'SIN_EQUIPO' | 'SIN_PERMISO';
+      en_equipo: boolean;
+    }>`
+      select (select e.estado
+                from unnest(${permisos}::text[]) as p(codigo)
+               cross join lateral (select fn_permiso_en_sesion(${usuario.id}, p.codigo,
+                                                                ${equipo}::uuid) as estado) e
+               order by array_position(array['OK', 'SIN_EQUIPO', 'SIN_PERMISO'], e.estado)
+               limit 1) as estado,
+             fn_equipo_autorizado(${usuario.id}, ${equipo}::uuid) as en_equipo`.execute(this.bd.db);
+    const { estado, en_equipo } = rows[0];
+
+    if (estado === 'SIN_PERMISO') {
       throw new HttpException(
         {
           codigo: 'PERMISO_DENEGADO',
@@ -58,6 +80,7 @@ export class GuardiaPermisos implements CanActivate {
         HttpStatus.FORBIDDEN,
       );
     }
+    if (estado === 'SIN_EQUIPO' || (soloEnEquipo && !en_equipo)) throw errorEquipoRequerido();
     return true;
   }
 }
@@ -69,3 +92,10 @@ export class GuardiaPermisos implements CanActivate {
  */
 export const RequierePermiso = (...codigos: string[]) =>
   applyDecorators(SetMetadata(PERMISOS_REQUERIDOS, codigos), UseGuards(GuardiaPermisos));
+
+/**
+ * Junto a @RequierePermiso(): la ruta es solo de un equipo registrado de la sucursal (o del
+ * administrador) aunque su permiso valga desde el celular: el turno de la caja, imprimir en papel,
+ * ejecutar una devolución.
+ */
+export const SoloEnEquipo = () => SetMetadata(SOLO_EN_EQUIPO, true);

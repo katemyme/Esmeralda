@@ -289,7 +289,7 @@ export class DevolucionesService {
       motivo_no: string | null;
       limite: string;
     }>`
-      select fn_equipo_autorizado(${usuario.id}, ${usuario.equipo?.id ?? null}::uuid) as autorizado,
+      select fn_sesion_permitida(${usuario.id}, ${usuario.equipo?.id ?? null}::uuid) as autorizado,
              v.id, v.numero, v.fecha, v.estado, v.total, v.cliente_nombre, v.cliente_telefono,
              s.id as sucursal_id, s.codigo as sucursal_codigo, s.nombre as sucursal_nombre,
              u.nombre_completo as vendedor, fn_venta_no_devoluble(v.id) as motivo_no,

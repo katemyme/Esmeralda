@@ -1089,7 +1089,12 @@ describe('Reportes', () => {
         mensaje: 'Permiso denegado: se requiere CAJA_VER_DIFERENCIAS',
       });
       const faltante = centavos(205000 - diezDolares - 140000);
-      for (const acceso of [jefa.acceso, eva.acceso]) {
+      // Cuántas ventas llegaron desde un celular solo lo ve el administrador
+      const vistas: [string, { ventas_celular?: number }][] = [
+        [jefa.acceso, { ventas_celular: 0 }],
+        [eva.acceso, {}],
+      ];
+      for (const [acceso, desdeCelular] of vistas) {
         const r = await reporte(acceso, 'cierres');
         expect(seccion(r, 'resumen').filas).toEqual([
           {
@@ -1110,6 +1115,7 @@ describe('Reportes', () => {
             fecha_cierre: expect.any(String),
             cerrado_por: 'Vera Reportes',
             ventas: 6,
+            ...desdeCelular,
             total_vendido: '3650.00',
             esperado_nio: centavos(465000 - diezDolares), // efectivo + tarjeta + transferencia
             contado_nio: '4000.00',
@@ -1124,6 +1130,7 @@ describe('Reportes', () => {
         ]);
         expect(seccion(r, 'cierres').totales).toEqual({
           ventas: 6,
+          ...desdeCelular,
           total_vendido: '3650.00',
           diferencia_nio: detalle.diferencia_nio,
           diferencia_usd: '0.00',

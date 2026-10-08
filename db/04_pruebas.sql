@@ -659,7 +659,7 @@ SELECT fn_crear_usuario(:admin, 'Luis Pérez', 'luis.perez', 'hash-de-prueba', '
 
 -- Desde qué equipo se puede entrar
 SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, '10.0.0.7', 'prueba', :'eq_lam')) = 'OK', 'vendedor entra desde la caja registrada de su sucursal');
-SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true)) = 'EQUIPO_NO_AUTORIZADO', 'vendedor sin equipo registrado → no entra');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true)) = 'OK', 'vendedor sin equipo registrado → entra (es su celular: solo con lo que vale sin equipo)');
 SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('luis.perez', true, NULL, NULL, :'eq_lbr')) = 'EQUIPO_NO_AUTORIZADO', 'vendedor desde el equipo de otra sucursal → no entra');
 SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('ADMIN ', true)) = 'OK', 'el admin entra sin equipo (usuario sin distinguir mayúsculas ni espacios)');
 SELECT pg_temp.afirma(EXISTS (SELECT 1 FROM acceso_log WHERE usuario_id = :luis AND exito AND dispositivo_id = :'eq_lam' AND ip = '10.0.0.7')
@@ -696,7 +696,11 @@ SELECT pg_temp.afirma((SELECT expira_at BETWEEN now() + interval '11 hours 59 mi
 SELECT * FROM fn_crear_sesion(:admin, encode(sha256('s-admin'), 'hex'));
 SELECT pg_temp.afirma((SELECT expira_at BETWEEN now() + interval '6 days 23 hours' AND now() + interval '7 days 1 hour'
                          FROM sesion WHERE refresh_token_hash = encode(sha256('s-admin'), 'hex')), 'sesión del admin sin equipo: 7 días');
-SELECT pg_temp.espera_error(format('SELECT fn_crear_sesion(%s, %L)', :luis, repeat('f', 64)), 'no puede iniciar sesión desde este equipo');
+SELECT * FROM fn_crear_sesion(:luis, encode(sha256('s-celular'), 'hex'));
+SELECT pg_temp.afirma((SELECT dispositivo_id IS NULL AND expira_at BETWEEN now() + interval '11 hours 59 minutes' AND now() + interval '12 hours 1 minute'
+                         FROM sesion WHERE refresh_token_hash = encode(sha256('s-celular'), 'hex'))
+                  AND fn_parametro_num('SESION_HORAS_CELULAR') = 12, 'sesión de un vendedor desde su celular: 12 horas');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_sesion(%s, %L, %L)', :luis, repeat('f', 64), :'eq_lbr'), 'no puede iniciar sesión desde este equipo');
 
 -- Renovación con rotación
 SELECT * FROM fn_renovar_sesion(encode(sha256('s1'), 'hex'), encode(sha256('s2'), 'hex'), '10.0.0.8', 'prueba') \gset r_
@@ -1445,8 +1449,18 @@ SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s,
                                    :rita, :'pc_dva', :va, :va_perf), 'DEVOLUCIONES_REGISTRAR');
 SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
                                    :carlos, :'pc_dva', :va, :va_perf), 'equipo registrado y activo');
-SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, NULL, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
-                                   :dora, :va, :va_perf), 'equipo registrado y activo');
+-- Desde el celular (sin equipo) también se solicita: la sucursal es la suya o la que indique entre las suyas
+BEGIN;
+SELECT fn_solicitar_devolucion(:dora, NULL, :va, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :va_perf)::jsonb) AS s_cel \gset
+SELECT fn_solicitar_devolucion(:beto, NULL, :va, 'DEVOLUCION', 'El cliente llegó a la otra sucursal', 'Carla Cliente', '8888-1234',
+  format('[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', :va_cad)::jsonb) AS s_cel_b \gset
+SELECT pg_temp.afirma((SELECT sucursal_solicitud_id = :dva AND solicitada_por = :dora FROM devolucion WHERE id = :s_cel)
+                  AND (SELECT sucursal_solicitud_id = :dvb FROM devolucion WHERE id = :s_cel_b),
+                      'desde el celular se solicita la devolución: la sucursal es la de la venta si trabaja en ella y, si no, la suya');
+SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, NULL, %s, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]', %s)$q$,
+                                   :dora, :vb, :vb_perf, :dvb), 'no está asignado a la sucursal');
+ROLLBACK;
 SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, 999999, 'DEVOLUCION', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":1,"cantidad":1,"estado":"BUENO"}]')$q$,
                                    :dora, :'pc_dva'), 'La venta 999999 no existe');
 SELECT pg_temp.espera_error(format($q$SELECT fn_solicitar_devolucion(%s, %L, %s, 'REGALO', 'No le gustó el aroma', 'Carla Cliente', '8888-1234', '[{"detalle_id":%s,"cantidad":1,"estado":"BUENO"}]')$q$,
@@ -1795,7 +1809,80 @@ SELECT fn_cierre_forzado(:admin, :t_dvb, 'Cierre de la sucursal B de las pruebas
 SELECT fn_cierre_forzado(:admin, :t_dva3, 'Cierre de la sucursal A de las pruebas de devoluciones');
 SELECT pg_temp.afirma((SELECT count(*) FROM fn_devoluciones_reporte(:lina, :'hoy', :'hoy', NULL, 'AMBAS')) = 5, 'reportes: cerrados los turnos, sus devoluciones ya entran para todos');
 
-\echo '\n=== 25. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 25. ACCESO DESDE EL CELULAR: PERMISOS QUE VALEN SIN EQUIPO Y VENTA DESDE EL CELULAR'
+SELECT set_config('app.usuario_id', :'admin', false);
+-- Una sucursal con dos cajas y otra con una; Vera vende en la primera y Nuria (encargada) en las dos
+SELECT fn_guardar_sucursal(:admin, NULL, 'cel', 'Sucursal Celular A') AS cel \gset
+SELECT fn_guardar_sucursal(:admin, NULL, 'ceb', 'Sucursal Celular B') AS ceb \gset
+SELECT fn_crear_caja(:admin, :cel, 'Caja 1') AS caja_cel1 \gset
+SELECT fn_crear_caja(:admin, :cel, 'Caja 2') AS caja_cel2 \gset
+SELECT fn_crear_caja(:admin, :ceb, 'Caja 1') AS caja_ceb \gset
+SELECT fn_crear_usuario(:admin, 'Vera Celular', 'vera.cel', 'hash-de-prueba', 'VENDEDOR', ARRAY[:cel]) AS vera \gset
+SELECT fn_crear_usuario(:admin, 'Nuria Celular', 'nuria.cel', 'hash-de-prueba', 'ENCARGADO', ARRAY[:cel, :ceb]) AS nuria \gset
+SELECT fn_registrar_dispositivo(:admin, 'PC Caja 1 CEL', 'CAJA', :cel, encode(sha256('cel-pc-1'), 'hex'), :caja_cel1) AS pc_cel1 \gset
+SELECT fn_registrar_dispositivo(:admin, 'PC Caja CEB', 'CAJA', :ceb, encode(sha256('ceb-pc'), 'hex'), :caja_ceb) AS pc_ceb \gset
+SELECT fn_movimiento_inventario(:admin, :cel, :dcad, 'AJUSTE_POSITIVO', 10, 'Existencias para las pruebas del celular');
+
+-- La lista de lo que vale sin equipo registrado
+SELECT pg_temp.afirma((SELECT array_agg(codigo ORDER BY codigo) FROM permiso WHERE sin_equipo)
+                      = ARRAY['DEVOLUCIONES_REGISTRAR','INVENTARIO_CONTAR','INVENTARIO_RECIBIR','INVENTARIO_VER','PRODUCTOS_VER',
+                              'VENTAS_MODIFICAR_PRECIO','VENTAS_PROMOCION','VENTAS_REGISTRAR','VENTAS_VER_PROPIAS']::varchar[],
+                      'datos iniciales: desde el celular se consulta, se recibe, se cuenta, se solicitan devoluciones y se vende');
+SELECT pg_temp.afirma(fn_sesion_permitida(:vera, NULL) AND fn_sesion_permitida(:vera, :'pc_cel1') AND NOT fn_sesion_permitida(:vera, :'pc_ceb')
+                  AND NOT fn_equipo_autorizado(:vera, NULL) AND fn_equipo_autorizado(:admin, NULL),
+                      'sin equipo entra cualquiera que esté activo, pero solo el administrador trabaja con todo desde ahí');
+SELECT pg_temp.afirma((SELECT bool_and(fn_permiso_en_sesion(:nuria, c, NULL) = 'OK')
+                         FROM unnest(ARRAY['PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_CONTAR','DEVOLUCIONES_REGISTRAR',
+                                           'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_PROMOCION','VENTAS_MODIFICAR_PRECIO']) c),
+                      'la encargada, desde su celular: lo marcado sin equipo');
+SELECT pg_temp.afirma((SELECT bool_and(fn_permiso_en_sesion(:nuria, c, NULL) = 'SIN_EQUIPO' AND fn_permiso_en_sesion(:nuria, c, :'pc_cel1') = 'OK')
+                         FROM unnest(ARRAY['CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','VENTAS_ANULAR','VENTAS_VER_TODAS',
+                                           'TIPO_CAMBIO_GESTIONAR','INVENTARIO_REPORTAR_MERMA','REPORTES_VER']) c),
+                      'lo de caja, anular, ver las ventas de otras, el tipo de cambio, las mermas y los reportes: solo desde el equipo de la sucursal');
+SELECT pg_temp.afirma(fn_permiso_en_sesion(:vera, 'VENTAS_ANULAR', NULL) = 'SIN_PERMISO' AND fn_permiso_en_sesion(:vera, 'VENTAS_ANULAR', :'pc_cel1') = 'SIN_PERMISO'
+                  AND fn_permiso_en_sesion(:vera, 'VENTAS_REGISTRAR', :'pc_ceb') = 'SIN_EQUIPO'
+                  AND fn_permiso_en_sesion(:admin, 'CAJA_CIERRE_FORZADO', NULL) = 'OK'
+                  AND fn_permiso_en_sesion(:vera, 'NO_EXISTE', NULL) = 'SIN_PERMISO',
+                      'el permiso que su rol no tiene no lo da ningún equipo; el equipo de otra sucursal no sirve; el administrador, desde donde sea');
+SELECT fn_set_dispositivo_activo(:admin, :'pc_cel1', false);
+SELECT pg_temp.afirma(fn_permiso_en_sesion(:vera, 'VENTAS_REGISTRAR', :'pc_cel1') = 'SIN_EQUIPO', 'un equipo desactivado deja de servir de inmediato');
+SELECT fn_set_dispositivo_activo(:admin, :'pc_cel1', true);
+
+-- Vender desde el celular: al turno abierto de su sucursal
+SELECT pg_temp.afirma(fn_turno_para_venta(:vera, NULL) IS NULL AND NOT EXISTS (SELECT 1 FROM fn_cajas_abiertas(:vera)),
+                      'sin turno abierto en su sucursal, desde el celular no hay dónde vender');
+SELECT pg_temp.espera_error(format('SELECT fn_caja_de_sesion(%s, NULL, NULL, true)', :vera), 'equipo registrado y activo');
+SELECT fn_abrir_turno(:vera, fn_caja_de_sesion(:vera, :'pc_cel1', NULL, true), 500, 0) AS t_cel1 \gset
+SELECT pg_temp.afirma(fn_turno_para_venta(:vera, NULL) = :t_cel1 AND fn_turno_para_venta(:vera, NULL, :caja_cel1) = :t_cel1
+                  AND fn_turno_para_venta(:vera, :'pc_cel1') = :t_cel1
+                  AND (SELECT count(*) = 1 AND min(caja_id) = :caja_cel1 AND min(sucursal_codigo) = 'CEL' FROM fn_cajas_abiertas(:vera)),
+                      'con una sola caja abierta, la venta del celular entra a ese turno');
+SELECT pg_temp.espera_error(format('SELECT fn_turno_para_venta(%s, NULL, %s)', :vera, :caja_cel2), 'no tiene un turno abierto en una de sus sucursales');
+SELECT fn_abrir_turno(:admin, :caja_cel2, 300, 0) AS t_cel2 \gset
+SELECT fn_abrir_turno(:admin, :caja_ceb, 300, 0) AS t_ceb \gset
+SELECT pg_temp.espera_error(format('SELECT fn_turno_para_venta(%s, NULL)', :vera), 'Hay más de una caja abierta');
+SELECT pg_temp.afirma(fn_turno_para_venta(:vera, NULL, :caja_cel2) = :t_cel2 AND fn_turno_para_venta(:nuria, NULL, :caja_ceb) = :t_ceb
+                  AND (SELECT count(*) = 2 FROM fn_cajas_abiertas(:vera)) AND (SELECT count(*) = 3 FROM fn_cajas_abiertas(:nuria)),
+                      'con varias cajas abiertas elige la caja; quien trabaja en dos sucursales elige también la sucursal');
+SELECT pg_temp.espera_error(format('SELECT fn_turno_para_venta(%s, NULL, %s)', :vera, :caja_ceb), 'no tiene un turno abierto en una de sus sucursales');
+SELECT pg_temp.espera_error(format('SELECT fn_turno_de_sesion(%s, NULL, %s)', :vera, :caja_cel1), 'equipo registrado y activo');
+
+SELECT fn_registrar_venta(:vera, fn_turno_para_venta(:vera, NULL, :caja_cel1), format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":1000}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS v_cel \gset
+SELECT fn_registrar_venta(:vera, fn_turno_para_venta(:vera, :'pc_cel1'), format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]') AS v_tab \gset
+SELECT pg_temp.afirma((SELECT origen = 'CELULAR' AND turno_id = :t_cel1 AND vendedor_id = :vera AND total = 600 FROM venta WHERE id = :v_cel)
+                  AND (SELECT origen = 'EQUIPO' FROM venta WHERE id = :v_tab)
+                  AND (SELECT -sum(monto) = 400 FROM venta_pago WHERE venta_id = :v_cel AND es_vuelto),
+                      'la venta del celular entra al turno con las reglas de siempre (vuelto incluido) y guarda desde dónde se hizo');
+SELECT pg_temp.espera_error(format('UPDATE venta SET origen = %L WHERE id = %s', 'EQUIPO', :v_cel), 'no se modifican');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1}]', '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'TELEFONO')$q$,
+                                   :vera, :t_cel1, :dcad), 'venta_origen_check');
+SELECT fn_cierre_forzado(:admin, :t_cel1, 'Cierre de las pruebas del celular');
+SELECT fn_cierre_forzado(:admin, :t_cel2, 'Cierre de las pruebas del celular');
+SELECT fn_cierre_forzado(:admin, :t_ceb, 'Cierre de las pruebas del celular');
+
+\echo '\n=== 26. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_devolucion) FROM sucursal) = 5
                   AND NOT EXISTS (
                         SELECT 1 FROM sucursal s

@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
-import { RequierePermiso } from '../autenticacion/permisos';
+import { RequierePermiso, SoloEnEquipo } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { esquemaMotivo, idEntero, type DatosMotivo } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
@@ -127,6 +127,7 @@ export class DevolucionesController {
    */
   @Post(':id/ejecutar')
   @RequierePermiso('DEVOLUCIONES_REGISTRAR')
+  @SoloEnEquipo()
   @HttpCode(HttpStatus.OK)
   async ejecutar(
     @UsuarioActual() usuario: UsuarioAutenticado,
@@ -156,6 +157,7 @@ export class DevolucionesController {
    */
   @Post(':id/imprimir')
   @RequierePermiso('DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR')
+  @SoloEnEquipo()
   @HttpCode(HttpStatus.OK)
   async imprimir(
     @UsuarioActual() usuario: UsuarioAutenticado,

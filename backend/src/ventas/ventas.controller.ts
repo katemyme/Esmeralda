@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
-import { RequierePermiso } from '../autenticacion/permisos';
+import { RequierePermiso, SoloEnEquipo } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { esquemaMotivo, idEntero, type DatosMotivo } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
@@ -28,6 +28,10 @@ import { VentasService, type VentaDetalle, type VentaResumen } from './ventas.se
  * /api/ventas — el POS. La venta entra al turno abierto de la caja del equipo de la sesión: la
  * solicitud no lleva sucursal, caja ni turno. Subir el precio y aplicar una promoción piden sus
  * propios permisos (VENTAS_MODIFICAR_PRECIO, VENTAS_PROMOCION), que valida la base.
+ *
+ * Desde el celular (sin equipo registrado) también se vende: la venta entra al turno abierto de
+ * su sucursal (`caja_id` si hay más de una caja abierta: ver GET /api/caja/abiertas) y solo se
+ * ven las ventas propias de ese turno. Anular e imprimir en papel son de la tablet.
  */
 @Controller('ventas')
 export class VentasController {
@@ -35,7 +39,7 @@ export class VentasController {
 
   /**
    * `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` — con
-   * VENTAS_VER_TODAS, las de sus sucursales; si no, solo las propias.
+   * VENTAS_VER_TODAS, las de sus sucursales; si no, solo las propias. La lista no trae sumas.
    */
   @Get()
   @RequierePermiso('VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS')
@@ -43,7 +47,7 @@ export class VentasController {
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Query(new ValidacionZod(esquemaFiltroVentas)) filtro: FiltroVentas,
   ): Promise<{ ventas: VentaResumen[] }> {
-    return { ventas: await this.ventas.listar(usuario.id, filtro) };
+    return { ventas: await this.ventas.listar(usuario, filtro) };
   }
 
   /** La venta completa, con lo que va en el ticket. */
@@ -53,7 +57,7 @@ export class VentasController {
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Param('id', idEntero()) id: number,
   ): Promise<{ venta: VentaDetalle }> {
-    return { venta: await this.ventas.buscar(usuario.id, id) };
+    return { venta: await this.ventas.buscar(usuario, id) };
   }
 
   /**
@@ -82,7 +86,7 @@ export class VentasController {
     @Param('id', idEntero()) id: number,
     @Body(new ValidacionZod(esquemaMotivo)) datos: DatosMotivo,
   ): Promise<{ venta: VentaDetalle }> {
-    return { venta: await this.ventas.anular(usuario.id, id, datos.motivo) };
+    return { venta: await this.ventas.anular(usuario, id, datos.motivo) };
   }
 
   /**
@@ -91,13 +95,14 @@ export class VentasController {
    */
   @Post(':id/imprimir')
   @RequierePermiso('VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS')
+  @SoloEnEquipo()
   @HttpCode(HttpStatus.OK)
   async imprimir(
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Param('id', idEntero()) id: number,
     @Res({ passthrough: true }) respuesta: Response,
   ): Promise<StreamableFile> {
-    const { pdf, numero, impresion } = await this.ventas.imprimir(usuario.id, id);
+    const { pdf, numero, impresion } = await this.ventas.imprimir(usuario, id);
     respuesta.setHeader('X-Ticket-Impresion', String(impresion));
     return new StreamableFile(pdf, {
       type: 'application/pdf',

@@ -57,6 +57,13 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('REPORTES_COSTOS',       'Reportes',   'Ver costos, márgenes e inventario valorizado'),
   ('AUDITORIA_VER',         'Auditoría',  'Consultar bitácora de cambios y accesos');
 
+-- Lo que una trabajadora puede hacer desde su celular (sin equipo registrado): consultar productos,
+-- precios y existencias, recibir envíos, contar, solicitar devoluciones y vender (la venta entra al
+-- turno abierto de su sucursal). Todo lo demás —y todo lo de caja— es de la tablet de la sucursal.
+UPDATE permiso SET sin_equipo = true
+ WHERE codigo IN ('PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_CONTAR','DEVOLUCIONES_REGISTRAR',
+                  'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_PROMOCION','VENTAS_MODIFICAR_PRECIO');
+
 -- ---------------------------------------------------------------------
 -- Roles
 -- ---------------------------------------------------------------------
@@ -127,7 +134,9 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false, 1,
    'Horas que dura una sesión iniciada en un equipo registrado (caja, tablet); luego se pide usuario y contraseña de nuevo.'),
   ('SESION_DIAS_SIN_EQUIPO', '7', 'NUMERO', NULL, false, 1,
-   'Días que dura una sesión iniciada fuera de un equipo registrado (solo el administrador puede entrar así).'),
+   'Días que dura la sesión del administrador iniciada fuera de un equipo registrado.'),
+  ('SESION_HORAS_CELULAR', '12', 'NUMERO', NULL, false, 1,
+   'Horas que dura la sesión de una encargada o vendedora iniciada desde su celular (sin equipo registrado).'),
   ('NEGOCIO_NOMBRE', 'Esmeralda Experience', 'TEXTO', NULL, false, NULL,
    'Nombre del negocio en el encabezado del ticket de venta.'),
   ('NEGOCIO_RUC', NULL, 'TEXTO', NULL, true, NULL,

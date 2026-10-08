@@ -110,7 +110,10 @@ CREATE TABLE permiso (
   id           integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   codigo       varchar(40)  NOT NULL UNIQUE CHECK (codigo ~ '^[A-Z_]+$'),
   modulo       varchar(30)  NOT NULL,
-  descripcion  varchar(200) NOT NULL
+  descripcion  varchar(200) NOT NULL,
+  -- Vale también sin un equipo registrado (el celular personal de una trabajadora). Los demás
+  -- permisos solo sirven desde un equipo registrado de la sucursal (ver fn_permiso_en_sesion).
+  sin_equipo   boolean      NOT NULL DEFAULT false
 );
 
 CREATE TABLE rol_permiso (
@@ -179,7 +182,7 @@ CREATE TRIGGER tg_dispositivo_validar BEFORE INSERT OR UPDATE ON dispositivo
 CREATE TABLE sesion (
   id                  uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   usuario_id          bigint      NOT NULL REFERENCES usuario(id),
-  dispositivo_id      uuid        REFERENCES dispositivo(id),  -- equipo donde se inició (NULL = sin equipo: solo el admin)
+  dispositivo_id      uuid        REFERENCES dispositivo(id),  -- equipo donde se inició (NULL = sin equipo: el admin o un celular)
   refresh_token_hash  char(64)    NOT NULL UNIQUE,     -- SHA-256 del token, nunca el token
   ip                  inet,
   user_agent          varchar(300),
@@ -883,6 +886,8 @@ CREATE TABLE venta (
   notas             varchar(500),
   promocion_id      integer       REFERENCES promocion(id),
   clave_idempotencia uuid         UNIQUE,                         -- la envía el POS: evita ventas duplicadas
+  -- Desde dónde se hizo: un equipo registrado de la sucursal o un celular (sin equipo registrado)
+  origen            varchar(10)   NOT NULL DEFAULT 'EQUIPO' CHECK (origen IN ('EQUIPO','CELULAR')),
   CONSTRAINT ck_venta_total CHECK (descuento <= subtotal AND total = subtotal - descuento),
   CONSTRAINT ck_venta_descuento_promo CHECK (descuento = 0 OR promocion_id IS NOT NULL),
   CONSTRAINT ck_venta_anulacion CHECK (
@@ -991,10 +996,10 @@ BEGIN
     RAISE EXCEPTION 'La venta % ya está anulada', OLD.numero;
   END IF;
   IF (NEW.numero, NEW.sucursal_id, NEW.turno_id, NEW.vendedor_id, NEW.fecha,
-      NEW.subtotal, NEW.descuento, NEW.total, NEW.tipo_cambio)
+      NEW.subtotal, NEW.descuento, NEW.total, NEW.tipo_cambio, NEW.origen)
      IS DISTINCT FROM
      (OLD.numero, OLD.sucursal_id, OLD.turno_id, OLD.vendedor_id, OLD.fecha,
-      OLD.subtotal, OLD.descuento, OLD.total, OLD.tipo_cambio) THEN
+      OLD.subtotal, OLD.descuento, OLD.total, OLD.tipo_cambio, OLD.origen) THEN
     RAISE EXCEPTION 'Los datos de una venta registrada no se modifican (venta %)', OLD.numero;
   END IF;
   RETURN NEW;
@@ -1353,8 +1358,8 @@ BEGIN
   END IF;
 END $$;
 
--- ¿Puede el usuario trabajar desde este equipo? El admin, desde cualquiera (o sin equipo
--- registrado); los demás roles solo desde un equipo registrado y activo de una de sus sucursales.
+-- ¿Puede el usuario trabajar con todo lo suyo desde este equipo? El admin, desde cualquiera (o sin
+-- equipo registrado); los demás roles solo desde un equipo registrado y activo de una de sus sucursales.
 CREATE OR REPLACE FUNCTION fn_equipo_autorizado(p_usuario bigint, p_dispositivo uuid) RETURNS boolean
 LANGUAGE sql STABLE AS $$
   SELECT CASE
@@ -1367,6 +1372,30 @@ LANGUAGE sql STABLE AS $$
   END
 $$;
 
+-- ¿Puede el usuario tener una sesión desde aquí? Sin equipo registrado (su celular) entra cualquier
+-- usuario activo, pero quien no es administrador solo puede usar los permisos marcados sin_equipo.
+-- Desde un equipo registrado, solo quien trabaja en su sucursal.
+CREATE OR REPLACE FUNCTION fn_sesion_permitida(p_usuario bigint, p_dispositivo uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN p_dispositivo IS NULL THEN EXISTS (SELECT 1 FROM usuario u WHERE u.id = p_usuario AND u.activo)
+    ELSE fn_equipo_autorizado(p_usuario, p_dispositivo)
+  END
+$$;
+
+-- El permiso en una sesión concreta. Desde el celular (sin equipo registrado) quien no es
+-- administrador solo usa los permisos marcados sin_equipo: lo demás es de la tablet de la sucursal.
+--   OK · SIN_PERMISO (su rol no lo tiene) · SIN_EQUIPO (lo tiene, pero aquí no vale)
+CREATE OR REPLACE FUNCTION fn_permiso_en_sesion(p_usuario bigint, p_permiso text, p_dispositivo uuid) RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN NOT fn_tiene_permiso(p_usuario, p_permiso) THEN 'SIN_PERMISO'
+    WHEN fn_equipo_autorizado(p_usuario, p_dispositivo) THEN 'OK'
+    WHEN p_dispositivo IS NULL AND (SELECT pe.sin_equipo FROM permiso pe WHERE pe.codigo = p_permiso) THEN 'OK'
+    ELSE 'SIN_EQUIPO'
+  END
+$$;
+
 -- Intento de inicio de sesión. El backend verifica el hash de la contraseña (argon2id; bcrypt en
 -- los usuarios del seed) y llama a esta función con el resultado; aquí se decide si el ingreso procede:
 --   OK                      contraseña correcta, usuario activo y equipo autorizado (reinicia el contador)
@@ -1374,7 +1403,8 @@ $$;
 --   BLOQUEADO               5 fallos seguidos bloquean 15 minutos; mientras dura, ni la contraseña
 --                           correcta entra ni se cuentan más fallos. Cumplido, el contador vuelve a empezar.
 --   INACTIVO                usuario desactivado (solo se informa si la contraseña es correcta)
---   EQUIPO_NO_AUTORIZADO    encargados y vendedores solo entran desde un equipo registrado de sus sucursales
+--   EQUIPO_NO_AUTORIZADO    el equipo registrado es de una sucursal que no es suya (sin equipo
+--                           registrado sí se entra: es el celular, con lo que permite fn_permiso_en_sesion)
 CREATE OR REPLACE FUNCTION fn_registrar_login(
   p_username text, p_exito boolean, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL,
   p_dispositivo uuid DEFAULT NULL
@@ -1404,7 +1434,7 @@ BEGIN
     END IF;
   ELSIF NOT u.activo THEN
     resultado := 'INACTIVO'; v_motivo := 'usuario inactivo';
-  ELSIF NOT fn_equipo_autorizado(u.id, p_dispositivo) THEN
+  ELSIF NOT fn_sesion_permitida(u.id, p_dispositivo) THEN
     resultado := 'EQUIPO_NO_AUTORIZADO'; v_motivo := 'equipo no autorizado';
   ELSE
     resultado := 'OK';
@@ -1424,7 +1454,8 @@ END $$;
 
 -- Sesiones. El backend genera el token de renovación, lo entrega al navegador en una cookie
 -- httpOnly y aquí solo se guarda su SHA-256. Duración según parámetros: SESION_HORAS_EQUIPO si se
--- inicia en un equipo registrado, SESION_DIAS_SIN_EQUIPO si no (solo el admin entra sin equipo).
+-- inicia en un equipo registrado; sin equipo, SESION_DIAS_SIN_EQUIPO para el administrador y
+-- SESION_HORAS_CELULAR para los demás (su celular).
 CREATE OR REPLACE FUNCTION fn_crear_sesion(
   p_usuario bigint, p_token_hash text, p_dispositivo uuid DEFAULT NULL,
   p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
@@ -1432,16 +1463,18 @@ CREATE OR REPLACE FUNCTION fn_crear_sesion(
 LANGUAGE plpgsql AS $$
 #variable_conflict use_column
 BEGIN
-  IF NOT fn_equipo_autorizado(p_usuario, p_dispositivo) THEN
+  IF NOT fn_sesion_permitida(p_usuario, p_dispositivo) THEN
     RAISE EXCEPTION 'El usuario % no puede iniciar sesión desde este equipo', p_usuario
           USING ERRCODE = 'insufficient_privilege';
   END IF;
   RETURN QUERY
     INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at)
     VALUES (p_usuario, p_dispositivo, p_token_hash, p_ip, left(p_user_agent, 300),
-            now() + CASE WHEN p_dispositivo IS NULL
+            now() + CASE WHEN p_dispositivo IS NOT NULL
+                         THEN coalesce(fn_parametro_num('SESION_HORAS_EQUIPO'), 12)::float8 * interval '1 hour'
+                         WHEN fn_equipo_autorizado(p_usuario, NULL)
                          THEN coalesce(fn_parametro_num('SESION_DIAS_SIN_EQUIPO'), 7)::float8 * interval '1 day'
-                         ELSE coalesce(fn_parametro_num('SESION_HORAS_EQUIPO'), 12)::float8 * interval '1 hour' END)
+                         ELSE coalesce(fn_parametro_num('SESION_HORAS_CELULAR'), 12)::float8 * interval '1 hour' END)
     RETURNING id, expira_at;
 END $$;
 
@@ -1474,7 +1507,7 @@ BEGIN
     RETURN;
   END IF;
 
-  IF NOT fn_equipo_autorizado(s.usuario_id, s.dispositivo_id) THEN
+  IF NOT fn_sesion_permitida(s.usuario_id, s.dispositivo_id) THEN
     UPDATE sesion SET revocada_at = now() WHERE id = s.id;
     RETURN;
   END IF;
@@ -2049,6 +2082,47 @@ LANGUAGE sql STABLE AS $$
    WHERE t.caja_id = (SELECT fn_caja_de_sesion(p_usuario, p_dispositivo, p_caja)) AND t.estado = 'ABIERTO'
 $$;
 
+-- Cajas con turno abierto donde el usuario puede vender desde su celular: las de sus sucursales.
+CREATE OR REPLACE FUNCTION fn_cajas_abiertas(p_usuario bigint)
+RETURNS TABLE (turno_id bigint, caja_id integer, caja text, sucursal_id integer, sucursal_codigo text, sucursal text)
+LANGUAGE sql STABLE AS $$
+  SELECT t.id, c.id, c.nombre::text, s.id, s.codigo::text, s.nombre::text
+    FROM turno_caja t
+    JOIN caja c ON c.id = t.caja_id
+    JOIN sucursal s ON s.id = c.sucursal_id
+   WHERE t.estado = 'ABIERTO' AND fn_puede_operar_sucursal(p_usuario, s.id)
+   ORDER BY s.id, c.id
+$$;
+
+-- Turno en el que entra una venta. Desde un equipo registrado (y para el administrador) es el de
+-- la sesión, como todo lo de caja. Desde el celular solo se vende: la venta entra al turno abierto
+-- de una de sus sucursales; si hay más de una caja abierta (o trabaja en varias sucursales con caja
+-- abierta) tiene que decir en cuál. NULL: no hay turno abierto. Abrir, cerrar, mover efectivo y
+-- ejecutar devoluciones siguen pidiendo el equipo (fn_caja_de_sesion).
+CREATE OR REPLACE FUNCTION fn_turno_para_venta(p_usuario bigint, p_dispositivo uuid, p_caja integer DEFAULT NULL)
+RETURNS bigint
+LANGUAGE plpgsql STABLE AS $$
+DECLARE v_turnos bigint[];
+BEGIN
+  IF p_dispositivo IS NOT NULL OR fn_equipo_autorizado(p_usuario, NULL) THEN
+    RETURN fn_turno_de_sesion(p_usuario, p_dispositivo, p_caja);
+  END IF;
+  IF NOT fn_sesion_permitida(p_usuario, NULL) THEN
+    RAISE EXCEPTION 'El usuario % no está activo', p_usuario USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  SELECT array_agg(a.turno_id) INTO v_turnos
+    FROM fn_cajas_abiertas(p_usuario) a
+   WHERE p_caja IS NULL OR a.caja_id = p_caja;
+  IF p_caja IS NOT NULL AND v_turnos IS NULL THEN
+    RAISE EXCEPTION 'Esa caja no tiene un turno abierto en una de sus sucursales';
+  END IF;
+  IF cardinality(v_turnos) > 1 THEN
+    RAISE EXCEPTION 'Hay más de una caja abierta: indique en cuál entra la venta';
+  END IF;
+  RETURN v_turnos[1];
+END $$;
+
 -- ---------------------------------------------------------------------
 -- 9.3 Ventas
 -- ---------------------------------------------------------------------
@@ -2080,7 +2154,8 @@ CREATE OR REPLACE FUNCTION fn_registrar_venta(
   p_cliente_telefono  text    DEFAULT NULL,
   p_notas             text    DEFAULT NULL,
   p_idempotencia      uuid    DEFAULT NULL,
-  p_saldo_cambio      numeric DEFAULT NULL
+  p_saldo_cambio      numeric DEFAULT NULL,
+  p_origen            text    DEFAULT 'EQUIPO'      -- 'CELULAR': la sesión no es de un equipo registrado
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -2257,9 +2332,10 @@ BEGIN
   v_tc := fn_tipo_cambio_vigente();
 
   INSERT INTO venta (numero, sucursal_id, turno_id, vendedor_id, cliente_nombre, cliente_telefono,
-                     subtotal, descuento, total, tipo_cambio, notas, promocion_id, clave_idempotencia)
+                     subtotal, descuento, total, tipo_cambio, notas, promocion_id, clave_idempotencia, origen)
   VALUES (v_numero, v_sucursal, p_turno, p_usuario, p_cliente_nombre, p_cliente_telefono,
-          v_subtotal, v_descuento, v_total, v_tc, p_notas, p_promocion, p_idempotencia)
+          v_subtotal, v_descuento, v_total, v_tc, p_notas, p_promocion, p_idempotencia,
+          coalesce(p_origen, 'EQUIPO'))
   RETURNING id INTO v_venta_id;
 
   -- 6. Detalle y salida de inventario (piezas sueltas y piezas de paquetes)
@@ -4741,7 +4817,7 @@ DECLARE
   l          record;
 BEGIN
   PERFORM fn_exigir_permiso(p_usuario, 'DEVOLUCIONES_REGISTRAR');
-  IF NOT fn_equipo_autorizado(p_usuario, p_dispositivo) THEN
+  IF NOT fn_sesion_permitida(p_usuario, p_dispositivo) THEN
     RAISE EXCEPTION 'Esta operación se hace desde un equipo registrado y activo de la sucursal'
           USING ERRCODE = 'insufficient_privilege';
   END IF;
@@ -4751,7 +4827,13 @@ BEGIN
   v_no := fn_venta_no_devoluble(p_venta);
   IF v_no IS NOT NULL THEN RAISE EXCEPTION '%', v_no; END IF;
 
-  v_suc := coalesce((SELECT sucursal_id FROM dispositivo WHERE id = p_dispositivo), p_sucursal, v.sucursal_id);
+  -- La sucursal que la solicita: la del equipo; sin equipo (el celular), la que indique; si no
+  -- indica, la de la venta cuando trabaja en ella y, si no, la única en la que trabaja.
+  v_suc := coalesce((SELECT sucursal_id FROM dispositivo WHERE id = p_dispositivo), p_sucursal,
+                    CASE WHEN fn_puede_operar_sucursal(p_usuario, v.sucursal_id) THEN v.sucursal_id END,
+                    (SELECT min(us.sucursal_id) FROM usuario_sucursal us
+                      WHERE us.usuario_id = p_usuario HAVING count(*) = 1),
+                    v.sucursal_id);
   IF (SELECT tipo FROM sucursal WHERE id = v_suc) IS DISTINCT FROM 'SUCURSAL' THEN
     RAISE EXCEPTION 'La sucursal % no existe o no es de venta', v_suc;
   END IF;

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql, type RawBuilder } from 'kysely';
 import { BaseDatosService } from '../base-datos/base-datos.service';
-import { donde, veCostos } from '../comun/consultas';
+import { donde, veCostos, veOrigen } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
 import { fechaHora, mesCorto } from '../exportacion/formato';
@@ -28,6 +28,8 @@ interface Contexto {
   veBodega: boolean;
   /** Tiene DEVOLUCIONES_APROBAR (el administrador): ve el nombre y el teléfono de los clientes. */
   veClientes: boolean;
+  /** Tiene SUCURSALES_GESTIONAR (el administrador): ve desde dónde se hizo cada venta. */
+  veOrigen: boolean;
 }
 
 /** Fila de una consulta con `grouping sets`: la de totales llega marcada con es_total = 1. */
@@ -119,7 +121,8 @@ function separar(filas: FilaAgrupada[]): { filas: Fila[]; totales: Fila | null }
  *   fn_devoluciones_reporte, con las mismas reglas, y restan el día en que se ejecutaron, a quien
  *   hizo la venta original y a su sucursal (el efectivo, en cambio, sale de donde se ejecutó);
  * - el costo y el margen se ocultan sin REPORTES_COSTOS; la cantidad de la bodega, sin permiso
- *   para verla; lo demás se limita a las sucursales del usuario (fn_puede_operar_sucursal).
+ *   para verla; lo demás se limita a las sucursales del usuario (fn_puede_operar_sucursal);
+ * - desde dónde se vendió (un equipo de la sucursal o un celular) solo lo ve el administrador.
  */
 @Injectable()
 export class ReportesService {
@@ -143,7 +146,7 @@ export class ReportesService {
       mes: { clave: 'periodo', titulo: 'Mes', tipo: 'mes' },
     };
     const titulo = { dia: 'Ventas por día', semana: 'Ventas por semana', mes: 'Ventas por mes' };
-    return this.deVentas(c, 'ventas', titulo[filtro.agrupar], [
+    const secciones = [
       this.seccion(
         c,
         'ventas',
@@ -151,7 +154,29 @@ export class ReportesService {
         [periodo[filtro.agrupar], ...MEDIDAS],
         rows,
       ),
-    ]);
+    ];
+    // Solo para el administrador: cuánto se vendió desde los equipos de la sucursal y cuánto desde celulares
+    if (c.veOrigen) {
+      const porOrigen = await sql<FilaAgrupada>`
+        select grouping(o.origen)::integer as es_total,
+               case o.origen when 'CELULAR' then 'Celular' else 'Equipo de la sucursal' end as origen,
+               ${medidas(veCostos(usuarioId))}
+          from ${this.lineas(c)}
+          join venta o on o.id = l.venta_id
+         where ${veOrigen(usuarioId)}
+         group by grouping sets ((o.origen), ())
+         order by 1, 2 desc`.execute(this.bd.db);
+      secciones.push(
+        this.seccion(
+          c,
+          'origen',
+          'Desde dónde se vendió',
+          [{ clave: 'origen', titulo: 'Se vendió desde', tipo: 'texto' }, ...MEDIDAS],
+          porOrigen.rows,
+        ),
+      );
+    }
+    return this.deVentas(c, 'ventas', titulo[filtro.agrupar], secciones);
   }
 
   /** Lo vendido por cada persona, con las ventas que se le anularon. */
@@ -760,7 +785,7 @@ export class ReportesService {
     const c = await this.contexto(usuarioId, filtro);
     const turnos = sql`
       (select t.id, s.nombre as sucursal, cj.nombre as caja, t.fecha_cierre,
-              u.nombre_completo as cerrado_por, v.ventas, v.total_vendido,
+              u.nombre_completo as cerrado_por, v.ventas, v.ventas_celular, v.total_vendido,
               d.esperado_nio, d.contado_nio, d.diferencia_nio,
               d.esperado_usd, d.contado_usd, d.diferencia_usd,
               t.intentos_cierre > 0 as hubo_reconteo, t.cierre_forzado,
@@ -771,6 +796,10 @@ export class ReportesService {
          join usuario u on u.id = t.usuario_cierre_id
         cross join lateral (
               select count(*) filter (where ve.estado = 'COMPLETADA')::integer as ventas,
+                     case when ${veOrigen(usuarioId)}
+                          then count(*) filter (where ve.estado = 'COMPLETADA'
+                                                  and ve.origen = 'CELULAR')::integer
+                     end as ventas_celular,
                      coalesce(sum(ve.total) filter (where ve.estado = 'COMPLETADA'), 0)::numeric(14,2)
                        as total_vendido
                 from venta ve
@@ -800,6 +829,7 @@ export class ReportesService {
                count(*) filter (where x.hubo_reconteo)::integer as con_reconteo,
                count(*) filter (where x.cierre_forzado)::integer as forzados,
                coalesce(sum(x.ventas), 0)::integer as ventas,
+               sum(x.ventas_celular)::integer as ventas_celular,
                coalesce(sum(x.total_vendido), 0)::numeric(14,2) as total_vendido,
                coalesce(sum(x.diferencia_nio), 0)::numeric(14,2) as diferencia_nio,
                coalesce(sum(x.diferencia_usd), 0)::numeric(14,2) as diferencia_usd,
@@ -841,6 +871,12 @@ export class ReportesService {
           { clave: 'fecha_cierre', titulo: 'Cierre', tipo: 'fecha_hora' },
           { clave: 'cerrado_por', titulo: 'Cerró', tipo: 'texto' },
           { clave: 'ventas', titulo: 'Ventas', tipo: 'entero' },
+          {
+            clave: 'ventas_celular',
+            titulo: 'Desde celular',
+            tipo: 'entero',
+            visible: c.veOrigen,
+          },
           { clave: 'total_vendido', titulo: 'Vendido', tipo: 'monto' },
           { clave: 'esperado_nio', titulo: 'Esperado C$', tipo: 'monto' },
           { clave: 'contado_nio', titulo: 'Contado C$', tipo: 'monto' },
@@ -855,6 +891,7 @@ export class ReportesService {
         cierres.rows,
         {
           ventas: total.ventas,
+          ventas_celular: total.ventas_celular,
           total_vendido: total.total_vendido,
           diferencia_nio: total.diferencia_nio,
           diferencia_usd: total.diferencia_usd,
@@ -1250,6 +1287,7 @@ export class ReportesService {
       turnos_abiertos: boolean;
       bodega: boolean;
       clientes: boolean;
+      origen: boolean;
       sucursal_id: number | null;
       codigo: string | null;
       nombre: string | null;
@@ -1258,6 +1296,7 @@ export class ReportesService {
              fn_tiene_permiso(${usuarioId}, 'CAJA_VER_DIFERENCIAS') as turnos_abiertos,
              fn_ve_cantidad_bodega(${usuarioId}) as bodega,
              fn_tiene_permiso(${usuarioId}, 'DEVOLUCIONES_APROBAR') as clientes,
+             fn_tiene_permiso(${usuarioId}, 'SUCURSALES_GESTIONAR') as origen,
              s.id as sucursal_id, s.codigo, s.nombre
         from (select 1) uno
         left join sucursal s on s.id = ${filtro.sucursal_id ?? null}::integer
@@ -1278,6 +1317,7 @@ export class ReportesService {
       veTurnosAbiertos: fila.turnos_abiertos,
       veBodega: fila.bodega,
       veClientes: fila.clientes,
+      veOrigen: fila.origen,
     };
   }
 }

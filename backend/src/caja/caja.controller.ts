@@ -12,12 +12,13 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
-import { RequierePermiso } from '../autenticacion/permisos';
+import { RequierePermiso, SoloEnEquipo } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { idEntero } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
 import {
   CajaService,
+  type CajaAbierta,
   type Denominacion,
   type MetodoPago,
   type MovimientoCaja,
@@ -44,7 +45,9 @@ import {
 /**
  * /api/caja — el turno de la caja de la sesión. La caja no viene en la solicitud: sale del equipo
  * registrado donde se inició la sesión (solo el administrador, sin caja en su equipo, envía
- * `caja_id`). Ninguna de estas rutas entrega montos esperados ni diferencias.
+ * `caja_id`). Ninguna de estas rutas entrega montos esperados ni diferencias. Todo lo de la caja
+ * pide un equipo registrado; desde el celular solo se consulta dónde se puede vender
+ * (GET /api/caja/abiertas).
  */
 @Controller('caja')
 export class CajaController {
@@ -53,11 +56,22 @@ export class CajaController {
   /** El turno abierto (`turno: null` si la caja está cerrada). Sin montos. */
   @Get('turno')
   @RequierePermiso('CAJA_ABRIR', 'CAJA_CERRAR', 'VENTAS_REGISTRAR')
+  @SoloEnEquipo()
   async turno(
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Query(new ValidacionZod(esquemaCajaElegida)) consulta: CajaElegida,
   ): Promise<{ turno: TurnoActual | null }> {
     return { turno: await this.caja.turnoActual(usuario, consulta.caja_id) };
+  }
+
+  /**
+   * Las cajas con turno abierto de las sucursales de quien pregunta: dónde puede entrar una venta
+   * hecha desde el celular (vacío: no hay turno abierto). Sin montos.
+   */
+  @Get('abiertas')
+  @RequierePermiso('VENTAS_REGISTRAR')
+  async abiertas(@UsuarioActual() usuario: UsuarioAutenticado): Promise<{ cajas: CajaAbierta[] }> {
+    return { cajas: await this.caja.cajasAbiertas(usuario.id) };
   }
 
   /** `{ inicial_nio, inicial_usd }`: el efectivo contado al abrir, sin ver el fondo esperado. */

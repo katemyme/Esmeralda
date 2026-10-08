@@ -2,8 +2,8 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { sql } from 'kysely';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { BaseDatosService } from '../base-datos/base-datos.service';
-import { exigirTurno } from '../caja/sesion-caja';
-import { donde, patronContiene, referencia } from '../comun/consultas';
+import { exigirTurnoParaVenta } from '../caja/sesion-caja';
+import { donde, patronContiene, referencia, veOrigen } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
 import { ticketPdf } from '../exportacion/ticket-pdf';
@@ -39,6 +39,11 @@ export interface VentaResumen {
   total: string;
   /** Unidades vendidas (suma de las cantidades de las líneas). */
   articulos: number;
+  /**
+   * Desde dónde se hizo: EQUIPO (uno registrado de la sucursal) o CELULAR. Solo lo ve el
+   * administrador; para los demás llega en null.
+   */
+  origen: string | null;
 }
 
 /** La venta completa: es también lo que se imprime en el ticket. No trae costos. */
@@ -114,6 +119,7 @@ interface FilaVenta {
   total: string;
   tipo_cambio: string;
   articulos: number;
+  origen: string | null;
   vuelto: string;
   promocion_id: number | null;
   promocion: string | null;
@@ -142,6 +148,7 @@ function aResumen(f: FilaVenta): VentaResumen {
     descuento: f.descuento,
     total: f.total,
     articulos: f.articulos,
+    origen: f.origen,
   };
 }
 
@@ -149,16 +156,18 @@ function aResumen(f: FilaVenta): VentaResumen {
  * Ventas del POS. Las reglas (precio que solo sube, promoción vigente, stock, pagos que cuadran,
  * vuelto, correlativo de la factura, anular solo con el turno abierto) las aplica la base:
  * fn_registrar_venta y fn_anular_venta. El turno de la venta sale del equipo de la sesión.
- * Alcance: con VENTAS_VER_TODAS, las ventas de sus sucursales; si no, solo las propias.
+ * Alcance: con VENTAS_VER_TODAS, las ventas de sus sucursales; si no, solo las propias. Desde el
+ * celular (sin equipo registrado) cada quien ve solo las ventas que hizo en un turno que sigue
+ * abierto, tenga el permiso que tenga.
  */
 @Injectable()
 export class VentasService {
   constructor(private readonly bd: BaseDatosService) {}
 
-  async listar(usuarioId: number, filtro: FiltroVentas): Promise<VentaResumen[]> {
+  async listar(usuario: UsuarioAutenticado, filtro: FiltroVentas): Promise<VentaResumen[]> {
     const patron = filtro.buscar && patronContiene(filtro.buscar);
     const filas = await this.consultar(
-      usuarioId,
+      usuario,
       [
         filtro.sucursal_id && sql`v.sucursal_id = ${filtro.sucursal_id}`,
         filtro.turno_id && sql`v.turno_id = ${filtro.turno_id}`,
@@ -174,8 +183,8 @@ export class VentasService {
     return filas.map(aResumen);
   }
 
-  async buscar(usuarioId: number, id: number): Promise<VentaDetalle> {
-    const [fila] = await this.consultar(usuarioId, [sql`v.id = ${id}`], 1);
+  async buscar(usuario: UsuarioAutenticado, id: number): Promise<VentaDetalle> {
+    const [fila] = await this.consultar(usuario, [sql`v.id = ${id}`], 1);
     if (!fila) throw new NoEncontrado(`La venta ${id} no existe`);
 
     const [lineas, piezas, pagos] = await Promise.all([
@@ -286,7 +295,8 @@ export class VentasService {
   }
 
   /**
-   * Registra la venta en el turno abierto de la caja de la sesión. Si la clave de idempotencia ya
+   * Registra la venta en el turno abierto de la caja de la sesión (desde el celular, en el de su
+   * sucursal) y anota desde dónde se hizo. Si la clave de idempotencia ya
    * se usó (doble clic, reintento de red), la base devuelve la venta que ya existía: aquí se
    * responde con ella (`repetida`) siempre que sea de este mismo vendedor y turno.
    */
@@ -295,7 +305,7 @@ export class VentasService {
     datos: DatosRegistrarVenta,
   ): Promise<{ venta: VentaDetalle; repetida: boolean }> {
     const { id, repetida } = await this.bd.transaccion(usuario.id, async (trx) => {
-      const turno = await exigirTurno(trx, usuario, datos.caja_id);
+      const turno = await exigirTurnoParaVenta(trx, usuario, datos.caja_id);
       const previa = await sql`
         select 1 from venta where clave_idempotencia = ${datos.clave_idempotencia}`.execute(trx);
       const { rows } = await sql<{ id: number }>`
@@ -303,7 +313,8 @@ export class VentasService {
                ${JSON.stringify(datos.items)}::jsonb, ${JSON.stringify(datos.pagos)}::jsonb,
                ${datos.promocion_id}::integer, ${datos.cliente_nombre},
                ${datos.cliente_telefono}, ${datos.notas},
-               ${datos.clave_idempotencia}::uuid) as id`.execute(trx);
+               ${datos.clave_idempotencia}::uuid, null,
+               ${usuario.equipo ? 'EQUIPO' : 'CELULAR'}) as id`.execute(trx);
       // En otra sentencia: la que llama a la función no ve la venta que esta acaba de guardar
       const venta = await trx
         .selectFrom('venta')
@@ -321,16 +332,16 @@ export class VentasService {
       }
       return { id: venta.id, repetida: previa.rows.length > 0 };
     });
-    return { venta: await this.buscar(usuario.id, id), repetida };
+    return { venta: await this.buscar(usuario, id), repetida };
   }
 
   /** Anula la venta y devuelve las piezas al inventario; solo mientras su turno sigue abierto. */
-  async anular(usuarioId: number, id: number, motivo: string): Promise<VentaDetalle> {
-    await this.buscar(usuarioId, id); // una venta que el usuario no puede ver responde 404
-    await this.bd.transaccion(usuarioId, (trx) =>
-      sql`select fn_anular_venta(${usuarioId}, ${id}, ${motivo})`.execute(trx),
+  async anular(usuario: UsuarioAutenticado, id: number, motivo: string): Promise<VentaDetalle> {
+    await this.buscar(usuario, id); // una venta que el usuario no puede ver responde 404
+    await this.bd.transaccion(usuario.id, (trx) =>
+      sql`select fn_anular_venta(${usuario.id}, ${id}, ${motivo})`.execute(trx),
     );
-    return this.buscar(usuarioId, id);
+    return this.buscar(usuario, id);
   }
 
   /**
@@ -338,13 +349,13 @@ export class VentasService {
    * (fn_registrar_impresion_venta): la primera es el original y las siguientes salen como COPIA.
    */
   async imprimir(
-    usuarioId: number,
+    usuario: UsuarioAutenticado,
     id: number,
   ): Promise<{ pdf: Buffer; numero: string; impresion: number }> {
-    const venta = await this.buscar(usuarioId, id); // una venta que el usuario no puede ver responde 404
-    return this.bd.transaccion(usuarioId, async (trx) => {
+    const venta = await this.buscar(usuario, id); // una venta que el usuario no puede ver responde 404
+    return this.bd.transaccion(usuario.id, async (trx) => {
       const { rows } = await sql<{ impresion: number }>`
-        select fn_registrar_impresion_venta(${usuarioId}, ${id}) as impresion`.execute(trx);
+        select fn_registrar_impresion_venta(${usuario.id}, ${id}) as impresion`.execute(trx);
       const impresion = rows[0].impresion;
       // Dentro de la transacción: si el PDF no se pudiera armar, la impresión no queda anotada
       const pdf = await ticketPdf(renglonesTicketVenta(venta, impresion), `Ticket ${venta.numero}`);
@@ -353,13 +364,18 @@ export class VentasService {
   }
 
   private async consultar(
-    usuarioId: number,
+    usuario: UsuarioAutenticado,
     condiciones: Parameters<typeof donde>,
     limite: number,
   ): Promise<FilaVenta[]> {
-    const alcance = sql`(v.vendedor_id = ${usuarioId}
-                         or ((select fn_tiene_permiso(${usuarioId}, 'VENTAS_VER_TODAS'))
-                             and fn_puede_operar_sucursal(${usuarioId}, v.sucursal_id)))`;
+    const usuarioId = usuario.id;
+    // Desde el celular: solo sus ventas del turno que sigue abierto (el detalle y el ticket)
+    const alcance = sql`(case when (select fn_equipo_autorizado(${usuarioId},
+                                                               ${usuario.equipo?.id ?? null}::uuid))
+                              then (v.vendedor_id = ${usuarioId}
+                                    or ((select fn_tiene_permiso(${usuarioId}, 'VENTAS_VER_TODAS'))
+                                        and fn_puede_operar_sucursal(${usuarioId}, v.sucursal_id)))
+                              else (v.vendedor_id = ${usuarioId} and t.estado = 'ABIERTO') end)`;
     const { rows } = await sql<FilaVenta>`
       select v.id, v.numero, v.fecha, v.estado, v.turno_id,
              s.id as sucursal_id, s.codigo as sucursal_codigo, s.nombre as sucursal_nombre,
@@ -370,6 +386,7 @@ export class VentasService {
              v.subtotal, v.descuento, v.total, v.tipo_cambio,
              (select coalesce(sum(d.cantidad), 0)::integer
                 from venta_detalle d where d.venta_id = v.id) as articulos,
+             case when ${veOrigen(usuarioId)} then v.origen end as origen,
              (select coalesce(-sum(p.monto), 0)::numeric(12,2)
                 from venta_pago p where p.venta_id = v.id and p.es_vuelto) as vuelto,
              pm.id as promocion_id, pm.nombre as promocion,

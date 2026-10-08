@@ -333,9 +333,33 @@ function aMovimiento(f: FilaMovimiento): MovimientoCaja {
  * la caja de cada operación sale del equipo de la sesión (sesion-caja.ts), no de la solicitud.
  * Los montos esperados y las diferencias solo salen en el historial (CAJA_VER_DIFERENCIAS).
  */
+/** Una caja con turno abierto en una de las sucursales del usuario (para vender desde el celular). */
+export interface CajaAbierta {
+  turno_id: number;
+  caja: { id: number; nombre: string };
+  sucursal: Ubicacion;
+}
+
 @Injectable()
 export class CajaService {
   constructor(private readonly bd: BaseDatosService) {}
+
+  /** Las cajas abiertas donde el usuario puede vender (fn_cajas_abiertas): las de sus sucursales. */
+  async cajasAbiertas(usuarioId: number): Promise<CajaAbierta[]> {
+    const { rows } = await sql<{
+      turno_id: number;
+      caja_id: number;
+      caja: string;
+      sucursal_id: number;
+      sucursal_codigo: string;
+      sucursal: string;
+    }>`select * from fn_cajas_abiertas(${usuarioId})`.execute(this.bd.db);
+    return rows.map((f) => ({
+      turno_id: f.turno_id,
+      caja: { id: f.caja_id, nombre: f.caja },
+      sucursal: { id: f.sucursal_id, codigo: f.sucursal_codigo, nombre: f.sucursal },
+    }));
+  }
 
   /** El turno abierto de la caja de la sesión, o null si la caja está cerrada. */
   async turnoActual(

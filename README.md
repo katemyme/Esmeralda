@@ -85,21 +85,52 @@ Comprobar que funciona: abrir <http://localhost:3000/api/salud> → `{"estado":"
 1. El admin entra (`admin` / `Esmeralda#2026`) desde cualquier equipo y el sistema lo obliga a cambiar la contraseña.
 2. En cada PC de caja y cada tablet, el admin inicia sesión y **registra ese equipo** (`POST /api/equipos`):
    el navegador queda identificado con una cookie.
-3. Encargados y vendedores solo pueden entrar desde un equipo registrado de una de sus sucursales.
-   La sesión dura 12 horas en un equipo registrado y 7 días sin equipo (solo el admin).
+3. Encargados y vendedores trabajan con todo lo de su rol desde un equipo registrado de una de sus sucursales
+   (sesión de 12 horas). Sin equipo registrado —su celular— también entran, pero solo con lo que vale sin
+   equipo (ver «Acceso desde el celular»): sesión de 12 horas (`SESION_HORAS_CELULAR`). El admin sin equipo
+   sigue con todo, 7 días. Un equipo registrado de otra sucursal responde 403 `EQUIPO_NO_AUTORIZADO`.
 
 | Ruta | Qué hace |
 |---|---|
 | `POST /api/auth/login` | `{ username, password }` → token de acceso (15 min) + cookie de sesión |
 | `POST /api/auth/refresh` | Renueva el token de acceso con la cookie (y la rota) |
 | `POST /api/auth/logout` | Cierra la sesión |
-| `GET /api/auth/yo` | Usuario, permisos, sucursales y equipo de la sesión |
+| `GET /api/auth/yo` | Usuario, sucursales, equipo y `acceso` (`COMPLETO` o `CELULAR`) de la sesión; `permisos` trae solo los que valen en ella |
 | `POST /api/auth/cambiar-password` | `{ password_actual, password_nueva }` (mín. 8, con letras y números) |
 | `POST /api/equipos` | Registra este equipo: `{ nombre, tipo: CAJA/TABLET/MOVIL, sucursal_id, caja_id }` |
 | `GET /api/equipos/actual` | Qué equipo registrado es este navegador |
 
 Las demás rutas exigen `Authorization: Bearer <token de acceso>`. Los errores responden
 `{ codigo, mensaje }` en español (p. ej. `CREDENCIALES_INVALIDAS`, `CUENTA_BLOQUEADA`, `EQUIPO_NO_AUTORIZADO`).
+
+### Acceso desde el celular
+
+Una sesión sin equipo registrado de quien no es administrador es «el celular» (`acceso: CELULAR`). En ella
+solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualquier otro la API responde
+403 `EQUIPO_REQUERIDO` («solo desde un equipo registrado de la sucursal»). Lo decide la base en cada solicitud
+(`fn_permiso_en_sesion`).
+
+| Desde el celular | Qué |
+|---|---|
+| Sí | Productos, precios, existencias y kardex; ver y recibir envíos; conteos; buscar una factura y solicitar su devolución (ver y cancelar las suyas); **vender**; los avisos de su sucursal; cambiar su contraseña |
+| No | Abrir o cerrar la caja, movimientos de efectivo, anular, ejecutar devoluciones, imprimir en papel, registrar el tipo de cambio, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
+
+- **Vender.** La venta entra al turno abierto de su sucursal, con las reglas de siempre, y queda a su nombre.
+  `GET /api/caja/abiertas` (`VENTAS_REGISTRAR`) dice dónde puede vender: las cajas con turno abierto de sus
+  sucursales (`turno_id`, `caja`, `sucursal`; sin montos). Con una sola no hace falta más; con varias —o si
+  trabaja en varias sucursales— `POST /api/ventas` lleva `caja_id`. Sin turno abierto → 409 `SIN_TURNO_ABIERTO`.
+- **Desde dónde se vendió.** Cada venta guarda su `origen`: `EQUIPO` (uno registrado de la sucursal) o `CELULAR`.
+  Solo lo ve el administrador (`SUCURSALES_GESTIONAR`): en la venta, en el reporte de ventas (sección «Desde
+  dónde se vendió») y en el de cierres (columna «Desde celular»). Para los demás llega en `null` o no sale.
+- **Sus ventas.** Desde el celular `GET /api/ventas` y `GET /api/ventas/:id` solo traen las ventas que esa
+  persona hizo en un turno que sigue abierto, tenga el permiso que tenga; cerrado el turno, responden vacío y 404.
+  La lista no trae sumas: el arqueo sigue a ciegas.
+- **Solicitar una devolución.** La sucursal que la solicita es la de la venta si trabaja en ella, o la única
+  en la que trabaja; quien trabaja en varias envía `sucursal_id`.
+- **Rutas que son solo del equipo** aunque su permiso valga en el celular: `GET /api/caja/turno`,
+  `POST /api/ventas/:id/imprimir`, `POST /api/devoluciones/:id/ejecutar` y `POST /api/devoluciones/:id/imprimir`.
+- La lista completa de lo que responde desde el celular está en `backend/test/celular.e2e-spec.ts`, en una
+  prueba que recorre todas las rutas de la API: una ruta nueva que no esté en la lista debe pedir el equipo.
 
 ### Panel de administración
 
@@ -205,7 +236,8 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 
 | Ruta | Permiso | Qué hace |
 |---|---|---|
-| `GET /api/caja/turno` | `CAJA_ABRIR`, `CAJA_CERRAR` o `VENTAS_REGISTRAR` | El turno abierto de la caja (`turno: null` si está cerrada). Sin montos |
+| `GET /api/caja/turno` | `CAJA_ABRIR`, `CAJA_CERRAR` o `VENTAS_REGISTRAR` | El turno abierto de la caja (`turno: null` si está cerrada). Sin montos. Solo desde un equipo registrado |
+| `GET /api/caja/abiertas` | `VENTAS_REGISTRAR` | Las cajas con turno abierto de las sucursales de quien pregunta: dónde entra una venta hecha desde el celular |
 | `POST /api/caja/turno/abrir` | `CAJA_ABRIR` | `{ inicial_nio, inicial_usd }`: el efectivo contado al abrir, sin ver el fondo esperado |
 | `GET` · `POST /api/caja/turno/movimientos` | `CAJA_MOVIMIENTOS` | Ingresos y egresos de efectivo: `{ tipo, moneda, monto, motivo }` |
 | `POST /api/caja/turno/cerrar` | `CAJA_CERRAR` | Arqueo ciego: `{ efectivo: [{ moneda, valor, cantidad }], no_efectivo: [{ metodo, monto }], retiro_nio, retiro_usd, justificacion, observaciones }` → ticket de cierre |

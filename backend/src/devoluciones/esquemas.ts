@@ -42,8 +42,9 @@ export type DatosBuscarVenta = z.output<typeof esquemaBuscarVenta>;
 /**
  * 1) La solicitud. `detalle_id` es la línea de la factura (viene en la búsqueda de la venta); una
  * línea puede ir dos veces, una parte en buen estado y otra defectuosa. El monto lo calcula la
- * base. No lleva sucursal: es la del equipo de la sesión (`sucursal_id` es solo para el
- * administrador sin equipo registrado).
+ * base. No lleva sucursal: es la del equipo de la sesión. `sucursal_id` es para quien no está en un
+ * equipo registrado: el administrador, o quien la solicita desde su celular y trabaja en más de
+ * una sucursal.
  */
 export const esquemaSolicitarDevolucion = z.object({
   venta_id: idDeCuerpo('Indique la venta (venta_id)'),
