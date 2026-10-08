@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "jsx-a11y"],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-floating-promises": "error",
+    "react/rules-of-hooks": "error",
+    "react/exhaustive-deps": "warn"
+  },
+  "env": {
+    "browser": true
+  },
+  "ignorePatterns": ["dist", "dev-dist"]
+}

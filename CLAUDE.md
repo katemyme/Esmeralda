@@ -45,10 +45,15 @@ _Actualizado el 2026-10-08._
 - **Backend para F1, terminado (2026-10-08):** acceso desde el celular (sin equipo registrado) con la venta, y
   cambio rápido de vendedora con PIN. El dueño aprobó los diseños ese día (están en «Decisiones de negocio
   clave», «Celular y PIN»). La etiqueta `backend-completo` y el respaldo se movieron a este punto.
-- **En curso: F1 del frontend** (`frontend/`, React + Vite como PWA): ver «Etapa actual: frontend». Al terminarla
-  se espera la revisión del dueño; después, F2a (ahí van la pantalla de venta, la cola de impresión y el
-  ticket digital).
-- Pruebas en verde: 715 de base de datos y 571 del backend. Nada se ha subido a GitHub.
+- **Terminada, pendiente de revisión del dueño: F1 del frontend** (`frontend/`, la base). Hecha el 2026-10-08:
+  ver «Etapa actual: frontend». **No empezar F2a hasta su OK.**
+- Pruebas en verde: 715 de base de datos, 571 del backend y, en el frontend, 28 de Vitest y 7 recorridos de
+  Playwright. Nada se ha subido a GitHub.
+- Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
+  «Este equipo» la imprime el dueño cuando la tenga; los acentos dependen de cómo venga configurada), la cámara
+  en un iPhone y en una tablet reales (solo se probó la lógica; hace falta el túnel), la aplicación instalada en
+  un equipo real, y el botón del administrador para reiniciar un PIN (la ruta existe; la pantalla va en F4).
+  Los iconos de la app son provisionales (`frontend/scripts/iconos.mjs`) hasta que el dueño entregue el logo.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
 - Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); inventario
@@ -67,6 +72,7 @@ _Actualizado el 2026-10-08._
   la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
+  (Se recreó el 2026-10-08 al terminar el backend de F1: solo tenía los datos demo.)
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -81,15 +87,24 @@ npm run start:dev       API en http://localhost:3000/api  →  probar con http:/
 Usuarios de la base local: `admin` / `Esmeralda#2026` (temporal: pide cambiarla al entrar); demo `maria.lopez`
 (encargada), `ana.martinez` y `carlos.ruiz` (vendedores) / `Demo#2026`. Para detener el servidor: Ctrl+C.
 
+**Levantar las pantallas** (desde `frontend/`, con el servidor ya corriendo):
+
+```
+npm install             solo la primera vez
+npm run dev             pantallas en http://localhost:5173 (reenvía /api al servidor)
+cloudflared tunnel --url http://localhost:5173    para abrirlas en la tablet o el celular (https)
+```
+
 **Correr las pruebas:**
 
 ```
 db\scripts\probar.cmd   desde la raíz: reglas de la base  →  *** TODAS LAS PRUEBAS PASARON ***
 npm run verificar       desde backend/: tipos + oxlint + Prettier + Jest (unitarias, integración y API)
+npm run verificar       desde frontend/: tipos + oxlint + Prettier + Vitest + recorridos de Playwright
 ```
 
-Las dos usan bases propias que se borran y recrean en cada corrida (`esmeralda_test` y `esmeralda_api_test`);
-no tocan la base local `esmeralda`.
+Las tres usan bases propias que se borran y recrean en cada corrida (`esmeralda_test`, `esmeralda_api_test` y
+`esmeralda_ui_test`); no tocan la base local `esmeralda`.
 
 ## Estructura
 
@@ -335,6 +350,50 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   el dueño después). Con un turno abierto muestra siempre la sucursal, la caja y el tipo de cambio del día.
 - **El arqueo ciego también rige en pantalla:** la vendedora nunca ve el monto esperado, la diferencia ni los
   totales del turno.
+
+### Convenciones del frontend
+
+- Comandos (en `frontend/`): `npm run verificar` (tipos + oxlint + Prettier + Vitest + Playwright) en verde antes
+  de cada commit; `npm run dev`; `npm run build`. TypeScript 6.0, como el backend. Texto y nombres en español.
+- **Un solo origen:** las pantallas llaman a `/api/...` y Vite lo reenvía al backend (`API_DESTINO`, por defecto
+  `http://localhost:3000`). No hay CORS ni direcciones del backend en el código.
+- `src/api/cliente.ts`: `api<T>(metodo, ruta, { cuerpo, publica })`. El token de acceso vive en memoria; ante un
+  401 renueva la sesión **una sola vez** (aunque fallen varias solicitudes) y repite. Los errores son `ErrorApi`
+  (`codigo`, `message` en español, `estado`, `errores` por campo); `mensajeDeError()` da el texto a mostrar. Las
+  rutas de login, PIN y refresh van con `publica: true`. Tipos de las respuestas en `src/api/tipos.ts` (a mano,
+  en snake_case como la API).
+- `src/sesion/sesion.tsx`: `ProveedorSesion` con tres fases (`cargando`, `fuera` con la `PantallaPin`, `dentro`
+  con la sesión). `useSesion()` da las acciones (`entrar`, `entrarConPin`, `bloquear`, `cerrarEquipo`,
+  `refrescar`); `useSesionActiva()` da la sesión en las pantallas de adentro; `tienePermiso(sesion, [...])`.
+  Bloquear es cerrar la sesión (`/auth/logout`): la siguiente persona entra con su PIN. Al quedar fuera se
+  limpia la caché de consultas (lo que vio una no lo ve la otra) y la dirección vuelve a `/`.
+- Bloqueo por inactividad: `useInactividad(minutos, alVencer)`; solo en un equipo registrado.
+- `src/menu.ts`: todo el menú, con el permiso y la **fase** de cada opción. `FASES_LISTAS` dice qué está hecho:
+  al terminar una fase se agrega ahí y se registran sus rutas en `App.tsx`. Lo que no está hecho sale marcado
+  «Pronto» y abre una pantalla que dice en qué fase llega. El menú del celular no tiene reglas propias: la API
+  ya entrega menos permisos.
+- Datos del servidor con TanStack Query (`src/api/consultas.ts` para lo compartido: alertas pendientes, turno,
+  tipo de cambio). **Arqueo ciego en pantalla:** nunca pedir `/api/turnos` ni sumar montos para quien no tiene
+  `CAJA_VER_DIFERENCIAS`; `GET /api/caja/turno` no trae montos y solo se pide desde un equipo registrado.
+- Tema: los colores solo en `src/tema/tema.css` (variables CSS + `@theme` de Tailwind 4: `bg-esmeralda`,
+  `text-oro-texto`...). Piezas base en `src/ui/` (`Boton`, `Campo`, `Selector`, `Tarjeta`, `Aviso`, `Etiqueta`,
+  `TecladoPin`, `Confirmacion`): alto mínimo de toque de 48 px (`min-h-toque`). `Aviso tipo="exito"` lleva su
+  check. Las alertas van en ámbar o azul, nunca en rojo. Formularios con React Hook Form + Zod, repitiendo la
+  regla de forma del backend (contraseña, PIN) para avisar antes de enviar.
+- Diseño: primero tablet (menú a la izquierda desde 768 px); en celular el menú va abajo con «Más». Usar
+  etiquetas `<label htmlFor>` (no envolver el control): las pruebas buscan por etiqueta.
+- Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
+  falla, para poder reintentar el mismo ticket sin que cuente como copia; ESC/POS con
+  `@point-of-sale/receipt-printer-encoder`, 48 columnas, mapa de páginas `xprinter`) y
+  `src/equipo/EscanerCamara.tsx` (lector nativo en Android; en iPhone, `barcode-detector` con su `.wasm` servido
+  por la app). La pantalla «Este equipo» se carga aparte (`lazy`) porque trae esas dos librerías.
+- PWA (`vite-plugin-pwa`): el service worker guarda solo la aplicación, **nunca** respuestas de `/api`. En
+  `npm run dev` no se registra: para probar la app instalada, `npm run build && npm run preview`.
+- Pruebas: `src/**/*.spec.{ts,tsx}` con Vitest + Testing Library; `App.spec.tsx` monta la app completa contra una
+  API simulada con MSW (cada respuesta se crea nueva: un cuerpo no se lee dos veces). Recorridos en `e2e/` con
+  Playwright contra el backend real: `e2e/servidor-api.mjs` recrea `esmeralda_ui_test`, compila el backend y lo
+  levanta en el puerto 3100; van en orden y con un solo trabajador (`tablet.spec.ts` y luego `celular.spec.ts`).
+  Para ver cómo queda una pantalla: una captura con Playwright a un archivo temporal.
 
 ## Etapa terminada: backend (`backend/`)
 

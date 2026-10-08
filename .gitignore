@@ -2,3 +2,6 @@
 *.bundle
 node_modules/
 /modelo-datos.html
+
+# Los iconos de la app sí van al repositorio
+!frontend/public/iconos/*.png

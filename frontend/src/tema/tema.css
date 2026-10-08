@@ -1,0 +1,99 @@
+/*
+ * Tema de Esmeralda Experience: el único lugar donde se definen los colores.
+ * Reglas de uso (decididas por el dueño):
+ * - Esmeralda: botones principales, barra superior y selección; esmeralda oscuro: la barra y el hover.
+ * - Oro solo como acento (promociones, etiquetas, el «Experience» del nombre). Nunca como texto
+ *   sobre blanco: va como fondo oro claro con texto oro oscuro (--oro-texto).
+ * - El éxito siempre con ícono de check, para no confundirlo con el verde de la marca.
+ * - Ámbar (aviso): diferencias de caja, devoluciones pendientes y avisos de tipo de cambio.
+ *   Rojo (error): solo errores, anulaciones y rechazos.
+ * - Solo modo claro.
+ */
+@import 'tailwindcss';
+
+:root {
+  --esmeralda: #0b6e4f;
+  --esmeralda-oscuro: #064e3b;
+  --esmeralda-claro: #e3f2ec;
+  --oro: #b8893b;
+  --oro-claro: #f6eedc;
+  --oro-texto: #7a5a1e;
+  --fondo: #faf8f3;
+  --superficie: #ffffff;
+  --borde: #e5e1d8;
+  --texto: #1f2a26;
+  --texto-secundario: #5c6661;
+  --exito: #15803d;
+  --aviso: #b54708;
+  --error: #b42318;
+  --info: #1d5fa8;
+
+  /* Fondos suaves de los avisos: salen de los colores de arriba */
+  --exito-claro: color-mix(in srgb, var(--exito) 10%, white);
+  --aviso-claro: color-mix(in srgb, var(--aviso) 10%, white);
+  --error-claro: color-mix(in srgb, var(--error) 9%, white);
+  --info-claro: color-mix(in srgb, var(--info) 9%, white);
+
+  /* Uso táctil: nada que se toque mide menos que esto */
+  --toque: 3rem;
+  color-scheme: light;
+}
+
+/* Los colores del tema como clases de Tailwind: bg-esmeralda, text-oro-texto, border-borde… */
+@theme inline {
+  --color-esmeralda: var(--esmeralda);
+  --color-esmeralda-oscuro: var(--esmeralda-oscuro);
+  --color-esmeralda-claro: var(--esmeralda-claro);
+  --color-oro: var(--oro);
+  --color-oro-claro: var(--oro-claro);
+  --color-oro-texto: var(--oro-texto);
+  --color-fondo: var(--fondo);
+  --color-superficie: var(--superficie);
+  --color-borde: var(--borde);
+  --color-texto: var(--texto);
+  --color-texto-secundario: var(--texto-secundario);
+  --color-exito: var(--exito);
+  --color-exito-claro: var(--exito-claro);
+  --color-aviso: var(--aviso);
+  --color-aviso-claro: var(--aviso-claro);
+  --color-error: var(--error);
+  --color-error-claro: var(--error-claro);
+  --color-info: var(--info);
+  --color-info-claro: var(--info-claro);
+  --spacing-toque: var(--toque);
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+}
+
+@layer base {
+  html {
+    background: var(--fondo);
+    color: var(--texto);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    min-height: 100dvh;
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.45;
+    overscroll-behavior-y: none;
+  }
+
+  #raiz {
+    min-height: 100dvh;
+  }
+
+  /* En iPhone un campo con letra menor de 16 px hace zoom al tocarlo */
+  input,
+  select,
+  textarea {
+    font-size: 1rem;
+  }
+
+  :focus-visible {
+    outline: 3px solid color-mix(in srgb, var(--esmeralda) 55%, white);
+    outline-offset: 2px;
+  }
+}

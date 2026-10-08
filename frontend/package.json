@@ -1,0 +1,57 @@
+{
+  "name": "esmeralda-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pantallas del Sistema Esmeralda (PWA: tablet, celular y computadora)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint --type-aware src/ e2e/",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"e2e/**/*.{ts,mjs}\" \"*.{ts,html}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"e2e/**/*.{ts,mjs}\" \"*.{ts,html}\"",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "verificar": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run e2e"
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^5.9.1",
+    "@point-of-sale/receipt-printer-encoder": "^4.0.1",
+    "@tanstack/react-query": "^5.104.1",
+    "barcode-detector": "^3.2.2",
+    "lucide-react": "^1.53.0",
+    "radix-ui": "^1.7.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-hook-form": "^7.89.0",
+    "react-router": "^8.4.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/w3c-web-usb": "^1.0.14",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^30.1.2",
+    "msw": "^2.15.0",
+    "oxlint": "^1.87.0",
+    "oxlint-tsgolint": "^7.0.2003",
+    "prettier": "^3.9.9",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.0.3"
+  }
+}

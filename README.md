@@ -422,3 +422,50 @@ y crea categorías, perforaciones con sus precios, productos, inventario inicial
   inventario y los demás datos de esos productos y perforaciones no cambian.
 - Una perforación o un producto que ya existe y viene dos veces en el archivo es un error.
 - La respuesta trae las contraseñas temporales de los usuarios creados (se muestran una sola vez).
+
+## Frontend
+
+Las pantallas: React + Vite, instalables como aplicación (PWA) en la tablet y en el celular. Hecha la **fase F1**
+(la base): inicio de sesión, cambio de la contraseña temporal, pantalla de PIN y bloqueo por inactividad,
+registro del equipo, menú según los permisos de la sesión, centro de alertas y la pantalla «Este equipo»
+(prueba de cámara y de impresora). Lo demás del menú aparece marcado «Pronto».
+
+Requisitos: Node 22.12 o superior y el backend corriendo (`npm run start:dev` en `backend/`).
+
+```bash
+cd frontend
+npm install
+npm run dev              # http://localhost:5173 (reenvía /api al backend, en http://localhost:3000)
+```
+
+| Comando | Qué hace |
+|---|---|
+| `npm run dev` | Las pantallas en modo desarrollo (se recargan al guardar) |
+| `npm run build` y `npm run preview` | Compila a `dist/` y la sirve como en producción, con la aplicación instalable (puerto 4173) |
+| `npm test` | Pruebas unitarias y de pantallas (Vitest), con la API simulada |
+| `npm run e2e` | Recorridos completos (Playwright): levanta el backend real con una base propia (`esmeralda_ui_test`) y prueba en tamaño tablet y celular. La primera vez: `npx playwright install chromium` |
+| `npm run verificar` | Tipos + lint + formato + pruebas + recorridos (debe quedar en verde antes de cada commit) |
+
+- **Un solo origen.** Las pantallas y la API se sirven desde la misma dirección (en desarrollo Vite reenvía
+  `/api`): así las cookies de la sesión y del equipo registrado funcionan igual que en producción.
+- **Tema.** Los colores están solo en `src/tema/tema.css` (variables CSS), con sus reglas de uso.
+- **Sesión.** El token de acceso vive en memoria; al vencer se renueva solo con la cookie. En un equipo
+  registrado la pantalla se bloquea tras `PANTALLA_BLOQUEO_MINUTOS` sin uso y vuelve a la pantalla de PIN.
+- **Menú.** Sale de los permisos que la API entrega para esa sesión (`src/menu.ts`): desde el celular llegan
+  menos permisos y el menú sale más corto, sin reglas aparte.
+- **Impresora.** Por USB directo desde Chrome (WebUSB, ESC/POS): `src/equipo/impresora.ts`. Solo en la tablet
+  Android o en una computadora con Chrome; en iPhone no existe.
+
+### Probar en la tablet y en el celular (túnel de Cloudflare)
+
+La cámara y la instalación de la aplicación solo funcionan con `https`. Para probar desde otro equipo sin
+publicar nada:
+
+```bash
+winget install --id Cloudflare.cloudflared      # solo la primera vez (después, abrir una terminal nueva)
+cloudflared tunnel --url http://localhost:5173  # con el backend y `npm run dev` ya corriendo
+```
+
+El comando muestra una dirección `https://….trycloudflare.com`: se abre en la tablet o en el celular. Mientras
+el túnel está encendido esa dirección es accesible desde internet (pide iniciar sesión); se apaga con Ctrl+C.
+Para probar la aplicación **instalada**, usar `npm run build && npm run preview` y apuntar el túnel al puerto 4173.
