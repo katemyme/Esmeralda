@@ -146,7 +146,10 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('DEVOLUCION_DIAS_MAX', '7', 'NUMERO', NULL, false, 1,
    'Días después de la venta en que todavía se puede solicitar una devolución o un cambio.'),
   ('DEVOLUCION_APROBADA_DIAS', '3', 'NUMERO', NULL, false, 1,
-   'Días que tiene una devolución aprobada para ejecutarse en caja; después se cancela sola.');
+   'Días que tiene una devolución aprobada para ejecutarse en caja; después se cancela sola.'),
+  ('PANTALLA_BLOQUEO_MINUTOS', '3', 'NUMERO', NULL, false, 1,
+   'Minutos sin tocar la pantalla tras los que un equipo registrado se bloquea y pide el PIN (de 1 a 30).');
+UPDATE parametro SET maximo = 30 WHERE clave = 'PANTALLA_BLOQUEO_MINUTOS';
 
 -- ---------------------------------------------------------------------
 -- Gamas de pieza para paquetes de perforación

@@ -50,16 +50,20 @@ export class GuardiaPermisos implements CanActivate {
       this.reflector.getAllAndOverride<string[] | undefined>(PERMISOS_REQUERIDOS, destinos) ?? [];
     const soloEnEquipo =
       this.reflector.getAllAndOverride<boolean | undefined>(SOLO_EN_EQUIPO, destinos) === true;
-    if (!permisos.length) return true;
+    if (!permisos.length && !soloEnEquipo) return true;
 
-    const usuario = contexto.switchToHttp().getRequest<Request>().usuario;
+    const solicitud = contexto.switchToHttp().getRequest<Request>();
+    // Con @RequierePermiso() y @SoloEnEquipo() juntos el guardia está dos veces: basta una
+    if (solicitud.permisosRevisados) return true;
+    solicitud.permisosRevisados = true;
+    const { usuario } = solicitud;
     if (!usuario) {
       throw new Error('@RequierePermiso() en una ruta sin sesión (¿marcada @Publica()?)');
     }
     const equipo = usuario.equipo?.id ?? null;
     // Con varios permisos basta con que uno valga en esta sesión
     const { rows } = await sql<{
-      estado: 'OK' | 'SIN_EQUIPO' | 'SIN_PERMISO';
+      estado: 'OK' | 'SIN_EQUIPO' | 'SIN_PERMISO' | null;
       en_equipo: boolean;
     }>`
       select (select e.estado
@@ -69,7 +73,7 @@ export class GuardiaPermisos implements CanActivate {
                order by array_position(array['OK', 'SIN_EQUIPO', 'SIN_PERMISO'], e.estado)
                limit 1) as estado,
              fn_equipo_autorizado(${usuario.id}, ${equipo}::uuid) as en_equipo`.execute(this.bd.db);
-    const { estado, en_equipo } = rows[0];
+    const { estado, en_equipo } = rows[0]; // estado es null si la ruta no pide ningún permiso
 
     if (estado === 'SIN_PERMISO') {
       throw new HttpException(
@@ -94,8 +98,9 @@ export const RequierePermiso = (...codigos: string[]) =>
   applyDecorators(SetMetadata(PERMISOS_REQUERIDOS, codigos), UseGuards(GuardiaPermisos));
 
 /**
- * Junto a @RequierePermiso(): la ruta es solo de un equipo registrado de la sucursal (o del
- * administrador) aunque su permiso valga desde el celular: el turno de la caja, imprimir en papel,
- * ejecutar una devolución.
+ * La ruta es solo de un equipo registrado de la sucursal (o del administrador), aunque su permiso
+ * valga desde el celular o no pida ninguno: el turno de la caja, imprimir en papel, ejecutar una
+ * devolución, cerrar el equipo.
  */
-export const SoloEnEquipo = () => SetMetadata(SOLO_EN_EQUIPO, true);
+export const SoloEnEquipo = () =>
+  applyDecorators(SetMetadata(SOLO_EN_EQUIPO, true), UseGuards(GuardiaPermisos));

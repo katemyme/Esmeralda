@@ -123,8 +123,8 @@
     <div class="meta">
       <span class="chip">49 tablas</span>
       <span class="chip">25 vistas</span>
-      <span class="chip">156 funciones</span>
-      <span class="chip">684 pruebas</span>
+      <span class="chip">163 funciones</span>
+      <span class="chip">715 pruebas</span>
       <span class="chip">LAM · Las Américas</span>
       <span class="chip">LBR · Las Brisas</span>
       <span class="chip">BOD · Bodega central</span>
@@ -193,6 +193,8 @@ erDiagram
     boolean activo
     boolean debe_cambiar_password
     timestamptz bloqueado_hasta
+    varchar pin_hash "PIN de 4 dígitos (hash)"
+    boolean pin_bloqueado "5 intentos fallidos"
   }
   ROL {
     int id PK
@@ -708,7 +710,7 @@ erDiagram
           <tr><td>Inventario</td><td class="mono">fn_consultar_stock · fn_ve_cantidad_bodega · fn_movimiento_inventario · fn_set_stock_minimo · fn_reportar_merma · fn_resolver_merma</td><td>Consultas de stock, ajustes, stock mínimo y mermas</td></tr>
           <tr><td>Conteos</td><td class="mono">fn_iniciar_conteo · fn_conteo_registrar · fn_enviar_conteo · fn_conteo_diferencias · fn_aplicar_conteo · fn_cancelar_conteo</td><td>Conteo físico con la tablet</td></tr>
           <tr><td>Caja</td><td class="mono">fn_caja_de_sesion · fn_turno_de_sesion · fn_cajas_abiertas · fn_turno_para_venta · fn_fondo_sugerido · fn_abrir_turno · fn_movimiento_caja · fn_resumen_turno · fn_cerrar_turno · fn_ticket_cierre · fn_cierre_forzado · fn_alertar_cajas_sin_cerrar · fn_set_tipo_cambio</td><td>Caja del equipo, apertura, arqueo ciego con un reconteo, retiro, fondo, alertas y tipo de cambio del día</td></tr>
-          <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_sesion_permitida · fn_permiso_en_sesion · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables, equipos autorizados y qué permisos valen desde un celular (sin equipo registrado)</td></tr>
+          <tr><td>Acceso</td><td class="mono">fn_registrar_login · fn_equipo_autorizado · fn_sesion_permitida · fn_permiso_en_sesion · fn_equipo_abierto · fn_puede_usar_pin · fn_usuarios_pin · fn_set_pin · fn_reiniciar_pin · fn_registrar_login_pin · fn_cerrar_equipo · fn_crear_sesion · fn_renovar_sesion · fn_cerrar_sesion · fn_cambiar_password · fn_registrar_dispositivo · fn_dispositivo_por_token · fn_set_dispositivo_activo</td><td>Inicio de sesión, sesiones renovables, equipos autorizados, qué permisos valen desde un celular (sin equipo registrado) y el PIN para el cambio rápido de vendedora en un equipo abierto</td></tr>
           <tr><td>Administración</td><td class="mono">fn_crear_usuario · fn_actualizar_usuario · fn_set_usuario_activo · fn_resetear_password · fn_desbloquear_usuario · fn_revocar_sesiones · fn_crear_rol · fn_actualizar_rol · fn_eliminar_rol · fn_set_permisos_rol · fn_set_parametro · fn_guardar_sucursal · fn_set_sucursal_activa · fn_crear_caja · fn_renombrar_caja · fn_set_caja_activa · fn_puede_ver_alerta · fn_atender_alerta</td><td>Panel de usuarios, roles y permisos, parámetros, sucursales, cajas y alertas</td></tr>
           <tr><td>Devoluciones</td><td class="mono">fn_venta_no_devoluble · fn_lineas_devolubles · fn_solicitar_devolucion · fn_resolver_devolucion · fn_cancelar_devolucion · fn_vencer_devoluciones · fn_ejecutar_devolucion · fn_registrar_transferencia_devolucion · fn_proporcion_efectivo · fn_reparto_devolucion · fn_puede_ver_devolucion · fn_set_categoria_devolucion</td><td>Qué se puede devolver de una factura y cuánto vale, la solicitud, su aprobación, su vencimiento (con alerta para el administrador y para la sucursal que la solicitó), la ejecución en caja (inventario, número, efectivo o venta del cambio) y la transferencia del administrador</td></tr>
           <tr><td>Reportes</td><td class="mono">fn_ventas_reporte · fn_devoluciones_reporte · fn_reporte_ventas · fn_top_productos · fn_foto_inventario_mensual</td><td>Qué ventas y qué devoluciones puede ver cada quien en un reporte, ventas por día, semana o mes, ranking y foto mensual del inventario valorizado</td></tr>

@@ -3,7 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { sql } from 'kysely';
 import { BaseDatosService, type Trx } from '../base-datos/base-datos.service';
 import { buscarEquipo, type DatosEquipo } from '../equipos/datos-equipo';
-import type { DatosCambioPassword, DatosLogin } from './esquemas';
+import type { DatosCambioPassword, DatosCrearPin, DatosEntrarConPin, DatosLogin } from './esquemas';
 import {
   generarToken,
   hashearPassword,
@@ -32,7 +32,11 @@ export interface DatosUsuario {
   /** Los permisos que valen en esta sesión: desde el celular, solo los marcados sin equipo. */
   permisos: string[];
   sucursales: { id: number; codigo: string; nombre: string }[];
+  /** Su PIN para el cambio rápido en un equipo registrado (el administrador no usa PIN). */
+  pin: EstadoPin;
 }
+
+export type EstadoPin = 'SIN_PIN' | 'ACTIVO' | 'BLOQUEADO';
 
 /**
  * COMPLETO: un equipo registrado de su sucursal (o el administrador, desde donde sea). CELULAR:
@@ -44,6 +48,18 @@ export interface DatosSesion {
   usuario: DatosUsuario;
   equipo: DatosEquipo | null;
   acceso: AccesoSesion;
+  /** Minutos sin uso tras los que un equipo registrado bloquea la pantalla y pide el PIN. */
+  pantalla_bloqueo_minutos: number;
+}
+
+/** Lo que muestra la pantalla de bloqueo de un equipo registrado. */
+export interface PantallaPin {
+  /** null: este navegador no es un equipo registrado (o está desactivado). */
+  equipo: DatosEquipo | null;
+  /** Alguien ya entró hoy con su contraseña: el equipo acepta PIN. */
+  abierto: boolean;
+  /** Quienes pueden entrar con su PIN ahora (vacío si el equipo está cerrado). */
+  usuarios: { id: number; nombre_completo: string; pin_bloqueado: boolean }[];
 }
 
 /** Respuesta de login, refresh y cambio de contraseña. */
@@ -55,6 +71,7 @@ export interface RespuestaSesion {
   usuario: DatosUsuario;
   equipo: DatosEquipo | null;
   acceso: AccesoSesion;
+  pantalla_bloqueo_minutos: number;
 }
 
 /** Sesión abierta: la respuesta para el cliente más el token de renovación (va en una cookie). */
@@ -66,6 +83,9 @@ export interface SesionAbierta {
 
 type ResultadoLogin =
   'OK' | 'CREDENCIALES_INVALIDAS' | 'BLOQUEADO' | 'INACTIVO' | 'EQUIPO_NO_AUTORIZADO';
+
+type ResultadoPin =
+  'OK' | 'EQUIPO_CERRADO' | 'PIN_NO_DISPONIBLE' | 'PIN_INCORRECTO' | 'PIN_BLOQUEADO';
 
 interface FilaSesion {
   sesion_id: string;
@@ -120,6 +140,47 @@ function errorDeLogin(resultado: ResultadoLogin, minutosBloqueo: number | null):
   }
 }
 
+function errorDePin(resultado: ResultadoPin, intentosRestantes: number | null): HttpException {
+  switch (resultado) {
+    case 'PIN_INCORRECTO': {
+      const quedan = intentosRestantes ?? 0;
+      return new HttpException(
+        {
+          codigo: 'PIN_INCORRECTO',
+          mensaje: `PIN incorrecto. ${quedan === 1 ? 'Le queda 1 intento' : `Le quedan ${quedan} intentos`}.`,
+        },
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    case 'PIN_BLOQUEADO':
+      return new HttpException(
+        {
+          codigo: 'PIN_BLOQUEADO',
+          mensaje:
+            'Su PIN está bloqueado por intentos fallidos. Entre con su usuario y contraseña y cree uno nuevo.',
+        },
+        HttpStatus.LOCKED,
+      );
+    case 'EQUIPO_CERRADO':
+      return new HttpException(
+        {
+          codigo: 'EQUIPO_CERRADO',
+          mensaje:
+            'Este equipo está cerrado: la primera persona del día entra con su usuario y contraseña.',
+        },
+        HttpStatus.FORBIDDEN,
+      );
+    default:
+      return new HttpException(
+        {
+          codigo: 'PIN_NO_DISPONIBLE',
+          mensaje: 'No puede entrar con PIN en este equipo. Entre con su usuario y contraseña.',
+        },
+        HttpStatus.FORBIDDEN,
+      );
+  }
+}
+
 /**
  * Inicio de sesión, renovación, cierre y cambio de contraseña. Las reglas (bloqueo, equipos
  * autorizados, duración y rotación de sesiones) las aplica la base: fn_registrar_login,
@@ -150,15 +211,7 @@ export class AutenticacionService {
     const tokenRenovacion = generarToken();
 
     const intento = await this.bd.transaccion(usuario?.id ?? null, async (trx) => {
-      const equipo = tokenEquipo
-        ? (
-            await sql<{ dispositivo_id: string }>`
-              select dispositivo_id from fn_dispositivo_por_token(${sha256(tokenEquipo)})`.execute(
-              trx,
-            )
-          ).rows[0]
-        : undefined;
-      const dispositivoId = equipo?.dispositivo_id ?? null;
+      const dispositivoId = await this.dispositivoDe(trx, tokenEquipo);
 
       const { rows } = await sql<{
         resultado: ResultadoLogin;
@@ -185,6 +238,103 @@ export class AutenticacionService {
     if (!intento.sesion) throw errorDeLogin(intento.resultado, intento.minutos_bloqueo);
     const { usuarioId, dispositivoId, sesion_id, expira_at } = intento.sesion;
     return this.armarSesion(usuarioId, dispositivoId, sesion_id, expira_at, tokenRenovacion);
+  }
+
+  /**
+   * La pantalla de bloqueo de un equipo registrado: quiénes pueden entrar con su PIN. No pide
+   * sesión, pero solo responde con nombres al navegador que tiene la cookie de un equipo abierto.
+   */
+  async pantallaPin(tokenEquipo: string | undefined): Promise<PantallaPin> {
+    const dispositivoId = await this.bd.transaccion(null, (trx) =>
+      this.dispositivoDe(trx, tokenEquipo),
+    );
+    if (!dispositivoId) return { equipo: null, abierto: false, usuarios: [] };
+    const { db } = this.bd;
+    const [equipo, abierto, usuarios] = await Promise.all([
+      buscarEquipo(db, dispositivoId),
+      sql<{ abierto: boolean }>`
+        select fn_equipo_abierto(${dispositivoId}::uuid) as abierto`.execute(db),
+      sql<{ id: number; nombre_completo: string; pin_bloqueado: boolean }>`
+        select usuario_id as id, nombre_completo, pin_bloqueado
+          from fn_usuarios_pin(${dispositivoId}::uuid)`.execute(db),
+    ]);
+    return { equipo, abierto: abierto.rows[0].abierto, usuarios: usuarios.rows };
+  }
+
+  /**
+   * Cambio rápido: entra con su PIN en un equipo registrado que ya está abierto. Es una sesión
+   * propia de esa persona (todo lo que haga queda a su nombre). El bloqueo a los 5 intentos y
+   * quién puede usar PIN en cada equipo lo decide la base (fn_registrar_login_pin).
+   */
+  async entrarConPin(
+    { usuario_id, pin }: DatosEntrarConPin,
+    contexto: ContextoSolicitud,
+    tokenEquipo: string | undefined,
+  ): Promise<SesionAbierta> {
+    const usuario = await this.bd.db
+      .selectFrom('usuario')
+      .select(['id', 'pin_hash'])
+      .where('id', '=', usuario_id)
+      .executeTakeFirst();
+    // Se verifica siempre (con un hash falso si no hay PIN): misma demora en todos los casos
+    const pinCorrecto = await verificarPassword(
+      pin,
+      usuario?.pin_hash ?? (await hashParaUsuarioInexistente()),
+    );
+    const tokenRenovacion = generarToken();
+
+    const intento = await this.bd.transaccion(usuario?.id ?? null, async (trx) => {
+      const dispositivoId = await this.dispositivoDe(trx, tokenEquipo);
+      const { rows } = await sql<{ resultado: ResultadoPin; intentos_restantes: number | null }>`
+        select * from fn_registrar_login_pin(${usuario_id}, ${!!usuario?.pin_hash && pinCorrecto},
+               ${dispositivoId}::uuid, ${contexto.ip}::inet, ${contexto.userAgent})`.execute(trx);
+      const { resultado, intentos_restantes } = rows[0];
+      if (resultado !== 'OK' || !dispositivoId) {
+        return { resultado, intentos_restantes, sesion: null };
+      }
+      return {
+        resultado,
+        intentos_restantes,
+        sesion: {
+          dispositivoId,
+          ...(await this.crearSesion(
+            trx,
+            usuario_id,
+            tokenRenovacion,
+            dispositivoId,
+            contexto,
+            'PIN',
+          )),
+        },
+      };
+    });
+
+    // El intento ya quedó registrado (la transacción terminó): ahora se informa el error
+    if (!intento.sesion) throw errorDePin(intento.resultado, intento.intentos_restantes);
+    const { dispositivoId, sesion_id, expira_at } = intento.sesion;
+    return this.armarSesion(usuario_id, dispositivoId, sesion_id, expira_at, tokenRenovacion);
+  }
+
+  /** Crea o cambia el PIN propio, confirmando con la contraseña. Un PIN nuevo quita el bloqueo. */
+  async guardarPin(
+    usuario: UsuarioAutenticado,
+    { password_actual, pin }: DatosCrearPin,
+  ): Promise<void> {
+    const fila = await this.bd.db
+      .selectFrom('usuario')
+      .select('password_hash')
+      .where('id', '=', usuario.id)
+      .executeTakeFirstOrThrow();
+    if (!(await verificarPassword(password_actual, fila.password_hash))) {
+      throw new HttpException(
+        { codigo: 'PASSWORD_ACTUAL_INCORRECTA', mensaje: 'La contraseña no es correcta' },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const hash = await hashearPassword(pin);
+    await this.bd.transaccion(usuario.id, (trx) =>
+      sql`select fn_set_pin(${usuario.id}, ${hash})`.execute(trx),
+    );
   }
 
   async renovarSesion(
@@ -278,7 +428,7 @@ export class AutenticacionService {
   /** Usuario (con sus permisos en esta sesión y sus sucursales) y equipo de una sesión. */
   async datosSesion(usuarioId: number, dispositivoId: string | null): Promise<DatosSesion> {
     const { db } = this.bd;
-    const [usuario, permisos, sucursales, equipo, acceso] = await Promise.all([
+    const [usuario, permisos, sucursales, equipo, sesion] = await Promise.all([
       db
         .selectFrom('usuario as u')
         .innerJoin('rol as r', 'r.id', 'u.rol_id')
@@ -287,6 +437,8 @@ export class AutenticacionService {
           'u.nombre_completo',
           'u.username',
           'u.debe_cambiar_password',
+          'u.pin_bloqueado',
+          sql<boolean>`u.pin_hash is not null`.as('tiene_pin'),
           'r.codigo as rol_codigo',
           'r.nombre as rol_nombre',
         ])
@@ -308,9 +460,16 @@ export class AutenticacionService {
         .orderBy('id')
         .execute(),
       dispositivoId ? buscarEquipo(db, dispositivoId) : null,
-      sql<{ completo: boolean }>`
-        select fn_equipo_autorizado(${usuarioId}, ${dispositivoId}::uuid) as completo`.execute(db),
+      sql<{ completo: boolean; bloqueo: string | null }>`
+        select fn_equipo_autorizado(${usuarioId}, ${dispositivoId}::uuid) as completo,
+               fn_parametro_num('PANTALLA_BLOQUEO_MINUTOS') as bloqueo`.execute(db),
     ]);
+    const { completo, bloqueo } = sesion.rows[0];
+    const pin: EstadoPin = !usuario.tiene_pin
+      ? 'SIN_PIN'
+      : usuario.pin_bloqueado
+        ? 'BLOQUEADO'
+        : 'ACTIVO';
     return {
       usuario: {
         id: usuario.id,
@@ -320,10 +479,20 @@ export class AutenticacionService {
         debe_cambiar_password: usuario.debe_cambiar_password,
         permisos: permisos.map((p) => p.codigo),
         sucursales,
+        pin,
       },
       equipo,
-      acceso: acceso.rows[0].completo ? 'COMPLETO' : 'CELULAR',
+      acceso: completo ? 'COMPLETO' : 'CELULAR',
+      pantalla_bloqueo_minutos: Number(bloqueo ?? 3),
     };
+  }
+
+  /** El equipo registrado (y activo) que identifica la cookie del navegador, o null. */
+  private async dispositivoDe(trx: Trx, tokenEquipo: string | undefined): Promise<string | null> {
+    if (!tokenEquipo) return null;
+    const { rows } = await sql<{ dispositivo_id: string }>`
+      select dispositivo_id from fn_dispositivo_por_token(${sha256(tokenEquipo)})`.execute(trx);
+    return rows[0]?.dispositivo_id ?? null;
   }
 
   private async crearSesion(
@@ -332,10 +501,13 @@ export class AutenticacionService {
     tokenRenovacion: string,
     dispositivoId: string | null,
     contexto: ContextoSolicitud,
+    metodo: 'PASSWORD' | 'PIN' = 'PASSWORD',
   ): Promise<FilaSesion> {
     const { rows } = await sql<FilaSesion>`
       select * from fn_crear_sesion(${usuarioId}, ${sha256(tokenRenovacion)}, ${dispositivoId}::uuid,
-                                    ${contexto.ip}::inet, ${contexto.userAgent})`.execute(trx);
+                                    ${contexto.ip}::inet, ${contexto.userAgent}, ${metodo})`.execute(
+      trx,
+    );
     return rows[0];
   }
 
@@ -346,7 +518,10 @@ export class AutenticacionService {
     vence: Date,
     tokenRenovacion: string,
   ): Promise<SesionAbierta> {
-    const { usuario, equipo, acceso } = await this.datosSesion(usuarioId, dispositivoId);
+    const { usuario, equipo, acceso, pantalla_bloqueo_minutos } = await this.datosSesion(
+      usuarioId,
+      dispositivoId,
+    );
     const autenticado: UsuarioAutenticado = {
       id: usuarioId,
       sesionId,
@@ -367,6 +542,7 @@ export class AutenticacionService {
         usuario,
         equipo,
         acceso,
+        pantalla_bloqueo_minutos,
       },
     };
   }

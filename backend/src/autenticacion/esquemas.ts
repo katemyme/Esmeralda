@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { idDeCuerpo } from '../comun/esquemas';
 
 export const esquemaLogin = z.object({
   username: z
@@ -30,3 +31,34 @@ export const esquemaCambioPassword = z.object({
   password_nueva: esquemaPasswordNueva,
 });
 export type DatosCambioPassword = z.output<typeof esquemaCambioPassword>;
+
+const SECUENCIAS = '0123456789876543210';
+
+/**
+ * PIN de 4 dígitos para el cambio rápido en un equipo registrado. La base nunca lo ve en texto
+ * plano, por eso su forma se valida aquí: no vale el mismo dígito cuatro veces ni una escalera.
+ */
+export const esquemaPinNuevo = z
+  .string({ error: 'Escriba un PIN de 4 dígitos' })
+  .regex(/^\d{4}$/, 'El PIN debe tener exactamente 4 dígitos')
+  .refine(
+    (pin) => !/^(\d)\1{3}$/.test(pin) && !SECUENCIAS.includes(pin),
+    'Ese PIN es muy fácil de adivinar: no use 0000, 1234 ni parecidos',
+  );
+
+/** Crear o cambiar el PIN propio: lo confirma con su contraseña. */
+export const esquemaCrearPin = z.object({
+  password_actual: z
+    .string({ error: 'Escriba su contraseña' })
+    .min(1, 'Escriba su contraseña')
+    .max(128, 'La contraseña es demasiado larga'),
+  pin: esquemaPinNuevo,
+});
+export type DatosCrearPin = z.output<typeof esquemaCrearPin>;
+
+/** Entrar con PIN: quién (de la lista de la pantalla de bloqueo) y su PIN. */
+export const esquemaEntrarConPin = z.object({
+  usuario_id: idDeCuerpo('Indique quién entra (usuario_id)'),
+  pin: z.string({ error: 'Escriba su PIN' }).regex(/^\d{4}$/, 'El PIN tiene 4 dígitos'),
+});
+export type DatosEntrarConPin = z.output<typeof esquemaEntrarConPin>;

@@ -99,9 +99,34 @@ Comprobar que funciona: abrir <http://localhost:3000/api/salud> → `{"estado":"
 | `POST /api/auth/cambiar-password` | `{ password_actual, password_nueva }` (mín. 8, con letras y números) |
 | `POST /api/equipos` | Registra este equipo: `{ nombre, tipo: CAJA/TABLET/MOVIL, sucursal_id, caja_id }` |
 | `GET /api/equipos/actual` | Qué equipo registrado es este navegador |
+| `GET /api/auth/pin/usuarios` | La pantalla de bloqueo de este equipo: `{ equipo, abierto, usuarios: [{ id, nombre_completo, pin_bloqueado }] }` |
+| `POST /api/auth/pin` | `{ usuario_id, pin }` → entra con su PIN (misma respuesta que el login) |
+| `PUT /api/auth/pin` | `{ password_actual, pin }`: crea o cambia el PIN propio (4 dígitos) |
+| `POST /api/equipos/actual/cerrar` | Cierra este equipo al final del día: deja de aceptar PIN y cierra sus sesiones |
 
 Las demás rutas exigen `Authorization: Bearer <token de acceso>`. Los errores responden
 `{ codigo, mensaje }` en español (p. ej. `CREDENCIALES_INVALIDAS`, `CUENTA_BLOQUEADA`, `EQUIPO_NO_AUTORIZADO`).
+
+### Cambio rápido con PIN
+
+En una tablet compartida cada vendedora entra con un PIN de 4 dígitos en vez de escribir su contraseña.
+
+- **El equipo se abre una vez al día.** La primera persona entra con usuario y contraseña; desde ese momento
+  el equipo acepta PIN durante lo que dura la sesión (`SESION_HORAS_EQUIPO`, 12 horas) o hasta que alguien lo
+  cierre (`POST /api/equipos/actual/cerrar`). Cerrado, un PIN no sirve: 403 `EQUIPO_CERRADO`.
+- **Cada PIN abre la sesión de esa persona** (token y cookie propios, `sesion.metodo = PIN`): todo lo que
+  haga queda a su nombre. Al bloquearse la pantalla, la app cierra esa sesión (`POST /api/auth/logout`).
+- **Quién puede usar PIN en un equipo:** quien está asignada a la sucursal del equipo, activa y sin contraseña
+  temporal. El administrador no tiene PIN, y desde un celular (sin equipo registrado) no se entra con PIN.
+- **Crear el PIN:** `PUT /api/auth/pin`, confirmando con la contraseña. Cuatro dígitos; no se aceptan el mismo
+  dígito cuatro veces ni escaleras (`0000`, `1234`, `9876`). Se guarda con hash (argon2id).
+- **Bloqueo:** 5 PIN incorrectos seguidos lo bloquean (423 `PIN_BLOQUEADO`) y dejan una alerta `PIN_BLOQUEADO`
+  al administrador. Se desbloquea creando uno nuevo (ella, con su contraseña) o con
+  `POST /api/usuarios/:id/reiniciar-pin` (`USUARIOS_GESTIONAR`), que la deja sin PIN. Un PIN bloqueado no
+  bloquea la contraseña. `POST /api/auth/pin` no lleva el límite por IP del login: el freno es este bloqueo.
+- **Bloqueo de pantalla:** `/api/auth/yo` y el login traen `pantalla_bloqueo_minutos` (parámetro
+  `PANTALLA_BLOQUEO_MINUTOS`, 3; de 1 a 30) y `usuario.pin` (`SIN_PIN`, `ACTIVO` o `BLOQUEADO`).
+- Los parámetros numéricos pueden llevar ahora un tope (`parametro.maximo`), además del mínimo.
 
 ### Acceso desde el celular
 
@@ -146,6 +171,7 @@ a un usuario aplica de inmediato.
 | `PUT /api/usuarios/:id/activo` | `USUARIOS_GESTIONAR` | `{ activo }`: desactivar cierra sus sesiones |
 | `POST /api/usuarios/:id/resetear-password` | `USUARIOS_GESTIONAR` | Nueva `password_temporal`; también desbloquea la cuenta |
 | `POST /api/usuarios/:id/desbloquear` | `USUARIOS_GESTIONAR` | Quita el bloqueo por contraseñas incorrectas sin cambiar la contraseña |
+| `POST /api/usuarios/:id/reiniciar-pin` | `USUARIOS_GESTIONAR` | Deja al usuario sin PIN (y sin su bloqueo): crea otro entrando con su contraseña |
 | `POST /api/usuarios/:id/cerrar-sesiones` | `USUARIOS_GESTIONAR` | Cierra las sesiones abiertas del usuario |
 | `GET /api/roles` | `USUARIOS_VER` | Roles con sus permisos (el ADMIN los tiene todos y no es editable) |
 | `GET /api/permisos` | `ROLES_GESTIONAR` | Catálogo de permisos por módulo |

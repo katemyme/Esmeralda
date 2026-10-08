@@ -13,6 +13,8 @@ export interface ParametroAdmin {
   permite_vacio: boolean;
   /** Valor más bajo que acepta un NUMERO (null: de 0 en adelante). */
   minimo: string | null;
+  /** Valor más alto que acepta un NUMERO (null: sin tope). */
+  maximo: string | null;
   descripcion: string;
   updated_at: Date;
 }
@@ -45,6 +47,7 @@ export class ParametrosService {
         'opciones',
         'permite_vacio',
         'minimo',
+        'maximo',
         'descripcion',
         'updated_at',
       ]);

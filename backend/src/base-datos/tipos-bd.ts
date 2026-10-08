@@ -31,6 +31,7 @@ export interface AccesoLog {
   fecha: Generated<Timestamp>;
   id: Generated<number>;
   ip: string | null;
+  metodo: Generated<string>;
   motivo: string | null;
   user_agent: string | null;
   username_intentado: string;
@@ -215,6 +216,7 @@ export interface DevolucionDetalle {
 }
 
 export interface Dispositivo {
+  abierto_hasta: Timestamp | null;
   activo: Generated<boolean>;
   caja_id: number | null;
   created_at: Generated<Timestamp>;
@@ -326,6 +328,7 @@ export interface MovimientoInventario {
 export interface Parametro {
   clave: string;
   descripcion: string;
+  maximo: Numeric | null;
   minimo: Numeric | null;
   opciones: string[] | null;
   permite_vacio: Generated<boolean>;
@@ -437,6 +440,7 @@ export interface Sesion {
   expira_at: Timestamp;
   id: Generated<string>;
   ip: string | null;
+  metodo: Generated<string>;
   reemplazada_por: string | null;
   refresh_token_hash: string;
   revocada_at: Timestamp | null;
@@ -518,6 +522,9 @@ export interface Usuario {
   nombre_completo: string;
   password_actualizado_at: Generated<Timestamp>;
   password_hash: string;
+  pin_bloqueado: Generated<boolean>;
+  pin_hash: string | null;
+  pin_intentos: Generated<number>;
   rol_id: number;
   telefono: string | null;
   ultimo_acceso: Timestamp | null;
@@ -839,6 +846,7 @@ export interface VUsuariosAdmin {
   id: number | null;
   intentos_fallidos: number | null;
   nombre_completo: string | null;
+  pin: string | null;
   rol: string | null;
   rol_codigo: string | null;
   sesiones_activas: number | null;

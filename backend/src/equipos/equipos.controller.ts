@@ -13,7 +13,7 @@ import {
 import type { Request, Response } from 'express';
 import { CookiesAutenticacion } from '../autenticacion/cookies';
 import { Publica, UsuarioActual } from '../autenticacion/decoradores';
-import { RequierePermiso } from '../autenticacion/permisos';
+import { RequierePermiso, SoloEnEquipo } from '../autenticacion/permisos';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { esquemaActivo, idUuid, type DatosActivo } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
@@ -58,6 +58,21 @@ export class EquiposController {
   @Publica()
   async actual(@Req() solicitud: Request): Promise<{ equipo: DatosEquipo | null }> {
     return { equipo: await this.equipos.identificar(this.cookies.leerEquipo(solicitud)) };
+  }
+
+  /**
+   * Cierra ESTE equipo al final del día: deja de aceptar PIN hasta que alguien vuelva a entrar con
+   * su contraseña, y se cierran todas las sesiones abiertas en él (también la de quien lo cierra).
+   */
+  @Post('actual/cerrar')
+  @SoloEnEquipo()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async cerrar(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Res({ passthrough: true }) respuesta: Response,
+  ): Promise<void> {
+    await this.equipos.cerrar(usuario);
+    this.cookies.borrarSesion(respuesta);
   }
 
   /** Activa o desactiva un equipo (desactivarlo cierra las sesiones abiertas desde él). */

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql } from 'kysely';
 import { generarToken, sha256 } from '../autenticacion/seguridad';
+import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { BaseDatosService } from '../base-datos/base-datos.service';
 import { NoEncontrado } from '../comun/no-encontrado';
 import { buscarEquipo, listarEquipos, type DatosEquipo, type EquipoAdmin } from './datos-equipo';
@@ -49,6 +50,17 @@ export class EquiposService {
     const [equipo] = await listarEquipos(this.bd.db, id);
     if (!equipo) throw new NoEncontrado(`El equipo ${id} no existe`);
     return equipo;
+  }
+
+  /** Cierra el equipo de la sesión (fn_cerrar_equipo). Devuelve cuántas sesiones se cerraron. */
+  async cerrar(usuario: UsuarioAutenticado): Promise<number> {
+    return this.bd.transaccion(usuario.id, async (trx) => {
+      const { rows } = await sql<{ cerradas: number }>`
+        select fn_cerrar_equipo(${usuario.id}, ${usuario.equipo?.id ?? null}::uuid) as cerradas`.execute(
+        trx,
+      );
+      return rows[0].cerradas;
+    });
   }
 
   /** El equipo registrado al que pertenece un token (null si no existe o está desactivado). */

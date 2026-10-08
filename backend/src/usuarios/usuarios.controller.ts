@@ -87,6 +87,17 @@ export class UsuariosController {
     return { usuario: await this.usuarios.desbloquear(admin.id, id) };
   }
 
+  /** Reinicia el PIN del cambio rápido (también le quita el bloqueo por intentos fallidos). */
+  @Post(':id/reiniciar-pin')
+  @RequierePermiso('USUARIOS_GESTIONAR')
+  @HttpCode(HttpStatus.OK)
+  async reiniciarPin(
+    @UsuarioActual() admin: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+  ): Promise<{ usuario: UsuarioAdmin }> {
+    return { usuario: await this.usuarios.reiniciarPin(admin.id, id) };
+  }
+
   @Post(':id/cerrar-sesiones')
   @RequierePermiso('USUARIOS_GESTIONAR')
   @HttpCode(HttpStatus.OK)

@@ -134,6 +134,11 @@ CREATE TABLE usuario (
   debe_cambiar_password    boolean      NOT NULL DEFAULT true,
   intentos_fallidos        smallint     NOT NULL DEFAULT 0,
   bloqueado_hasta          timestamptz,
+  -- PIN de 4 dígitos para el cambio rápido en un equipo registrado (su hash, nunca el PIN). A los 5
+  -- intentos fallidos seguidos queda bloqueado hasta que ella cree uno nuevo o el admin lo reinicie.
+  pin_hash                 varchar(255),
+  pin_intentos             smallint     NOT NULL DEFAULT 0,
+  pin_bloqueado            boolean      NOT NULL DEFAULT false,
   ultimo_acceso            timestamptz,
   password_actualizado_at  timestamptz  NOT NULL DEFAULT now(),
   created_by               bigint       REFERENCES usuario(id),
@@ -162,6 +167,9 @@ CREATE TABLE dispositivo (
   registrado_por  bigint       NOT NULL REFERENCES usuario(id),
   created_at      timestamptz  NOT NULL DEFAULT now(),
   ultimo_uso      timestamptz,
+  -- El equipo "se abre" cuando alguien entra en él con su contraseña: hasta esta hora (o hasta que
+  -- lo cierren) acepta el PIN de quienes trabajan en su sucursal. NULL o pasada: cerrado.
+  abierto_hasta   timestamptz,
   CONSTRAINT ck_dispositivo_caja CHECK ((tipo = 'CAJA') = (caja_id IS NOT NULL))
 );
 
@@ -188,6 +196,7 @@ CREATE TABLE sesion (
   user_agent          varchar(300),
   creada_at           timestamptz NOT NULL DEFAULT now(),
   expira_at           timestamptz NOT NULL,
+  metodo              varchar(10) NOT NULL DEFAULT 'PASSWORD' CHECK (metodo IN ('PASSWORD','PIN')),  -- cómo se entró
   revocada_at         timestamptz,
   reemplazada_por     uuid        REFERENCES sesion(id)        -- renovación: la sesión que la sustituyó
 );
@@ -204,7 +213,8 @@ CREATE TABLE acceso_log (
   ip                  inet,
   user_agent          varchar(300),
   dispositivo_id      uuid        REFERENCES dispositivo(id),
-  fecha               timestamptz NOT NULL DEFAULT now()
+  fecha               timestamptz NOT NULL DEFAULT now(),
+  metodo              varchar(10) NOT NULL DEFAULT 'PASSWORD' CHECK (metodo IN ('PASSWORD','PIN'))
 );
 CREATE INDEX ix_acceso_log_usuario_fecha ON acceso_log (usuario_id, fecha DESC);
 
@@ -722,10 +732,12 @@ CREATE TABLE parametro (
   opciones     text[],                       -- valores válidos cuando tipo_valor = 'OPCION'
   permite_vacio boolean     NOT NULL DEFAULT false,
   minimo       numeric,                      -- valor mínimo cuando tipo_valor = 'NUMERO' (NULL = de 0 en adelante)
+  maximo       numeric,                      -- valor máximo cuando tipo_valor = 'NUMERO' (NULL = sin tope)
   descripcion  varchar(300) NOT NULL,
   updated_at   timestamptz  NOT NULL DEFAULT now(),
   CONSTRAINT ck_parametro_opciones CHECK ((tipo_valor = 'OPCION') = (opciones IS NOT NULL)),
-  CONSTRAINT ck_parametro_minimo CHECK (minimo IS NULL OR tipo_valor = 'NUMERO')
+  CONSTRAINT ck_parametro_minimo CHECK (minimo IS NULL OR tipo_valor = 'NUMERO'),
+  CONSTRAINT ck_parametro_maximo CHECK (maximo IS NULL OR (tipo_valor = 'NUMERO' AND maximo >= coalesce(minimo, 0)))
 );
 
 -- El panel no puede guardar un valor con formato inválido
@@ -746,6 +758,9 @@ BEGIN
       END IF;
       IF NEW.minimo IS NOT NULL AND v::numeric < NEW.minimo THEN
         RAISE EXCEPTION 'El parámetro % no puede ser menor que % (recibido: %)', NEW.clave, NEW.minimo, v;
+      END IF;
+      IF NEW.maximo IS NOT NULL AND v::numeric > NEW.maximo THEN
+        RAISE EXCEPTION 'El parámetro % no puede ser mayor que % (recibido: %)', NEW.clave, NEW.maximo, v;
       END IF;
     WHEN 'HORA' THEN
       IF v !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' THEN
@@ -1205,12 +1220,15 @@ DECLARE
   v_antes   jsonb;
   v_despues jsonb;
 BEGIN
-  IF TG_OP IN ('UPDATE','DELETE') THEN v_antes   := to_jsonb(OLD) - 'password_hash' - 'token_hash' - 'updated_at'; END IF;
-  IF TG_OP IN ('INSERT','UPDATE') THEN v_despues := to_jsonb(NEW) - 'password_hash' - 'token_hash' - 'updated_at'; END IF;
+  IF TG_OP IN ('UPDATE','DELETE') THEN v_antes   := to_jsonb(OLD) - 'password_hash' - 'pin_hash' - 'token_hash' - 'updated_at'; END IF;
+  IF TG_OP IN ('INSERT','UPDATE') THEN v_despues := to_jsonb(NEW) - 'password_hash' - 'pin_hash' - 'token_hash' - 'updated_at'; END IF;
 
   IF TG_OP = 'UPDATE' THEN
     IF to_jsonb(OLD)->>'password_hash' IS DISTINCT FROM to_jsonb(NEW)->>'password_hash' THEN
       v_despues := v_despues || '{"password":"(cambiada)"}'::jsonb;
+    ELSIF to_jsonb(OLD)->>'pin_hash' IS DISTINCT FROM to_jsonb(NEW)->>'pin_hash' THEN
+      v_despues := v_despues || jsonb_build_object('pin', CASE WHEN to_jsonb(NEW)->>'pin_hash' IS NULL
+                                                               THEN '(quitado)' ELSE '(cambiado)' END);
     ELSIF v_antes = v_despues THEN
       RETURN NULL;                       -- nada relevante cambió
     END IF;
@@ -1396,6 +1414,151 @@ LANGUAGE sql STABLE AS $$
   END
 $$;
 
+-- ---------------------------------------------------------------------
+-- PIN: cambio rápido de vendedora en un equipo registrado
+--   · El equipo se abre una vez al día: la primera persona entra con usuario y contraseña
+--     (fn_crear_sesion deja dispositivo.abierto_hasta). Cerrado, el PIN no sirve.
+--   · Con el equipo abierto, quien trabaja en su sucursal y tiene PIN entra con él: es una sesión
+--     propia (sesion.metodo = 'PIN'), así cada acción queda a su nombre.
+--   · El administrador no tiene PIN. Desde un celular (sin equipo) tampoco se entra con PIN.
+--   · 5 PIN incorrectos seguidos lo bloquean y se alerta al administrador. Se desbloquea creando
+--     uno nuevo (ella, con su contraseña) o reiniciándolo (el administrador).
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_equipo_abierto(p_dispositivo uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (SELECT 1 FROM dispositivo d
+                  WHERE d.id = p_dispositivo AND d.activo AND d.abierto_hasta > now())
+$$;
+
+-- ¿Puede el usuario tener y usar un PIN en este equipo? Activo, sin contraseña temporal, que no sea
+-- administrador y asignado expresamente a la sucursal del equipo (SUCURSALES_TODAS no cuenta).
+CREATE OR REPLACE FUNCTION fn_puede_usar_pin(p_usuario bigint, p_dispositivo uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM usuario u
+      JOIN rol r ON r.id = u.rol_id
+      JOIN dispositivo d ON d.id = p_dispositivo AND d.activo
+      JOIN usuario_sucursal us ON us.usuario_id = u.id AND us.sucursal_id = d.sucursal_id
+     WHERE u.id = p_usuario AND u.activo AND NOT u.debe_cambiar_password
+       AND r.codigo <> 'ADMIN' AND u.pin_hash IS NOT NULL)
+$$;
+
+-- Quiénes pueden entrar con PIN en este equipo ahora (vacío si el equipo está cerrado). Es lo que
+-- muestra la pantalla de bloqueo: solo nombres.
+CREATE OR REPLACE FUNCTION fn_usuarios_pin(p_dispositivo uuid)
+RETURNS TABLE (usuario_id bigint, nombre_completo text, pin_bloqueado boolean)
+LANGUAGE sql STABLE AS $$
+  SELECT u.id, u.nombre_completo::text, u.pin_bloqueado
+    FROM usuario u
+   WHERE fn_equipo_abierto(p_dispositivo) AND fn_puede_usar_pin(u.id, p_dispositivo)
+   ORDER BY u.nombre_completo, u.id
+$$;
+
+-- El propio usuario crea o cambia su PIN. El backend ya verificó su contraseña y que el PIN tenga
+-- 4 dígitos y no sea trivial (aquí nunca llega en texto plano). Un PIN nuevo quita el bloqueo.
+CREATE OR REPLACE FUNCTION fn_set_pin(p_usuario bigint, p_pin_hash text) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE v_rol text; v_temporal boolean;
+BEGIN
+  SELECT r.codigo, u.debe_cambiar_password INTO v_rol, v_temporal
+    FROM usuario u JOIN rol r ON r.id = u.rol_id
+   WHERE u.id = p_usuario AND u.activo
+     FOR UPDATE OF u;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe o está inactivo', p_usuario; END IF;
+  IF v_rol = 'ADMIN' THEN
+    RAISE EXCEPTION 'El administrador no usa PIN: entra siempre con su contraseña';
+  END IF;
+  IF v_temporal THEN
+    RAISE EXCEPTION 'Antes de crear su PIN cambie la contraseña temporal';
+  END IF;
+  IF coalesce(length(p_pin_hash), 0) < 20 THEN
+    RAISE EXCEPTION 'El PIN no es válido';
+  END IF;
+  UPDATE usuario SET pin_hash = p_pin_hash, pin_intentos = 0, pin_bloqueado = false WHERE id = p_usuario;
+END $$;
+
+-- El administrador reinicia el PIN de alguien: queda sin PIN y sin bloqueo, y ella crea otro
+-- entrando con su contraseña. Deja atendidas las alertas de su PIN bloqueado.
+CREATE OR REPLACE FUNCTION fn_reiniciar_pin(p_admin bigint, p_usuario bigint) RETURNS void
+LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM fn_exigir_permiso(p_admin, 'USUARIOS_GESTIONAR');
+  PERFORM fn_exigir_gestion_usuario(p_admin, p_usuario);
+  UPDATE usuario SET pin_hash = NULL, pin_intentos = 0, pin_bloqueado = false WHERE id = p_usuario;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Usuario % no existe', p_usuario; END IF;
+  UPDATE alerta SET atendida_por = p_admin, atendida_at = now()
+   WHERE tipo = 'PIN_BLOQUEADO' AND (detalle->>'usuario_id')::bigint = p_usuario AND atendida_at IS NULL;
+END $$;
+
+-- Intento de entrar con PIN. El backend verifica el hash y llama con el resultado; aquí se decide:
+--   OK                 PIN correcto en un equipo abierto de su sucursal (reinicia el contador)
+--   EQUIPO_CERRADO     el equipo no está registrado, está inactivo o nadie lo ha abierto hoy con su
+--                      contraseña (no cuenta como intento)
+--   PIN_NO_DISPONIBLE  esa persona no entra con PIN en este equipo (no es de la sucursal, no tiene
+--                      PIN, es administrador, está inactiva...)
+--   PIN_INCORRECTO     con los intentos que le quedan
+--   PIN_BLOQUEADO      5 fallos seguidos: ni el PIN correcto entra hasta que haya uno nuevo
+CREATE OR REPLACE FUNCTION fn_registrar_login_pin(
+  p_usuario bigint, p_exito boolean, p_dispositivo uuid, p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
+) RETURNS TABLE (resultado text, intentos_restantes integer)
+LANGUAGE plpgsql AS $$
+DECLARE
+  u          usuario%ROWTYPE;
+  d          dispositivo%ROWTYPE;
+  v_motivo   text;
+  v_intentos integer;
+BEGIN
+  SELECT * INTO d FROM dispositivo WHERE id = p_dispositivo;
+  SELECT * INTO u FROM usuario WHERE id = p_usuario FOR UPDATE;
+
+  IF d.id IS NULL OR NOT fn_equipo_abierto(d.id) THEN
+    resultado := 'EQUIPO_CERRADO'; v_motivo := 'PIN: equipo cerrado';
+  ELSIF u.id IS NULL OR NOT fn_puede_usar_pin(u.id, d.id) THEN
+    resultado := 'PIN_NO_DISPONIBLE'; v_motivo := 'PIN: no disponible';
+  ELSIF u.pin_bloqueado THEN
+    resultado := 'PIN_BLOQUEADO'; v_motivo := 'PIN bloqueado';
+  ELSIF NOT coalesce(p_exito, false) THEN
+    v_intentos := u.pin_intentos + 1;
+    UPDATE usuario SET pin_intentos = v_intentos, pin_bloqueado = v_intentos >= 5 WHERE id = u.id;
+    IF v_intentos >= 5 THEN
+      resultado := 'PIN_BLOQUEADO'; v_motivo := 'PIN incorrecto: bloqueado';
+      INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
+      VALUES ('PIN_BLOQUEADO',
+              format('PIN bloqueado: %s falló 5 veces seguidas en %s', u.nombre_completo, d.nombre),
+              jsonb_build_object('usuario_id', u.id, 'dispositivo_id', d.id, 'ip', host(p_ip)),
+              d.sucursal_id);
+    ELSE
+      resultado := 'PIN_INCORRECTO'; v_motivo := 'PIN incorrecto';
+      intentos_restantes := 5 - v_intentos;
+    END IF;
+  ELSE
+    resultado := 'OK';
+    UPDATE usuario SET pin_intentos = 0, ultimo_acceso = now() WHERE id = u.id;
+  END IF;
+
+  INSERT INTO acceso_log (usuario_id, username_intentado, exito, motivo, ip, user_agent, dispositivo_id, metodo)
+  VALUES (u.id, coalesce(u.username, left('id:' || p_usuario, 40)), resultado = 'OK', v_motivo, p_ip,
+          left(p_user_agent, 300), d.id, 'PIN');
+  RETURN NEXT;
+END $$;
+
+-- Cerrar el equipo (fin del día): deja de aceptar PIN y se cierran todas las sesiones abiertas en
+-- él, también la de quien lo cierra. Lo hace cualquiera que esté trabajando en ese equipo.
+CREATE OR REPLACE FUNCTION fn_cerrar_equipo(p_usuario bigint, p_dispositivo uuid) RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE n integer;
+BEGIN
+  IF p_dispositivo IS NULL OR NOT fn_equipo_autorizado(p_usuario, p_dispositivo) THEN
+    RAISE EXCEPTION 'Esta operación se hace desde un equipo registrado y activo de la sucursal'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  UPDATE dispositivo SET abierto_hasta = NULL WHERE id = p_dispositivo;
+  UPDATE sesion SET revocada_at = now() WHERE dispositivo_id = p_dispositivo AND revocada_at IS NULL;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END $$;
+
 -- Intento de inicio de sesión. El backend verifica el hash de la contraseña (argon2id; bcrypt en
 -- los usuarios del seed) y llama a esta función con el resultado; aquí se decide si el ingreso procede:
 --   OK                      contraseña correcta, usuario activo y equipo autorizado (reinicia el contador)
@@ -1456,25 +1619,40 @@ END $$;
 -- httpOnly y aquí solo se guarda su SHA-256. Duración según parámetros: SESION_HORAS_EQUIPO si se
 -- inicia en un equipo registrado; sin equipo, SESION_DIAS_SIN_EQUIPO para el administrador y
 -- SESION_HORAS_CELULAR para los demás (su celular).
+-- p_metodo = 'PASSWORD': entrar con contraseña en un equipo registrado lo abre (abierto_hasta) por
+--   lo que dura la sesión. 'PIN': solo en un equipo abierto y para quien puede usar PIN en él
+--   (fn_puede_usar_pin); la sesión no dura más que la apertura del equipo.
 CREATE OR REPLACE FUNCTION fn_crear_sesion(
   p_usuario bigint, p_token_hash text, p_dispositivo uuid DEFAULT NULL,
-  p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL
+  p_ip inet DEFAULT NULL, p_user_agent text DEFAULT NULL, p_metodo text DEFAULT 'PASSWORD'
 ) RETURNS TABLE (sesion_id uuid, expira_at timestamptz)
 LANGUAGE plpgsql AS $$
 #variable_conflict use_column
+DECLARE
+  v_vence timestamptz;
 BEGIN
   IF NOT fn_sesion_permitida(p_usuario, p_dispositivo) THEN
     RAISE EXCEPTION 'El usuario % no puede iniciar sesión desde este equipo', p_usuario
           USING ERRCODE = 'insufficient_privilege';
   END IF;
+  v_vence := now() + CASE WHEN p_dispositivo IS NOT NULL
+                          THEN coalesce(fn_parametro_num('SESION_HORAS_EQUIPO'), 12)::float8 * interval '1 hour'
+                          WHEN fn_equipo_autorizado(p_usuario, NULL)
+                          THEN coalesce(fn_parametro_num('SESION_DIAS_SIN_EQUIPO'), 7)::float8 * interval '1 day'
+                          ELSE coalesce(fn_parametro_num('SESION_HORAS_CELULAR'), 12)::float8 * interval '1 hour' END;
+  IF p_metodo = 'PIN' THEN
+    IF NOT (fn_equipo_abierto(p_dispositivo) AND fn_puede_usar_pin(p_usuario, p_dispositivo)) THEN
+      RAISE EXCEPTION 'El usuario % no puede entrar con PIN en este equipo', p_usuario
+            USING ERRCODE = 'insufficient_privilege';
+    END IF;
+    v_vence := least(v_vence, (SELECT d.abierto_hasta FROM dispositivo d WHERE d.id = p_dispositivo));
+  ELSIF p_dispositivo IS NOT NULL THEN
+    UPDATE dispositivo d SET abierto_hasta = v_vence WHERE d.id = p_dispositivo;
+  END IF;
   RETURN QUERY
-    INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at)
-    VALUES (p_usuario, p_dispositivo, p_token_hash, p_ip, left(p_user_agent, 300),
-            now() + CASE WHEN p_dispositivo IS NOT NULL
-                         THEN coalesce(fn_parametro_num('SESION_HORAS_EQUIPO'), 12)::float8 * interval '1 hour'
-                         WHEN fn_equipo_autorizado(p_usuario, NULL)
-                         THEN coalesce(fn_parametro_num('SESION_DIAS_SIN_EQUIPO'), 7)::float8 * interval '1 day'
-                         ELSE coalesce(fn_parametro_num('SESION_HORAS_CELULAR'), 12)::float8 * interval '1 hour' END)
+    INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at, metodo)
+    VALUES (p_usuario, p_dispositivo, p_token_hash, p_ip, left(p_user_agent, 300), v_vence,
+            CASE WHEN p_metodo = 'PIN' THEN 'PIN' ELSE 'PASSWORD' END)
     RETURNING id, expira_at;
 END $$;
 
@@ -1512,8 +1690,8 @@ BEGIN
     RETURN;
   END IF;
 
-  INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at)
-  VALUES (s.usuario_id, s.dispositivo_id, p_token_hash_nuevo, p_ip, left(p_user_agent, 300), s.expira_at)
+  INSERT INTO sesion (usuario_id, dispositivo_id, refresh_token_hash, ip, user_agent, expira_at, metodo)
+  VALUES (s.usuario_id, s.dispositivo_id, p_token_hash_nuevo, p_ip, left(p_user_agent, 300), s.expira_at, s.metodo)
   RETURNING id INTO v_nueva;
   UPDATE sesion SET revocada_at = now(), reemplazada_por = v_nueva WHERE id = s.id;
 
@@ -4525,7 +4703,8 @@ SELECT u.id, u.nombre_completo, u.username, u.email, u.telefono,
        u.debe_cambiar_password, u.intentos_fallidos, u.bloqueado_hasta, u.ultimo_acceso,
        (SELECT count(*) FROM sesion se
          WHERE se.usuario_id = u.id AND se.revocada_at IS NULL AND se.expira_at > now()) AS sesiones_activas,
-       u.created_at
+       u.created_at,
+       CASE WHEN u.pin_hash IS NULL THEN 'SIN_PIN' WHEN u.pin_bloqueado THEN 'BLOQUEADO' ELSE 'ACTIVO' END AS pin
   FROM usuario u JOIN rol r ON r.id = u.rol_id;
 
 -- Panel de administración: roles con sus permisos. El ADMIN los tiene todos (fn_tiene_permiso),

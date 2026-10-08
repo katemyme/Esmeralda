@@ -50,5 +50,7 @@ declare module 'express-serve-static-core' {
   interface Request {
     /** Lo deja GuardiaAutenticacion en las rutas que exigen sesión. */
     usuario?: UsuarioAutenticado;
+    /** GuardiaPermisos ya revisó esta solicitud. */
+    permisosRevisados?: boolean;
   }
 }

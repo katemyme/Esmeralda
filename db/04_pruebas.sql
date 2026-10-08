@@ -1882,7 +1882,117 @@ SELECT fn_cierre_forzado(:admin, :t_cel1, 'Cierre de las pruebas del celular');
 SELECT fn_cierre_forzado(:admin, :t_cel2, 'Cierre de las pruebas del celular');
 SELECT fn_cierre_forzado(:admin, :t_ceb, 'Cierre de las pruebas del celular');
 
-\echo '\n=== 26. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 26. PIN: CAMBIO RÁPIDO DE VENDEDORA EN UN EQUIPO REGISTRADO'
+SELECT set_config('app.usuario_id', :'admin', false);
+-- Con la sucursal Celular A y su PC de caja: Vera (vendedora) y Nuria (encargada de las dos sucursales)
+SELECT pg_temp.afirma(NOT fn_equipo_abierto(:'pc_cel1') AND NOT EXISTS (SELECT 1 FROM fn_usuarios_pin(:'pc_cel1')),
+                      'un equipo que nadie ha abierto con su contraseña está cerrado: nadie entra con PIN');
+
+-- Crear el PIN: cada quien el suyo
+SELECT pg_temp.espera_error(format('SELECT fn_set_pin(%s, %L)', :admin, repeat('a', 60)), 'El administrador no usa PIN');
+SELECT pg_temp.espera_error(format('SELECT fn_set_pin(%s, %L)', :vera, repeat('v', 60)), 'cambie la contraseña temporal');
+SELECT fn_cambiar_password(:vera, 'hash-definitivo-de-vera');
+SELECT fn_cambiar_password(:nuria, 'hash-definitivo-de-nuria');
+SELECT pg_temp.espera_error(format('SELECT fn_set_pin(%s, %L)', :vera, 'corto'), 'El PIN no es válido');
+SELECT pg_temp.espera_error(format('SELECT fn_set_pin(999999, %L)', repeat('v', 60)), 'no existe o está inactivo');
+SELECT fn_set_pin(:vera, repeat('v', 60));
+SELECT fn_set_pin(:nuria, repeat('n', 60));
+SELECT pg_temp.afirma((SELECT pin_hash = repeat('v', 60) AND pin_intentos = 0 AND NOT pin_bloqueado FROM usuario WHERE id = :vera),
+                      'cada quien crea su PIN: se guarda su hash');
+SELECT pg_temp.afirma((SELECT despues->>'pin' = '(cambiado)' AND NOT despues ? 'pin_hash' AND NOT antes ? 'pin_hash'
+                         FROM auditoria WHERE tabla = 'usuario' AND registro_id = :'vera' ORDER BY id DESC LIMIT 1),
+                      'la bitácora anota que el PIN cambió, nunca su hash');
+
+-- El equipo cerrado no acepta PIN
+SELECT resultado AS r FROM fn_registrar_login_pin(:vera, true, :'pc_cel1') \gset
+SELECT pg_temp.afirma(:'r' = 'EQUIPO_CERRADO' AND (SELECT pin_intentos = 0 FROM usuario WHERE id = :vera)
+                  AND (SELECT resultado FROM fn_registrar_login_pin(:vera, true, NULL)) = 'EQUIPO_CERRADO',
+                      'con el equipo cerrado el PIN no sirve aunque sea correcto, y no cuenta como intento; desde un celular no hay PIN');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_sesion(%s, %L, %L, NULL, NULL, %L)', :vera, encode(sha256('pin-0'), 'hex'), :'pc_cel1', 'PIN'),
+                            'no puede entrar con PIN en este equipo');
+
+-- Abrir el equipo: la primera persona entra con su contraseña
+SELECT * FROM fn_crear_sesion(:nuria, encode(sha256('pin-abre'), 'hex'), :'pc_cel1');
+SELECT pg_temp.afirma(fn_equipo_abierto(:'pc_cel1')
+                  AND (SELECT abierto_hasta BETWEEN now() + interval '11 hours 59 minutes' AND now() + interval '12 hours 1 minute'
+                         FROM dispositivo WHERE id = :'pc_cel1')
+                  AND (SELECT array_agg(nombre_completo ORDER BY nombre_completo) = ARRAY['Nuria Celular', 'Vera Celular'] FROM fn_usuarios_pin(:'pc_cel1'))
+                  AND (SELECT metodo = 'PASSWORD' FROM sesion WHERE refresh_token_hash = encode(sha256('pin-abre'), 'hex')),
+                      'entrar con contraseña abre el equipo 12 horas: desde ahí acepta el PIN de quienes trabajan en su sucursal');
+SELECT * FROM fn_crear_sesion(:admin, encode(sha256('pin-abre-b'), 'hex'), :'pc_ceb');
+SELECT pg_temp.afirma((SELECT array_agg(nombre_completo) = ARRAY['Nuria Celular'] FROM fn_usuarios_pin(:'pc_ceb'))
+                  AND (SELECT resultado FROM fn_registrar_login_pin(:vera, true, :'pc_ceb')) = 'PIN_NO_DISPONIBLE'
+                  AND (SELECT resultado FROM fn_registrar_login_pin(:admin, true, :'pc_cel1')) = 'PIN_NO_DISPONIBLE'
+                  AND (SELECT resultado FROM fn_registrar_login_pin(999999, true, :'pc_cel1')) = 'PIN_NO_DISPONIBLE',
+                      'el PIN solo vale en un equipo de su sucursal, y el administrador no entra con PIN');
+
+-- Entrar con PIN: una sesión propia
+SELECT resultado AS r FROM fn_registrar_login_pin(:vera, true, :'pc_cel1', '10.0.0.9', 'tablet') \gset
+SELECT * FROM fn_crear_sesion(:vera, encode(sha256('pin-vera'), 'hex'), :'pc_cel1', '10.0.0.9', 'tablet', 'PIN');
+SELECT pg_temp.afirma(:'r' = 'OK'
+                  AND (SELECT metodo = 'PIN' AND usuario_id = :vera AND dispositivo_id = :'pc_cel1'
+                              AND expira_at <= (SELECT abierto_hasta FROM dispositivo WHERE id = :'pc_cel1')
+                         FROM sesion WHERE refresh_token_hash = encode(sha256('pin-vera'), 'hex'))
+                  AND EXISTS (SELECT 1 FROM acceso_log WHERE usuario_id = :vera AND exito AND metodo = 'PIN'
+                                 AND dispositivo_id = :'pc_cel1' AND ip = '10.0.0.9'),
+                      'PIN correcto: su propia sesión, que no dura más que la apertura del equipo, y queda en la bitácora de accesos');
+SELECT * FROM fn_renovar_sesion(encode(sha256('pin-vera'), 'hex'), encode(sha256('pin-vera-2'), 'hex')) \gset rp_
+SELECT pg_temp.afirma((SELECT metodo = 'PIN' FROM sesion WHERE id = :'rp_sesion_id'), 'al renovarse sigue siendo una sesión de PIN');
+
+-- PIN incorrecto: 5 seguidos lo bloquean
+SELECT resultado AS r, intentos_restantes AS q FROM fn_registrar_login_pin(:vera, false, :'pc_cel1') \gset
+SELECT pg_temp.afirma(:'r' = 'PIN_INCORRECTO' AND :q = 4, 'PIN incorrecto: le quedan 4 intentos');
+SELECT fn_registrar_login_pin(:vera, false, :'pc_cel1') FROM generate_series(1, 3);
+SELECT pg_temp.afirma((SELECT pin_intentos = 4 AND NOT pin_bloqueado FROM usuario WHERE id = :vera), '4 fallos: todavía no se bloquea');
+SELECT resultado AS r FROM fn_registrar_login_pin(:vera, true, :'pc_cel1') \gset
+SELECT pg_temp.afirma(:'r' = 'OK' AND (SELECT pin_intentos = 0 FROM usuario WHERE id = :vera), 'el PIN correcto reinicia el contador');
+SELECT fn_registrar_login_pin(:vera, false, :'pc_cel1') FROM generate_series(1, 4);
+SELECT resultado AS r FROM fn_registrar_login_pin(:vera, false, :'pc_cel1') \gset
+SELECT pg_temp.afirma(:'r' = 'PIN_BLOQUEADO' AND (SELECT pin_bloqueado FROM usuario WHERE id = :vera)
+                  AND (SELECT titulo = 'PIN bloqueado: Vera Celular falló 5 veces seguidas en PC Caja 1 CEL' AND ubicacion = 'Sucursal Celular A'
+                         FROM v_alertas_pendientes WHERE tipo = 'PIN_BLOQUEADO' AND (detalle->>'usuario_id')::bigint = :vera),
+                      'el 5.º PIN incorrecto seguido lo bloquea y alerta al administrador');
+SELECT resultado AS r FROM fn_registrar_login_pin(:vera, true, :'pc_cel1') \gset
+SELECT pg_temp.afirma(:'r' = 'PIN_BLOQUEADO' AND (SELECT pin_bloqueado FROM fn_usuarios_pin(:'pc_cel1') WHERE usuario_id = :vera)
+                  AND (SELECT count(*) = 1 FROM alerta WHERE tipo = 'PIN_BLOQUEADO'),
+                      'bloqueado: ni el PIN correcto entra, la pantalla la muestra bloqueada y no se repite la alerta');
+SELECT pg_temp.afirma((SELECT resultado FROM fn_registrar_login('vera.cel', true, NULL, NULL, :'pc_cel1')) = 'OK',
+                      'el bloqueo del PIN no bloquea la contraseña');
+
+-- Desbloquear: ella crea uno nuevo (con su contraseña) o el administrador lo reinicia
+SELECT fn_set_pin(:vera, repeat('w', 60));
+SELECT pg_temp.afirma((SELECT NOT pin_bloqueado AND pin_intentos = 0 FROM usuario WHERE id = :vera)
+                  AND EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'PIN_BLOQUEADO' AND (detalle->>'usuario_id')::bigint = :vera),
+                      'un PIN nuevo quita el bloqueo; la alerta del administrador sigue pendiente');
+SELECT pg_temp.espera_error(format('SELECT fn_reiniciar_pin(%s, %s)', :nuria, :vera), 'USUARIOS_GESTIONAR');
+SELECT pg_temp.espera_error(format('SELECT fn_reiniciar_pin(%s, 999999)', :admin), 'no existe');
+SELECT fn_reiniciar_pin(:admin, :vera);
+SELECT pg_temp.afirma((SELECT pin_hash IS NULL AND NOT pin_bloqueado FROM usuario WHERE id = :vera)
+                  AND NOT EXISTS (SELECT 1 FROM v_alertas_pendientes WHERE tipo = 'PIN_BLOQUEADO')
+                  AND (SELECT array_agg(nombre_completo) = ARRAY['Nuria Celular'] FROM fn_usuarios_pin(:'pc_cel1'))
+                  AND (SELECT resultado FROM fn_registrar_login_pin(:vera, true, :'pc_cel1')) = 'PIN_NO_DISPONIBLE',
+                      'el administrador reinicia el PIN: queda sin PIN, sale de la pantalla de bloqueo y su alerta queda atendida');
+
+-- Cerrar el equipo al final del día
+SELECT pg_temp.espera_error(format('SELECT fn_cerrar_equipo(%s, %L)', :beto, :'pc_cel1'), 'equipo registrado y activo');
+SELECT pg_temp.espera_error(format('SELECT fn_cerrar_equipo(%s, NULL)', :nuria), 'equipo registrado y activo');
+SELECT fn_cerrar_equipo(:nuria, :'pc_cel1') AS cerradas \gset
+SELECT pg_temp.afirma(:cerradas = 2 AND NOT fn_equipo_abierto(:'pc_cel1')
+                  AND NOT EXISTS (SELECT 1 FROM sesion WHERE dispositivo_id = :'pc_cel1' AND revocada_at IS NULL)
+                  AND (SELECT resultado FROM fn_registrar_login_pin(:nuria, true, :'pc_cel1')) = 'EQUIPO_CERRADO',
+                      'cerrar el equipo cierra las sesiones abiertas en él y deja de aceptar el PIN');
+SELECT * FROM fn_crear_sesion(:nuria, encode(sha256('pin-abre-2'), 'hex'), :'pc_cel1');
+UPDATE dispositivo SET abierto_hasta = now() - interval '1 minute' WHERE id = :'pc_cel1';
+SELECT pg_temp.afirma(NOT fn_equipo_abierto(:'pc_cel1') AND (SELECT resultado FROM fn_registrar_login_pin(:nuria, true, :'pc_cel1')) = 'EQUIPO_CERRADO',
+                      'pasadas las horas de la apertura, el equipo vuelve a pedir una contraseña');
+
+-- El bloqueo de pantalla por inactividad es un parámetro con tope
+SELECT pg_temp.afirma(fn_parametro_num('PANTALLA_BLOQUEO_MINUTOS') = 3, 'la pantalla se bloquea a los 3 minutos sin uso');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'PANTALLA_BLOQUEO_MINUTOS', '0'), 'no puede ser menor que 1');
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'PANTALLA_BLOQUEO_MINUTOS', '31'), 'no puede ser mayor que 30');
+SELECT pg_temp.espera_error($q$UPDATE parametro SET maximo = 5 WHERE clave = 'NEGOCIO_NOMBRE'$q$, 'ck_parametro_maximo');
+
+\echo '\n=== 27. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_devolucion) FROM sucursal) = 5
                   AND NOT EXISTS (
                         SELECT 1 FROM sucursal s

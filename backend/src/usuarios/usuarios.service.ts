@@ -24,6 +24,8 @@ export interface UsuarioAdmin {
   ultimo_acceso: Date | null;
   sesiones_activas: number;
   created_at: Date;
+  /** Su PIN para el cambio rápido en los equipos de su sucursal. */
+  pin: 'SIN_PIN' | 'ACTIVO' | 'BLOQUEADO';
 }
 
 /** Usuario con la contraseña temporal recién generada (se entrega una sola vez). */
@@ -48,6 +50,7 @@ interface FilaUsuario {
   ultimo_acceso: Date | null;
   sesiones_activas: number;
   created_at: Date;
+  pin: UsuarioAdmin['pin'];
   todas_las_sucursales: boolean;
 }
 
@@ -122,6 +125,14 @@ export class UsuariosService {
     return this.buscar(id);
   }
 
+  /** Reinicia el PIN: queda sin PIN y sin bloqueo; ella crea otro entrando con su contraseña. */
+  async reiniciarPin(adminId: number, id: number): Promise<UsuarioAdmin> {
+    await this.bd.transaccion(adminId, (trx) =>
+      sql`select fn_reiniciar_pin(${adminId}, ${id})`.execute(trx),
+    );
+    return this.buscar(id);
+  }
+
   /** Cierra todas las sesiones abiertas del usuario. Devuelve cuántas eran. */
   async cerrarSesiones(adminId: number, id: number): Promise<number> {
     await this.buscar(id);
@@ -151,6 +162,7 @@ export class UsuariosService {
         'v.ultimo_acceso',
         'v.sesiones_activas',
         'v.created_at',
+        'v.pin',
         sql<boolean>`fn_tiene_permiso(v.id, 'SUCURSALES_TODAS')`.as('todas_las_sucursales'),
       ])
       .orderBy('v.nombre_completo')
@@ -187,6 +199,7 @@ export class UsuariosService {
       ultimo_acceso: fila.ultimo_acceso,
       sesiones_activas: fila.sesiones_activas,
       created_at: fila.created_at,
+      pin: fila.pin,
     }));
   }
 }

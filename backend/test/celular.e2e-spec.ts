@@ -34,6 +34,8 @@ const PUBLICAS = new Set([
   'POST /api/auth/logout',
   'GET /api/equipos/actual',
   'GET /api/fotos/:archivo',
+  'GET /api/auth/pin/usuarios',
+  'POST /api/auth/pin',
 ]);
 
 /**
@@ -52,6 +54,7 @@ const DESDE_EL_CELULAR = [
   'GET /api/tipo-cambio',
   'POST /api/alertas/:id/atender',
   'POST /api/auth/cambiar-password',
+  'PUT /api/auth/pin', // crear su PIN (entrar con él es solo en un equipo registrado)
   // consultar productos, precios y existencias
   'GET /api/categorias',
   'GET /api/gamas',
