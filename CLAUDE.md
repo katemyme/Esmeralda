@@ -33,31 +33,34 @@ _Actualizado el 2026-10-08._
   las decisiones tomadas al programarlo. La **foto mensual del inventario se queda** (el dueño lo confirmó).
 - **Agregado el 2026-10-08, a pedido del dueño:** los reportes de compras por proveedor y de piezas consumidas en
   paquetes (solo con `REPORTES_COSTOS`) y el historial del tipo de cambio (`GET /api/tipo-cambio/historial`).
-- **Terminado, pendiente de revisión del dueño: B8** (devoluciones y cambios de ventas de turnos ya cerrados).
-  El dueño dio las reglas y aprobó el plan el 2026-10-08, con sus ajustes (están en «Decisiones de negocio clave»,
-  «Devoluciones y cambios»); se programó completo ese mismo día. Con B8 el backend queda completo: etiqueta
-  `backend-completo` y respaldo en `C:\Respaldos\esmeralda-backend-completo.bundle`.
-- Por confirmar con el dueño (B8): en un **cambio por algo más barato**, lo que sobra se devuelve con la misma
-  regla que una devolución (lo pagado en efectivo, en efectivo; lo pagado con tarjeta o transferencia, por
-  transferencia del administrador). Su regla original decía «en efectivo» y su ajuste del reembolso «según cómo
-  pagó» no mencionaba el cambio: se aplicó la segunda a los dos casos. Si lo quiere siempre en efectivo, es una
-  línea en `fn_ejecutar_devolucion` (`v_efectivo`).
-- **Sigue:** el frontend, solo cuando el dueño lo pida (no empezarlo).
-- Pruebas en verde: 657 de base de datos y 534 del backend. Nada se ha subido a GitHub.
+- **B8 (devoluciones y cambios de ventas de turnos ya cerrados) aprobado el 2026-10-08**, con las decisiones
+  tomadas al programarlo (están en «Decisiones de negocio clave», «Devoluciones y cambios»). El dueño confirmó
+  que en un **cambio por algo más barato** lo que sobra sigue la forma de pago de la factura original, igual que
+  el reembolso. Con B8 el backend queda completo: etiqueta `backend-completo` y respaldo en
+  `C:\Respaldos\esmeralda-backend-completo.bundle` (los dos son de antes del ajuste que sigue).
+- **Ajuste pedido al aprobar B8, ya hecho (2026-10-08):** la devolución aprobada que vence deja dos alertas
+  `DEVOLUCION_VENCIDA`, una en el panel del administrador y otra para la sucursal que la solicitó. Para eso las
+  alertas tienen ahora la casilla `para_sucursal` y la ruta `GET /api/alertas/sucursal` (ver «Convenciones del
+  backend», Panel).
+- **Sigue: el frontend** (`frontend/`, React + Vite como PWA), pedido por el dueño el 2026-10-08 con su orden de
+  fases (F1 a F5) y la identidad visual ya decidida: ver «Etapa siguiente: frontend». Primero un plan por fases
+  y su OK; después **solo F1** y detenerse para su revisión.
+- Pruebas en verde: 665 de base de datos y 535 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
 - Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); inventario
   valorizado a una fecha cualquiera (solo hoy y el cierre de cada mes); la foto de un mes si el servidor estuvo
   apagado durante todo el mes siguiente (solo se toma la del mes anterior); comparar con el periodo anterior y
   gráficas (eso es del frontend); en los PDF, los caracteres fuera del alfabeto latino (fuentes estándar).
-- Fuera de B8: avisar al administrador cuando una devolución aprobada vence (se cancela sola, sin alerta); que el
+- Fuera de B8: que el
   administrador corrija una solicitud (aprueba o rechaza completa: para corregir se cancela y se hace otra); la
   casilla «admite devolución» en la plantilla de la carga inicial (las categorías nuevas nacen sin ella y se
   marca en el panel); devolver en dólares (siempre en córdobas); revisar si en la caja hay efectivo suficiente
   antes de ejecutar (el arqueo es a ciegas). Sin probar con equipo real: el QR se leyó con un decodificador por
   programa (da el número de factura), pero no impreso en papel térmico y escaneado; los PDF nuevos no se vieron
   en pantalla (solo se prueba su estructura y sus renglones).
-- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-08: todo lo de B8, con dos tablas nuevas)
+- Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-08: todo lo de B8, con dos tablas nuevas,
+  y la columna `alerta.para_sucursal`)
   la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
@@ -91,7 +94,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      657 pruebas de reglas de negocio
+db/04_pruebas.sql      665 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -207,7 +210,9 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     rechaza (rechazar pide comentario); (3) la aprobada se ejecuta en la caja abierta de la sucursal donde esté el
     cliente, que puede ser otra. Quien la solicitó o el administrador la pueden cancelar antes de ejecutarla.
   - **La aprobada vence:** `DEVOLUCION_APROBADA_DIAS` (3). Pasado su último día la cancela sola la tarea
-    programada (`fn_vencer_devoluciones`) y libera lo apartado.
+    programada (`fn_vencer_devoluciones`) y libera lo apartado. Deja dos alertas `DEVOLUCION_VENCIDA` iguales,
+    sin montos: una para el administrador y otra para la sucursal que la solicitó (pedido del dueño, 2026-10-08).
+    Cada quien atiende la suya. Cancelarla a mano no deja alerta.
   - **Monto:** lo que de verdad se pagó por esas unidades, con la promoción descontada en proporción, en
     córdobas. El reparto no pierde centavos: devuelta por partes, una factura devuelve exactamente lo pagado.
   - **Reembolso según cómo se pagó la factura:** la parte pagada en efectivo (C$ o US$) sale en córdobas de la
@@ -216,7 +221,7 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Cambio:** una venta nueva (cualquier producto, **sin promoción**: si no, se podría devolver algo a precio
     completo y llevarse lo mismo rebajado) donde lo devuelto entra como el método de pago interno «Saldo por
     cambio». Si lo nuevo cuesta más, la diferencia se paga con los métodos normales; si cuesta menos, lo que
-    sobra se reembolsa como en una devolución. Lo que se lleva se elige al ejecutar, no al solicitar. Esa venta
+    sobra se reembolsa como en una devolución, según cómo se pagó la factura original (confirmado por el dueño). Lo que se lleva se elige al ejecutar, no al solicitar. Esa venta
     no se anula; lo comprado en ella se puede devolver después.
   - **Inventario:** lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo
     con que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex.
@@ -232,7 +237,48 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
 
-## Etapa actual: backend (`backend/`)
+## Etapa siguiente: frontend (`frontend/`, todavía no existe)
+
+Pedido por el dueño el 2026-10-08: **React + Vite como PWA**. El plan por fases se le presentó ese día y está
+**pendiente de su OK** (con sus respuestas sobre tablet, impresora, etiquetas y dónde va a vivir el sistema).
+Con el OK se programa **solo F1** y se espera su revisión; cada fase siguiente, igual.
+
+Orden de fases que propuso el dueño:
+
+| Fase | Contenido |
+|---|---|
+| F1 | Base: inicio de sesión con refresco de token, menú según rol y permisos, cliente de la API con manejo de errores, archivo de tema, centro de alertas. Diseño primero para tablet (botones grandes, táctil); el panel del administrador también en celular (desde ahí aprueba devoluciones, mermas y conteos) |
+| F2 | Caja y POS: abrir turno, vender (búsqueda y escaneo QR con la cámara, paquetes, promoción, pagos mixtos C$/US$, vuelto), anular, cierre ciego por billetes y monedas, imprimir tickets, devoluciones y cambios (buscar la factura por el QR, solicitar, ejecutar) |
+| F3 | Inventario: envíos con recepción por escaneo, mermas, conteos y kardex |
+| F4 | Administración: usuarios, roles, sucursales, equipos, categorías (con «admite devolución»), productos y precios, compras, promociones, parámetros, tipo de cambio con su historial, carga inicial, aprobación de devoluciones, mermas y conteos, reembolsos por transferencia |
+| F5 | Reportes: filtros por periodo, comparación con el periodo anterior, gráficas, descargas en Excel y PDF |
+
+Ajustes al orden propuestos en el plan (por confirmar): las aprobaciones junto a lo que aprueban (devoluciones y
+transferencias en F2; mermas y conteos en F3), registrar el tipo de cambio de hoy en F2 y revisar F2 en dos partes.
+
+**Identidad visual (decidida por el dueño).** Variables CSS en un solo archivo de tema:
+
+```
+--esmeralda: #0B6E4F;  --esmeralda-oscuro: #064E3B;  --esmeralda-claro: #E3F2EC;
+--oro: #B8893B;  --oro-claro: #F6EEDC;  --oro-texto: #7A5A1E;
+--fondo: #FAF8F3;  --superficie: #FFFFFF;  --borde: #E5E1D8;
+--texto: #1F2A26;  --texto-secundario: #5C6661;
+--exito: #15803D;  --aviso: #B54708;  --error: #B42318;  --info: #1D5FA8;
+```
+
+- Esmeralda: botones principales, barra superior y selección; esmeralda oscuro: la barra y el hover.
+- Oro solo como acento (promociones, etiquetas, el «Experience» del nombre). Nunca como texto sobre blanco: fondo
+  oro claro con texto oro oscuro.
+- El éxito siempre con ícono de check (para no confundirlo con el verde de la marca).
+- Ámbar (aviso): diferencias de caja, devoluciones pendientes y avisos de tipo de cambio. Rojo: solo errores,
+  anulaciones y rechazos.
+- Solo modo claro.
+- Barra superior: «Esmeralda Experience» en texto («Experience» en oro claro) y un espacio para el logo (lo agrega
+  el dueño después). Con un turno abierto muestra siempre la sucursal, la caja y el tipo de cambio del día.
+- **El arqueo ciego también rige en pantalla:** la vendedora nunca ve el monto esperado, la diferencia ni los
+  totales del turno.
+
+## Etapa terminada: backend (`backend/`)
 
 Stack: Node 22.12+ (desarrollo en Node 24) + TypeScript, **NestJS**, **Kysely** + `pg` (consultas tipadas; llama a las `fn_*`),
 Zod para validar entrada, exceljs (carga inicial y reportes en Excel), pdfkit (reportes y tickets en PDF), qrcode (el QR del
@@ -286,6 +332,13 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   pasa por `fn_set_parametro` y `fn_set_permisos_rol` (el rol ADMIN no se edita; nadie otorga un permiso que no tiene).
   Solo un administrador puede editar, desactivar, resetear la contraseña o cerrar las sesiones de otro
   administrador (`fn_exigir_gestion_usuario`), aunque otro rol reciba `USUARIOS_GESTIONAR`.
+- Alertas para la sucursal: una alerta con `para_sucursal = true` (siempre con `sucursal_id`) es un aviso para
+  quienes trabajan en esa sucursal. No sale en `GET /api/alertas` (panel, `ALERTAS_VER`): se lee en
+  `GET /api/alertas/sucursal`, sin permiso, con los mismos filtros. Si algo le interesa al administrador y a la
+  sucursal se insertan **dos** alertas (una de cada clase), para que cada quien atienda la suya. `POST
+  /api/alertas/:id/atender` no lleva `@RequierePermiso`: decide `fn_atender_alerta` (`fn_puede_ver_alerta`:
+  `ALERTAS_VER`, o trabajar en la sucursal si es para ella; si no, 403). Un aviso para la sucursal lo puede leer
+  cualquier rol de esa sucursal: no ponerle montos ni nada del arqueo.
 - Vistas (`v_*`) en Kysely: los tipos generados marcan todas sus columnas como posiblemente nulas; se declara la
   fila real y se usa `.$castTo<Fila>()`.
 - Catálogo (B4): módulos `categorias/`, `gamas/`, `productos/` (productos y variantes), `perforaciones/` y
