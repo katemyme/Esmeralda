@@ -42,11 +42,13 @@ _Actualizado el 2026-10-08._
   `DEVOLUCION_VENCIDA`, una en el panel del administrador y otra para la sucursal que la solicitó. Para eso las
   alertas tienen ahora la casilla `para_sucursal` y la ruta `GET /api/alertas/sucursal` (ver «Convenciones del
   backend», Panel).
-- **Sigue: el frontend** (`frontend/`, React + Vite como PWA). El dueño aprobó el plan por fases el 2026-10-08
-  y dio sus decisiones (equipos, impresora, servidor, códigos, PIN): ver «Etapa siguiente: frontend». **Falta su
-  OK** al plan ajustado de F1 y a los diseños del celular, el PIN y el código de los productos; con el OK se
-  programa primero ese backend y después **solo F1**, y se espera su revisión.
-- Pruebas en verde: 665 de base de datos y 535 del backend. Nada se ha subido a GitHub.
+- **Backend para F1, terminado (2026-10-08):** acceso desde el celular (sin equipo registrado) con la venta, y
+  cambio rápido de vendedora con PIN. El dueño aprobó los diseños ese día (están en «Decisiones de negocio
+  clave», «Celular y PIN»). La etiqueta `backend-completo` y el respaldo se movieron a este punto.
+- **En curso: F1 del frontend** (`frontend/`, React + Vite como PWA): ver «Etapa actual: frontend». Al terminarla
+  se espera la revisión del dueño; después, F2a (ahí van la pantalla de venta, la cola de impresión y el
+  ticket digital).
+- Pruebas en verde: 715 de base de datos y 571 del backend. Nada se ha subido a GitHub.
 - Fuera de B5 (decidir si entran más adelante): descargar la plantilla desde la API (hoy está en `docs/`),
   redimensionar las fotos al subirlas y borrar las fotos sueltas que nunca se usaron.
 - Fuera de B7: avisos por correo o WhatsApp (decisión del dueño: las alertas solo en el panel); inventario
@@ -61,7 +63,7 @@ _Actualizado el 2026-10-08._
   programa (da el número de factura), pero no impreso en papel térmico y escaneado; los PDF nuevos no se vieron
   en pantalla (solo se prueba su estructura y sus renglones).
 - Después de cambiar `db/01_esquema.sql` o `db/02_seed.sql` (el 2026-10-08: todo lo de B8, con dos tablas nuevas,
-  y la columna `alerta.para_sucursal`)
+  la columna `alerta.para_sucursal` y lo del celular y el PIN)
   la base local `esmeralda` queda atrás hasta que se corra `npm run db:recrear`
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
@@ -95,7 +97,7 @@ no tocan la base local `esmeralda`.
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      665 pruebas de reglas de negocio
+db/04_pruebas.sql      715 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -136,10 +138,12 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Roles: ADMIN (todo), ENCARGADO (ventas, anulaciones, recibir, reportar mermas, contar, ver
   diferencias), VENDEDOR (vender, subir precio, promociones, caja, recibir, reportar mermas, contar). Los dos
   últimos solicitan devoluciones y ejecutan las aprobadas (`DEVOLUCIONES_REGISTRAR`); aprobarlas es solo del ADMIN.
-- Acceso: el admin entra desde cualquier equipo; encargados y vendedores solo desde un **equipo registrado**
-  (caja o tablet) de una de sus sucursales (`fn_equipo_autorizado`). La sesión dura 12 h si se abrió en un
-  equipo registrado y 7 días si no (parámetros `SESION_HORAS_EQUIPO`, `SESION_DIAS_SIN_EQUIPO`); renovar no la
-  alarga. 5 contraseñas incorrectas → bloqueo de 15 min. Reusar un token de renovación ya rotado → se cierran
+- Acceso: el admin entra desde cualquier equipo, con todo. Encargados y vendedores trabajan con todo lo de su
+  rol solo desde un **equipo registrado** (caja o tablet) de una de sus sucursales (`fn_equipo_autorizado`);
+  sin equipo registrado —su celular— entran con un acceso limitado (ver «Celular y PIN»). La sesión dura 12 h
+  en un equipo registrado, 12 h en el celular y 7 días para el admin sin equipo (parámetros
+  `SESION_HORAS_EQUIPO`, `SESION_HORAS_CELULAR`, `SESION_DIAS_SIN_EQUIPO`); renovar no la alarga.
+  5 contraseñas incorrectas → bloqueo de 15 min. Reusar un token de renovación ya rotado → se cierran
   todas las sesiones del usuario y se alerta (`SESION_REUTILIZADA`).
 - Reglas agregadas con el backend (B3 a B5), todas en la base:
   - Se pueden crear roles nuevos; solo se elimina un rol que no es de sistema y sin usuarios.
@@ -235,24 +239,50 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     ticket de cierre y en los reportes, las devoluciones de un turno abierto solo con `CAJA_VER_DIFERENCIAS`.
   - **Ticket de venta con QR:** lleva el número de factura en un código QR para buscar la venta al devolver.
 
+- Celular y PIN (backend de F1; decisiones del dueño del 2026-10-08), todas en la base:
+  - **El celular** es cualquier sesión sin equipo registrado de quien no es administrador. Ahí solo valen los
+    permisos marcados `permiso.sin_equipo`: consultar productos, precios, existencias y kardex; ver y recibir
+    envíos; conteos; buscar una factura y solicitar su devolución; **vender**. Todo lo demás responde
+    «solo desde un equipo registrado»: abrir y cerrar turno, anular, movimientos de efectivo, ejecutar
+    devoluciones, registrar el tipo de cambio, mermas, reportes, imprimir en papel.
+  - **Vender desde el celular:** solo con un turno abierto en su sucursal; la venta entra a ese turno con las
+    reglas de siempre y queda a su nombre. Con más de una caja abierta elige la caja; si trabaja en varias
+    sucursales, elige la sucursal (`fn_turno_para_venta`, `fn_cajas_abiertas`).
+  - **Cada venta guarda desde dónde se hizo** (`venta.origen`: `EQUIPO` o `CELULAR`) y solo el administrador
+    lo ve: en la venta, en el reporte de ventas y en el de cierres.
+  - **Desde el celular solo se ven las ventas propias del turno abierto**, sin totales; ni las de otras
+    personas ni las de turnos anteriores. El arqueo sigue a ciegas.
+  - **Ticket de una venta hecha desde el celular (va en F2a, todavía no programado):** las dos opciones siempre.
+    (1) Cola de impresión: la venta aparece en la tablet de esa sucursal en «Tickets por imprimir» y se imprime
+    con un toque, o sola con el parámetro `IMPRESION_AUTOMATICA_COLA`; imprimir desde la cola cuenta como
+    original, no como COPIA. (2) Ticket digital: compartir el PDF desde el celular (WhatsApp u otra app).
+  - **PIN de 4 dígitos** para el cambio rápido en un equipo registrado. El equipo **se abre una vez al día**
+    con una contraseña (la primera persona); abierto, acepta el PIN de quienes están asignadas a su sucursal,
+    hasta que alguien lo cierre o pasen las 12 h. Sin eso el PIN no sirve. Cada PIN abre la sesión de esa
+    persona: todo queda a su nombre. El administrador no tiene PIN; desde el celular no se entra con PIN.
+  - **PIN bloqueado** a los 5 intentos fallidos seguidos, con alerta `PIN_BLOQUEADO` al administrador. Ella
+    crea uno nuevo entrando con su contraseña (la alerta queda); el administrador también puede reiniciarlo.
+    No vale `0000`, `1234` ni parecidos. Se guarda con hash.
+  - **La pantalla se bloquea** a los 3 minutos sin uso (`PANTALLA_BLOQUEO_MINUTOS`, de 1 a 30), solo en
+    equipos registrados.
+  - **Código de los productos (va en F3b):** prefijo de la categoría + correlativo de 5 dígitos por categoría
+    (`PTI-00001`), uno por variante, en el campo `sku`; el QR de la etiqueta lleva solo el código.
+
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
 
-## Etapa siguiente: frontend (`frontend/`, todavía no existe)
+## Etapa actual: frontend (`frontend/`)
 
-Pedido por el dueño el 2026-10-08: **React + Vite como PWA**. Ese mismo día aprobó el plan por fases y sus
+Pedido por el dueño el 2026-10-08: **React + Vite como PWA**. Ese mismo día aprobó el plan por fases, sus
 librerías (React 19, Vite 8, TypeScript 6.0 como el backend, React Router, TanStack Query, Zod + React Hook Form,
 Tailwind 4 + Radix + lucide, vite-plugin-pwa, barcode-detector, Recharts; Vitest + Testing Library + MSW +
-Playwright; oxlint + Prettier). Se programa **una fase a la vez** y se espera su revisión.
-
-**Pendiente de su OK (no programar antes):** el plan ajustado de F1 y los tres diseños que se le presentaron el
-2026-10-08: acceso desde el celular (lista de permisos que valen sin equipo registrado), cambio rápido de
-vendedora con PIN, y el formato del código de los productos. Los tres piden cambios en el backend, con pruebas.
+Playwright; oxlint + Prettier) y los diseños del celular, el PIN, la impresión por WebUSB y el código de los
+productos. Se programa **una fase a la vez** y se espera su revisión antes de la siguiente.
 
 | Fase | Contenido |
 |---|---|
-| F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara. Primero el backend que hace falta (celular y PIN) |
-| F2a | Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB |
+| F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
+| F2a | Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
@@ -262,11 +292,10 @@ vendedora con PIN, y el formato del código de los productos. Los tres piden cam
 
 **Decisiones del dueño (2026-10-08):**
 
-- **Equipos.** Tablets Android con Chrome en las sucursales: ahí se hace todo lo de caja. Las trabajadoras entran
-  también desde su celular personal (iPhone, Safari), y desde ahí **solo**: consultar precios y existencias,
-  buscar o escanear productos, recibir envíos, hacer conteos y crear solicitudes de devolución, siempre en sus
-  sucursales. Todo lo que mueve dinero (abrir turno, cobrar, anular, movimientos de efectivo, cerrar, ejecutar
-  devoluciones) exige un equipo registrado. El dueño aprueba desde su iPhone.
+- **Equipos.** Tablets Android con Chrome en las sucursales (todavía sin comprar: serán USB-C, con un hub
+  USB-C OTG con carga): ahí se hace todo lo de caja. Las trabajadoras entran también desde su celular personal
+  (iPhone, Safari), con el acceso limitado de «Celular y PIN», que incluye vender. El dueño aprueba desde su
+  iPhone.
 - **Impresora:** Xprinter XP-T80A (80 mm, ESC/POS, USB y red, salida de gaveta de 24 V; todavía sin gaveta),
   conectada por USB a la tablet con un adaptador OTG. Impresión directa desde Chrome por **WebUSB** con ESC/POS:
   ticket de venta, de cierre y de devolución, con corte y el QR de la factura. Apertura de gaveta lista pero
@@ -280,9 +309,10 @@ vendedora con PIN, y el formato del código de los productos. Los tres piden cam
 - **Escanear nunca es el único camino:** en todas las pantallas donde se escanea (venta, envíos, conteos,
   devoluciones) hay además un buscador por nombre o código para elegir el producto tocándolo.
 - **Sin internet no se vende** (la app avisa y deja reintentar sin duplicar).
-- **Cambio rápido de vendedora con PIN de 4 dígitos:** solo en un equipo registrado y para usuarias asignadas a
-  esa sucursal; guardado con hash; se bloquea a los 5 intentos fallidos y el administrador lo reinicia; cada
-  acción queda a nombre de quien puso el PIN; la pantalla se bloquea sola tras un rato sin uso.
+- **Cambio rápido de vendedora con PIN:** ver «Celular y PIN» en las decisiones de negocio.
+- **Al terminar cada fase:** todo en verde, «Estado actual» al día y, si hay que probar en la tablet o el
+  celular, las instrucciones del túnel de Cloudflare. La etiqueta `backend-completo` y el respaldo se mueven
+  cada vez que el backend cambia.
 
 **Identidad visual (decidida por el dueño).** Variables CSS en un solo archivo de tema:
 
@@ -346,7 +376,7 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   `usuarioId` de `transaccion()` y `equipo` para validar sucursal/caja (B6). Cookies httpOnly + SameSite=Strict:
   `esmeralda_sesion` (refresh, path `/api/auth`) y `esmeralda_equipo` (equipo registrado, path `/api`, 400 días).
 - Permisos: cada ruta que no sea de uso general lleva `@RequierePermiso('CODIGO')` (`src/autenticacion/permisos.ts`),
-  que llama a `fn_exigir_permiso` **antes** de validar los datos enviados (403 `PERMISO_DENEGADO`). El permiso se
+  que consulta `fn_permiso_en_sesion` **antes** de validar los datos enviados (403 `PERMISO_DENEGADO`). El permiso se
   consulta en la base en cada solicitud (el token solo lleva el rol): cambiar los permisos de un rol o desactivar
   a un usuario aplica de inmediato. En las escrituras la `fn_*` lo valida otra vez dentro de la transacción.
 - Contraseñas: argon2id; se aceptan los hashes **bcrypt** del seed (`$2a$`, vía `crypt()`) y, como el seed obliga
@@ -503,6 +533,25 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
     hora real. En `db/04_pruebas.sql`, para mover la fecha de una venta se desactiva `tg_venta_proteger` dentro
     de una transacción que se deshace. Una alerta de ejemplo en una prueba no debe llevar el id de un turno
     real (la tarea de cajas sin cerrar no lo alertaría): usar uno que no exista.
+- Celular y PIN (backend de F1):
+  - `GuardiaPermisos` recibe el equipo de la sesión: con un permiso que el rol tiene pero que no vale sin
+    equipo responde 403 **`EQUIPO_REQUERIDO`**. `@SoloEnEquipo()` hace lo mismo en una ruta cuyo permiso sí
+    vale en el celular (o que no pide ninguno): `GET /api/caja/turno`, imprimir tickets en papel, ejecutar una
+    devolución, cerrar el equipo.
+  - `/api/auth/yo` (y la respuesta del login) trae `acceso` (`COMPLETO` o `CELULAR`), `usuario.permisos` con
+    **solo los que valen en esa sesión**, `usuario.pin` (`SIN_PIN`, `ACTIVO`, `BLOQUEADO`) y
+    `pantalla_bloqueo_minutos`.
+  - La venta resuelve su turno con `exigirTurnoParaVenta()` (`fn_turno_para_venta`), no con `exigirTurno()`:
+    es lo único de la caja que se hace desde el celular. `caja_id` sirve ahí para elegir la caja abierta.
+    `VentasService` recibe el `UsuarioAutenticado`: el alcance de las consultas depende del equipo.
+  - `test/celular.e2e-spec.ts` **recorre todas las rutas de la API** con la sesión de celular de un rol que
+    tiene todos los permisos: lo que responde tiene que estar en la lista `DESDE_EL_CELULAR`. Una ruta nueva
+    que no sea del celular debe quedar bloqueada (su permiso sin marcar, o `@SoloEnEquipo()`); si sí es del
+    celular, se agrega a la lista a propósito. Las rutas `@Publica()` van en `PUBLICAS`.
+  - PIN: `GET /api/auth/pin/usuarios` y `POST /api/auth/pin` son públicas y dependen de la cookie del equipo;
+    `PUT /api/auth/pin` crea el propio. El PIN se guarda con `hashearPassword` y su forma se valida en
+    `autenticacion/esquemas.ts` (la base nunca lo ve). Entrar con PIN no lleva el límite por IP del login.
+    `test/pin.e2e-spec.ts` trabaja en las sucursales `PNA` y `PNB`.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.
