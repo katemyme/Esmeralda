@@ -49,6 +49,8 @@ async function entregar(reporte: Reporte, formato: 'json' | 'xlsx' | 'pdf'): Pro
  * a domingo y el mensual; por defecto el día de hoy) o `?desde=&hasta=`, y `?sucursal_id=`.
  * Cada quien ve lo de sus sucursales; el costo y el margen solo salen con REPORTES_COSTOS, y sin
  * CAJA_VER_DIFERENCIAS las ventas de un turno todavía abierto no entran (arqueo ciego).
+ * Las ventas van netas: lo devuelto resta el día en que se ejecutó la devolución, a quien hizo la
+ * venta original y a su sucursal.
  */
 @Controller('reportes')
 export class ReportesController {
@@ -139,6 +141,19 @@ export class ReportesController {
     @Query(new ValidacionZod(esquemaReporte)) filtro: FiltroReporte,
   ): Promise<Respuesta> {
     return entregar(await this.reportes.sobreprecios(usuario.id, filtro), filtro.formato);
+  }
+
+  /**
+   * Devoluciones y cambios ejecutados en el rango, con su motivo y cómo se le entregó al cliente
+   * (su nombre y su teléfono, solo para el administrador).
+   */
+  @Get('devoluciones')
+  @RequierePermiso('REPORTES_VER')
+  async devoluciones(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Query(new ValidacionZod(esquemaReporte)) filtro: FiltroReporte,
+  ): Promise<Respuesta> {
+    return entregar(await this.reportes.devoluciones(usuario.id, filtro), filtro.formato);
   }
 
   /** Las piezas que salieron dentro de paquetes, en total y por sucursal, con su costo. */

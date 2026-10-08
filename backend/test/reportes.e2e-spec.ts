@@ -24,7 +24,8 @@ import {
 // reportes por semana y por mes. Las pruebas van en orden y comparten estado.
 
 const SUCURSAL = 'Sucursal Reportes e2e';
-const NOTA_TURNOS = 'No incluye las ventas de los turnos de caja que siguen abiertos.';
+const NOTA_TURNOS =
+  'No incluye las ventas ni las devoluciones de los turnos de caja que siguen abiertos.';
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 function seccion(reporte: Reporte, clave: string): Seccion {
@@ -317,6 +318,7 @@ describe('Reportes', () => {
       'gamas',
       'promociones',
       'sobreprecios',
+      'devoluciones',
       'piezas-en-paquetes',
       'compras-por-proveedor',
       'cierres',
@@ -337,6 +339,7 @@ describe('Reportes', () => {
       ventas: 4,
       unidades: 5,
       descuentos: '50.00',
+      devoluciones: '0.00',
       venta_neta: '2350.00',
       sobreprecio: '100.00',
       ticket_promedio: '587.50',
@@ -359,6 +362,7 @@ describe('Reportes', () => {
         'ventas',
         'unidades',
         'descuentos',
+        'devoluciones',
         'venta_neta',
         'sobreprecio',
         'ticket_promedio',
@@ -378,6 +382,7 @@ describe('Reportes', () => {
         'ventas',
         'unidades',
         'descuentos',
+        'devoluciones',
         'venta_neta',
         'sobreprecio',
         'ticket_promedio',
@@ -423,6 +428,7 @@ describe('Reportes', () => {
           ventas: 3,
           unidades: 4,
           descuentos: '50.00',
+          devoluciones: '0.00',
           venta_neta: '2150.00',
           sobreprecio: '100.00',
           ticket_promedio: '716.67',
@@ -437,6 +443,7 @@ describe('Reportes', () => {
           ventas: 1,
           unidades: 1,
           descuentos: '0.00',
+          devoluciones: '0.00',
           venta_neta: '200.00',
           sobreprecio: '0.00',
           ticket_promedio: '200.00',
@@ -1177,6 +1184,7 @@ describe('Reportes', () => {
           'Ventas',
           'Unidades',
           'Descuentos',
+          'Devoluciones',
           'Venta neta',
           'Sobreprecio',
           'Ticket promedio',
@@ -1186,9 +1194,9 @@ describe('Reportes', () => {
           'Anuladas',
           'Monto anulado',
         ],
-        ['Vera Reportes', 3, 4, 50, 2150, 100, 716.67, 700, 1450, 67.4, 0, 0],
-        ['Eva Reportes', 1, 1, 0, 200, 0, 200, 0, 200, 100, 1, 300],
-        ['Total', 4, 5, 50, 2350, 100, 587.5, 700, 1650, 70.2, 1, 300],
+        ['Vera Reportes', 3, 4, 50, 0, 2150, 100, 716.67, 700, 1450, 67.4, 0, 0],
+        ['Eva Reportes', 1, 1, 0, 0, 200, 0, 200, 0, 200, 100, 1, 300],
+        ['Total', 4, 5, 50, 0, 2350, 100, 587.5, 700, 1650, 70.2, 1, 300],
       ]);
 
       // la encargada descarga el suyo sin las columnas de costo
@@ -1196,7 +1204,7 @@ describe('Reportes', () => {
       const titulos = tabla((await libro(deEva.body as Buffer)).worksheets[0], 'Vendedor')[0];
       expect(titulos).not.toContain('Costo');
       expect(titulos).not.toContain('Margen');
-      expect(titulos).toHaveLength(9);
+      expect(titulos).toHaveLength(10);
     });
 
     it('un reporte con varias secciones lleva una hoja por sección; las fechas son fechas', async () => {
@@ -1325,6 +1333,7 @@ describe('Reportes', () => {
         'gamas',
         'promociones',
         'sobreprecios',
+        'devoluciones',
         'piezas-en-paquetes',
         'compras-por-proveedor',
         'compras-por-proveedor?desde=2019-03-01&hasta=2019-04-30',

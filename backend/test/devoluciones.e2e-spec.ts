@@ -1,4 +1,5 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import ExcelJS from 'exceljs';
 import { sql } from 'kysely';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
@@ -15,6 +16,7 @@ import type { Existencia, Movimiento } from '../src/inventario/inventario.servic
 import type { Merma } from '../src/mermas/mermas.service';
 import type { ProductoCatalogo } from '../src/productos/productos.service';
 import { hoyEnManagua, sumarDias } from '../src/reportes/periodo';
+import type { Reporte, Seccion } from '../src/reportes/reporte';
 import { TareasService } from '../src/tareas/tareas.service';
 import type { VentaDetalle } from '../src/ventas/ventas.service';
 import {
@@ -177,12 +179,12 @@ describe('Devoluciones y cambios', () => {
       else Object.assign(ids, { b: sucursalId, cajaB: cajaId });
     }
 
-    // Un rol que vende pero no registra devoluciones
+    // Un rol que vende y ve reportes, pero no registra devoluciones ni ve las diferencias de caja
     await comoJefa('post', '/api/roles')
       .send({ codigo: 'CAJERO_DVE', nombre: 'Cajero sin devoluciones e2e' })
       .expect(201);
     await comoJefa('put', '/api/roles/CAJERO_DVE/permisos')
-      .send({ permisos: ['VENTAS_REGISTRAR', 'VENTAS_VER_PROPIAS'] })
+      .send({ permisos: ['VENTAS_REGISTRAR', 'VENTAS_VER_PROPIAS', 'REPORTES_VER'] })
       .expect(200);
 
     const actores: [string, string, string, number, string, { acceso: string }][] = [
@@ -1211,6 +1213,295 @@ describe('Devoluciones y cambios', () => {
       expect(await idsDe(jefa.acceso, 'por_transferir=true')).toEqual([]);
       const invalida = await con('get', '/api/devoluciones?estado=LISTA', dora.acceso).expect(400);
       expect(invalida.body.errores[0].campo).toBe('estado');
+    });
+  });
+
+  // Hasta aquí, en la sucursal A se vendieron C$4750 en 7 facturas (las 5 del día y las 2 de los
+  // cambios) y de sus ventas se devolvieron C$2360: S1 360 (ejecutada en la B), S2 800, y las
+  // cadenas de los dos cambios, 600 + 600.
+  describe('reportes: las ventas van netas de devoluciones', () => {
+    async function reporte(acceso: string, ruta: string, sucursal = ids.a): Promise<Reporte> {
+      const { body } = await con(
+        'get',
+        `/api/reportes/${ruta}?sucursal_id=${sucursal}`,
+        acceso,
+      ).expect(200);
+      return body.reporte as Reporte;
+    }
+
+    function seccion(r: Reporte, clave: string): Seccion {
+      const encontrada = r.secciones.find((s) => s.clave === clave);
+      if (!encontrada) throw new Error(`El reporte ${r.clave} no tiene la sección ${clave}`);
+      return encontrada;
+    }
+
+    const neto = {
+      ventas: 7, // devolver no borra la factura
+      unidades: 6, // 11 vendidas − 5 devueltas
+      descuentos: '60.00', // los C$100 de la promoción menos la parte del perfume devuelto
+      devoluciones: '2360.00',
+      venta_neta: '2390.00', // 4750 − 2360
+      sobreprecio: '0.00',
+      ticket_promedio: '341.43',
+      costo: '880.00', // lo devuelto también resta su costo: volvió al inventario
+      margen: '1510.00',
+      margen_pct: '63.2',
+    };
+
+    it('ventas del día: lo devuelto resta, el día en que se ejecutó la devolución', async () => {
+      const s = seccion(await reporte(jefa.acceso, 'ventas'), 'ventas');
+      expect(s.columnas.map((c) => c.clave)).toEqual(['periodo', ...Object.keys(neto)]);
+      expect(s.columnas[4]).toEqual({
+        clave: 'devoluciones',
+        titulo: 'Devoluciones',
+        tipo: 'monto',
+      });
+      expect(s.filas).toEqual([{ periodo: hoy, ...neto }]);
+      expect(s.totales).toEqual(neto);
+      // ayer no hubo ventas ni devoluciones
+      const { body } = await comoJefa(
+        'get',
+        `/api/reportes/ventas?sucursal_id=${ids.a}&desde=${sumarDias(hoy, -7)}&hasta=${sumarDias(hoy, -1)}`,
+      ).expect(200);
+      expect(seccion(body.reporte as Reporte, 'ventas').filas).toEqual([]);
+    });
+
+    it('la devolución se le resta a quien hizo la venta original y a su sucursal, aunque se ejecute en otra', async () => {
+      const vendedores = seccion(await reporte(jefa.acceso, 'ventas-por-vendedor'), 'vendedores');
+      expect(vendedores.filas).toEqual([
+        { vendedor: 'Dora Devoluciones', ...neto, anuladas: 0, total_anulado: '0.00' },
+      ]);
+      const sucursales = seccion(await reporte(jefa.acceso, 'ventas-por-sucursal'), 'sucursales');
+      expect(sucursales.filas).toEqual([{ sucursal: SUC_A, ...neto }]);
+      // en la B se ejecutó la devolución S1, pero la venta era de la A: a la B no le resta nada
+      const enB = seccion(await reporte(jefa.acceso, 'ventas-por-sucursal', ids.b), 'sucursales');
+      expect(enB.filas).toEqual([]);
+      expect(enB.totales).toMatchObject({ ventas: 0, devoluciones: '0.00', venta_neta: '0.00' });
+    });
+
+    it('productos más vendidos: en unidades y montos netos', async () => {
+      const s = seccion(await reporte(jefa.acceso, 'productos'), 'productos');
+      expect(s.filas.map((f) => [f.sku, f.unidades, f.venta_neta, f.margen])).toEqual([
+        ['DVE-PERF', 4, '1600.00', '1000.00'], // 7 vendidos − 3 devueltos
+        ['DVE-CAD', 1, '540.00', '340.00'], // 3 vendidas − 2 devueltas
+        ['DVE-ARO', 1, '250.00', '170.00'],
+      ]);
+    });
+
+    it('cobros: el dinero que entró y el que salió; el saldo por cambio no es dinero', async () => {
+      const enA = seccion(await reporte(jefa.acceso, 'cobros'), 'cobros');
+      expect(enA.filas).toEqual([
+        { metodo: 'Efectivo', moneda: 'NIO', ventas: 5, monto: '2350.00', monto_nio: '2350.00' },
+        { metodo: 'Tarjeta', moneda: 'NIO', ventas: 2, monto: '1400.00', monto_nio: '1400.00' },
+        {
+          metodo: 'Devoluciones en efectivo',
+          moneda: 'NIO',
+          ventas: null,
+          monto: '-466.67',
+          monto_nio: '-466.67',
+        },
+        {
+          metodo: 'Devoluciones por transferencia',
+          moneda: 'NIO',
+          ventas: null,
+          monto: '-533.33',
+          monto_nio: '-533.33',
+        },
+      ]);
+      expect(JSON.stringify(enA.filas)).not.toMatch(/Saldo por cambio/);
+      expect(enA.totales).toEqual({ ventas: 6, monto_nio: '2750.00' });
+      // El efectivo sale de la caja donde se ejecutó: los C$360 de S1 salieron en la B.
+      // Entre las dos: 2750 − 360 = 2390, la venta neta.
+      const enB = seccion(await reporte(jefa.acceso, 'cobros', ids.b), 'cobros');
+      expect(enB.filas).toEqual([
+        {
+          metodo: 'Devoluciones en efectivo',
+          moneda: 'NIO',
+          ventas: null,
+          monto: '-360.00',
+          monto_nio: '-360.00',
+        },
+      ]);
+      expect(enB.totales).toEqual({ ventas: 0, monto_nio: '-360.00' });
+    });
+
+    it('GET /api/reportes/devoluciones: cada devolución con su motivo y cómo se entregó', async () => {
+      await con('get', '/api/reportes/devoluciones', dora.acceso).expect(403); // la vendedora no ve reportes
+      const r = await reporte(jefa.acceso, 'devoluciones');
+      expect(r).toMatchObject({
+        clave: 'devoluciones',
+        titulo: 'Devoluciones y cambios',
+        desde: hoy,
+        hasta: hoy,
+        notas: [],
+      });
+      expect(seccion(r, 'resumen').filas).toEqual([
+        {
+          tipo: 'Devolución',
+          cantidad: 2,
+          monto_total: '1160.00',
+          monto_saldo: '0.00',
+          monto_efectivo: '626.67',
+          monto_transferencia: '533.33',
+          por_transferir: '0.00', // ya está anotada
+        },
+        {
+          tipo: 'Cambio',
+          cantidad: 2,
+          monto_total: '1200.00',
+          monto_saldo: '1000.00',
+          monto_efectivo: '200.00',
+          monto_transferencia: '0.00',
+          por_transferir: '0.00',
+        },
+      ]);
+      const total = {
+        monto_total: '2360.00',
+        monto_saldo: '1000.00',
+        monto_efectivo: '826.67',
+        monto_transferencia: '533.33',
+      };
+      expect(seccion(r, 'resumen').totales).toEqual({
+        cantidad: 4,
+        ...total,
+        por_transferir: '0.00',
+      });
+
+      const lista = seccion(r, 'devoluciones');
+      expect(lista.filas).toHaveLength(4);
+      expect(lista.filas[0]).toEqual({
+        fecha: expect.any(String),
+        numero: 'DEV-DEB-000001',
+        tipo: 'Devolución',
+        factura: 'DEA-00000001',
+        sucursal: SUC_B, // se ejecutó en la otra sucursal
+        sucursal_venta: SUC_A,
+        vendedor: 'Dora Devoluciones',
+        monto_total: '360.00',
+        monto_saldo: '0.00',
+        monto_efectivo: '360.00',
+        monto_transferencia: '0.00',
+        referencia: null,
+        motivo: 'No le gustó el aroma',
+        cliente: 'Carla Cliente',
+        telefono: '8888-1234',
+      });
+      expect(lista.filas.map((f) => [f.numero, f.tipo, f.referencia, f.cliente])).toEqual([
+        ['DEV-DEB-000001', 'Devolución', null, 'Carla Cliente'],
+        ['DEV-DEA-000001', 'Devolución', 'BAC-778899', 'Luis Cliente'],
+        ['DEV-DEA-000002', 'Cambio', null, 'Marta Cliente'],
+        ['DEV-DEA-000003', 'Cambio', null, 'Carla Cliente'],
+      ]);
+      expect(lista.totales).toEqual(total);
+
+      const productos = seccion(r, 'productos');
+      expect(productos.filas.map((f) => [f.numero, f.sku, f.cantidad, f.estado, f.monto])).toEqual([
+        ['DEV-DEB-000001', 'DVE-PERF', 1, 'Bueno', '360.00'],
+        ['DEV-DEA-000001', 'DVE-PERF', 1, 'Bueno', '400.00'],
+        ['DEV-DEA-000001', 'DVE-PERF', 1, 'Defectuoso', '400.00'],
+        ['DEV-DEA-000002', 'DVE-CAD', 1, 'Bueno', '600.00'],
+        ['DEV-DEA-000003', 'DVE-CAD', 1, 'Bueno', '600.00'],
+      ]);
+      expect(productos.filas[2]).toMatchObject({
+        factura: 'DEA-00000002',
+        producto: 'Regalo DVE — Perfume',
+        categoria: 'Regalos DVE',
+        motivo: 'Uno venía con el atomizador roto',
+      });
+      expect(productos.totales).toEqual({ cantidad: 5, monto: '2360.00' });
+      // por sucursal: las de sus ventas y las ejecutadas en ella
+      const enB = seccion(await reporte(jefa.acceso, 'devoluciones', ids.b), 'devoluciones');
+      expect(enB.filas.map((f) => f.numero)).toEqual(['DEV-DEB-000001']);
+    });
+
+    it('el nombre y el teléfono del cliente solo los ve el administrador', async () => {
+      const r = await reporte(elsa.acceso, 'devoluciones');
+      const lista = seccion(r, 'devoluciones');
+      expect(lista.filas).toHaveLength(4);
+      expect(lista.columnas.map((c) => c.clave)).not.toEqual(
+        expect.arrayContaining(['cliente', 'telefono']),
+      );
+      expect(lista.filas[0]).toMatchObject({
+        numero: 'DEV-DEB-000001',
+        motivo: 'No le gustó el aroma',
+      });
+      expect(JSON.stringify(r)).not.toMatch(
+        /Carla|Luis Cliente|Marta|8888-1234|7777-0000|8765-4321/,
+      );
+      // tampoco en el archivo
+      const excel = await con(
+        'get',
+        `/api/reportes/devoluciones?sucursal_id=${ids.a}&formato=xlsx`,
+        elsa.acceso,
+      )
+        .buffer(true)
+        .parse(comoBytes)
+        .expect(200);
+      const libro = new ExcelJS.Workbook();
+      await libro.xlsx.load(excel.body as unknown as ExcelJS.Buffer);
+      expect(libro.worksheets.map((h) => h.name)).toEqual([
+        'Resumen',
+        'Devoluciones y cambios',
+        'Productos devueltos',
+      ]);
+      const celdas: string[] = [];
+      libro.worksheets[1].eachRow((fila) => fila.eachCell((celda) => celdas.push(celda.text)));
+      expect(celdas).toEqual(expect.arrayContaining(['DEV-DEA-000001', 'BAC-778899', 'Motivo']));
+      expect(celdas.join('|')).not.toMatch(/Cliente|Teléfono|8888-1234/);
+      const pdf = await comoJefa(
+        'get',
+        `/api/reportes/devoluciones?sucursal_id=${ids.a}&formato=pdf`,
+      )
+        .buffer(true)
+        .parse(comoBytes)
+        .expect(200);
+      expect((pdf.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+
+    it('lo defectuoso aparece como merma aprobada, al costo con que se vendió', async () => {
+      const aprobadas = seccion(await reporte(jefa.acceso, 'mermas'), 'aprobadas');
+      expect(aprobadas.filas).toEqual([
+        expect.objectContaining({
+          sku: 'DVE-PERF',
+          cantidad: 1,
+          costo_unitario: '150.00',
+          valor_costo: '150.00',
+          motivo: 'Devuelto defectuoso (DEV-DEA-000001): Uno venía con el atomizador roto',
+          reportada_por: 'Dora Devoluciones',
+          resuelta_por: 'Jefa de devoluciones',
+        }),
+      ]);
+    });
+
+    it('arqueo ciego: sin CAJA_VER_DIFERENCIAS no entra la devolución de un turno todavía abierto', async () => {
+      // Nora ve reportes pero no las diferencias de caja. La caja de la B (donde se ejecutó S1) sigue abierta
+      const antes = await reporte(nora.acceso, 'ventas');
+      expect(antes.notas).toEqual([
+        'No incluye las ventas ni las devoluciones de los turnos de caja que siguen abiertos.',
+      ]);
+      expect(seccion(antes, 'ventas').totales).toEqual({
+        ventas: 7,
+        unidades: 7,
+        descuentos: '100.00',
+        devoluciones: '2000.00', // sin los C$360 de S1
+        venta_neta: '2750.00',
+        sobreprecio: '0.00',
+        ticket_promedio: '392.86',
+      });
+      const lista = seccion(await reporte(nora.acceso, 'devoluciones'), 'devoluciones');
+      expect(lista.filas.map((f) => f.numero)).toEqual([
+        'DEV-DEA-000001',
+        'DEV-DEA-000002',
+        'DEV-DEA-000003',
+      ]);
+
+      await comoJefa('post', `/api/turnos/${ids.turnoB}/cierre-forzado`)
+        .send({ motivo: 'Cierre de la caja B de la prueba de devoluciones' })
+        .expect(200);
+      const despues = seccion(await reporte(nora.acceso, 'ventas'), 'ventas').totales;
+      expect(despues).toMatchObject({ devoluciones: '2360.00', venta_neta: '2390.00' });
+      const completa = seccion(await reporte(nora.acceso, 'devoluciones'), 'devoluciones');
+      expect(completa.filas).toHaveLength(4);
     });
   });
 });

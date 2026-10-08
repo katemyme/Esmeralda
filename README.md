@@ -293,10 +293,11 @@ donde cada sección es una tabla: `{ clave, titulo, columnas: [{ clave, titulo, 
 
 | Ruta | Permiso | Qué trae |
 |---|---|---|
-| `GET /api/reportes/ventas` | `REPORTES_VER` | Ventas, unidades, descuentos, venta neta, sobreprecio y ticket promedio, una fila por día, semana o mes (`?agrupar=dia\|semana\|mes`) |
+| `GET /api/reportes/ventas` | `REPORTES_VER` | Ventas, unidades, descuentos, devoluciones, venta neta, sobreprecio y ticket promedio, una fila por día, semana o mes (`?agrupar=dia\|semana\|mes`) |
 | `GET /api/reportes/ventas-por-vendedor` | `REPORTES_VER` | Lo mismo por persona, con las ventas que se le anularon |
 | `GET /api/reportes/ventas-por-sucursal` | `REPORTES_VER` | Lo mismo por sucursal |
-| `GET /api/reportes/cobros` | `REPORTES_VER` | Lo cobrado por método de pago y moneda (el vuelto ya restado); los dólares, con su equivalente |
+| `GET /api/reportes/cobros` | `REPORTES_VER` | El dinero que entró por método de pago y moneda (el vuelto ya restado; los dólares, con su equivalente) y, en negativo, lo devuelto en efectivo y por transferencia. El saldo por cambio no es dinero: no entra |
+| `GET /api/reportes/devoluciones` | `REPORTES_VER` | Devoluciones y cambios ejecutados en el rango: resumen, cada una con su motivo y cómo se entregó (saldo, efectivo, transferencia y su referencia) y los productos devueltos con su estado. El nombre y el teléfono del cliente, solo con `DEVOLUCIONES_APROBAR` |
 | `GET /api/reportes/productos` | `REPORTES_VER` | Los más vendidos (`?limite=`, por defecto 20) |
 | `GET /api/reportes/perforaciones` | `REPORTES_VER` | Cada perforación: con pieza (paquete) contra solo servicio |
 | `GET /api/reportes/gamas` | `REPORTES_VER` | Paquetes vendidos según la gama de la pieza |
@@ -315,8 +316,14 @@ donde cada sección es una tabla: `{ clave, titulo, columnas: [{ clave, titulo, 
 - **Qué ve cada quien.** Solo sus sucursales (una ajena responde 404). El costo, el margen y el valor a costo solo
   salen con `REPORTES_COSTOS` (solo el administrador): sin él esas columnas no existen, ni en el JSON ni en el
   archivo. El vendedor no tiene `REPORTES_VER`.
-- **Arqueo ciego.** Sin `CAJA_VER_DIFERENCIAS`, los reportes de ventas y de cobros no incluyen las ventas de un
-  turno que sigue abierto (con ellas se deduciría lo esperado en caja); el reporte lo avisa en `notas`.
+- **Arqueo ciego.** Sin `CAJA_VER_DIFERENCIAS`, los reportes de ventas y de cobros no incluyen las ventas ni las
+  devoluciones de un turno que sigue abierto (con ellas se deduciría lo esperado en caja); el reporte lo avisa en
+  `notas`.
+- **Ventas netas.** Los reportes de ventas restan lo devuelto (unidades, venta neta, costo y margen) y lo muestran
+  en la columna «Devoluciones». La devolución resta el día en que se ejecutó, a quien hizo la venta original y a
+  su sucursal, aunque se haya ejecutado en otra; el dinero (reporte de cobros), en cambio, sale de la sucursal
+  donde se ejecutó. El número de ventas no baja: devolver no borra la factura. Lo devuelto defectuoso aparece
+  además en el reporte de mermas.
 - **Montos y fechas.** Como en el resto de la API: los montos son texto con 2 decimales y las fechas con hora,
   instantes ISO. En Excel van como números y fechas; el PDF es tamaño carta (horizontal si la tabla es ancha).
 

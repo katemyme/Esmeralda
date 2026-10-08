@@ -26,18 +26,52 @@ interface Contexto {
   /** Tiene CAJA_VER_DIFERENCIAS: sus reportes incluyen las ventas de los turnos abiertos. */
   veTurnosAbiertos: boolean;
   veBodega: boolean;
+  /** Tiene DEVOLUCIONES_APROBAR (el administrador): ve el nombre y el teléfono de los clientes. */
+  veClientes: boolean;
 }
 
 /** Fila de una consulta con `grouping sets`: la de totales llega marcada con es_total = 1. */
 type FilaAgrupada = Fila & { es_total: number };
 
-const NOTA_TURNOS_ABIERTOS = 'No incluye las ventas de los turnos de caja que siguen abiertos.';
+const NOTA_TURNOS_ABIERTOS =
+  'No incluye las ventas ni las devoluciones de los turnos de caja que siguen abiertos.';
+
+// Columnas de v_ventas_linea; v_devoluciones_linea trae las mismas, con los valores en negativo
+const COLUMNAS_LINEA = [
+  'venta_id',
+  'detalle_id',
+  'numero',
+  'fecha',
+  'fecha_local',
+  'dia',
+  'sucursal_id',
+  'sucursal',
+  'vendedor_id',
+  'vendedor',
+  'categoria_id',
+  'categoria',
+  'producto_id',
+  'producto',
+  'tipo',
+  'variante_id',
+  'sku',
+  'variante',
+  'cantidad',
+  'precio_lista',
+  'precio_unitario',
+  'sobreprecio',
+  'subtotal_linea',
+  'venta_neta',
+  'costo',
+  'margen',
+].map((columna) => sql.ref(`x.${columna}`));
 
 // Medidas comunes de los reportes de ventas (ver `medidas()`)
 const MEDIDAS: ColumnaDefinida[] = [
   { clave: 'ventas', titulo: 'Ventas', tipo: 'entero' },
   { clave: 'unidades', titulo: 'Unidades', tipo: 'entero' },
   { clave: 'descuentos', titulo: 'Descuentos', tipo: 'monto' },
+  { clave: 'devoluciones', titulo: 'Devoluciones', tipo: 'monto' },
   { clave: 'venta_neta', titulo: 'Venta neta', tipo: 'monto' },
   { clave: 'sobreprecio', titulo: 'Sobreprecio', tipo: 'monto' },
   { clave: 'ticket_promedio', titulo: 'Ticket promedio', tipo: 'monto' },
@@ -47,17 +81,22 @@ const MEDIDAS: ColumnaDefinida[] = [
 ];
 
 /**
- * Las medidas de un grupo de líneas de venta (`l`). La venta neta ya trae prorrateado el descuento
- * de la promoción. El costo y el margen solo salen con REPORTES_COSTOS: se ocultan en la consulta.
+ * Las medidas de un grupo de líneas (`l`): las de venta y, en negativo, las devueltas. Todo va
+ * neto de devoluciones (unidades, descuentos, venta neta, costo y margen); `devoluciones` dice
+ * cuánto se restó. Las ventas se cuentan sin las devoluciones: devolver no borra la factura. La
+ * venta neta ya trae prorrateado el descuento de la promoción. El costo y el margen solo salen
+ * con REPORTES_COSTOS: se ocultan en la consulta.
  */
 function medidas(costos: RawBuilder<boolean>): RawBuilder<unknown> {
+  const ventas = sql`count(distinct l.venta_id) filter (where not l.es_devolucion)`;
   return sql`
-    count(distinct l.venta_id)::integer as ventas,
+    ${ventas}::integer as ventas,
     coalesce(sum(l.cantidad), 0)::integer as unidades,
     round(coalesce(sum(l.subtotal_linea) - sum(l.venta_neta), 0), 2) as descuentos,
+    round(coalesce(-sum(l.venta_neta) filter (where l.es_devolucion), 0), 2) as devoluciones,
     round(coalesce(sum(l.venta_neta), 0), 2) as venta_neta,
     round(coalesce(sum(l.sobreprecio), 0), 2) as sobreprecio,
-    round(sum(l.venta_neta) / nullif(count(distinct l.venta_id), 0), 2) as ticket_promedio,
+    round(sum(l.venta_neta) / nullif(${ventas}, 0), 2) as ticket_promedio,
     case when ${costos} then round(coalesce(sum(l.costo), 0), 2) end as costo,
     case when ${costos} then round(coalesce(sum(l.margen), 0), 2) end as margen,
     case when ${costos} then round(100 * sum(l.margen) / nullif(sum(l.venta_neta), 0), 1) end
@@ -76,6 +115,9 @@ function separar(filas: FilaAgrupada[]): { filas: Fila[]; totales: Fila | null }
  * Qué ve cada quien lo decide la base en la propia consulta:
  * - las ventas que entran a un reporte las da fn_ventas_reporte (sus sucursales y, sin
  *   CAJA_VER_DIFERENCIAS, solo turnos ya cerrados: el arqueo es a ciegas);
+ * - las ventas van netas de devoluciones (B8): las devoluciones ejecutadas en el rango las da
+ *   fn_devoluciones_reporte, con las mismas reglas, y restan el día en que se ejecutaron, a quien
+ *   hizo la venta original y a su sucursal (el efectivo, en cambio, sale de donde se ejecutó);
  * - el costo y el margen se ocultan sin REPORTES_COSTOS; la cantidad de la bodega, sin permiso
  *   para verla; lo demás se limita a las sucursales del usuario (fn_puede_operar_sucursal).
  */
@@ -137,6 +179,7 @@ export class ReportesService {
       ventas: 0,
       unidades: 0,
       descuentos: '0.00',
+      devoluciones: '0.00',
       venta_neta: '0.00',
       sobreprecio: '0.00',
       ticket_promedio: null,
@@ -194,19 +237,36 @@ export class ReportesService {
     ]);
   }
 
-  /** Lo cobrado por método de pago y moneda. El vuelto ya está restado del efectivo en córdobas. */
+  /**
+   * El dinero que entró y salió, por método de pago y moneda. El vuelto ya está restado del
+   * efectivo en córdobas. El "saldo por cambio" no es dinero: no entra. Lo devuelto sale aparte y en
+   * negativo, en la sucursal donde se ejecutó la devolución: en efectivo (de la caja) y por
+   * transferencia (del administrador).
+   */
   async cobros(usuarioId: number, filtro: FiltroReporte): Promise<Reporte> {
     const c = await this.contexto(usuarioId, filtro);
+    const devueltas = sql`devolucion d where d.id in (${this.devolucionesDelReporte(c, 'CAJA')})`;
     const { rows } = await sql<FilaAgrupada>`
-      select grouping(m.id)::integer as es_total, m.nombre as metodo, p.moneda,
-             count(distinct p.venta_id)::integer as ventas,
-             case when grouping(m.id) = 0 then sum(p.monto)::numeric(14,2) end as monto,
-             coalesce(sum(p.monto_nio), 0)::numeric(14,2) as monto_nio
-        from venta_pago p
-        join metodo_pago m on m.id = p.metodo_pago_id
-       where p.venta_id in (${this.ventasDelReporte(c)})
-       group by grouping sets ((m.id, m.nombre, p.moneda), ())
-       order by 1, m.id, p.moneda`.execute(this.bd.db);
+      select grouping(x.orden)::integer as es_total, x.metodo, x.moneda,
+             case when grouping(x.orden) = 1 or x.orden < 1000
+                  then count(distinct x.venta_id)::integer end as ventas,
+             case when grouping(x.orden) = 0 then sum(x.monto)::numeric(14,2) end as monto,
+             coalesce(sum(x.monto_nio), 0)::numeric(14,2) as monto_nio
+        from (select m.id::integer as orden, m.nombre::text as metodo, p.moneda::text as moneda,
+                     p.venta_id, p.monto, p.monto_nio
+                from venta_pago p
+                join metodo_pago m on m.id = p.metodo_pago_id and not m.interno
+               where p.venta_id in (${this.ventasDelReporte(c)})
+               union all
+              select 1000, 'Devoluciones en efectivo', 'NIO', null, -d.monto_efectivo,
+                     -d.monto_efectivo
+                from ${devueltas} and d.monto_efectivo > 0
+               union all
+              select 1001, 'Devoluciones por transferencia', 'NIO', null, -d.monto_transferencia,
+                     -d.monto_transferencia
+                from ${devueltas} and d.monto_transferencia > 0) x
+       group by grouping sets ((x.orden, x.metodo, x.moneda), ())
+       order by 1, x.orden, x.moneda`.execute(this.bd.db);
     const { filas, totales } = separar(rows);
     return this.deVentas(c, 'cobros', 'Cobros por método de pago', [
       seccion(
@@ -368,7 +428,8 @@ export class ReportesService {
   /** Cada línea que se cobró por encima del precio establecido. */
   async sobreprecios(usuarioId: number, filtro: FiltroReporte): Promise<Reporte> {
     const c = await this.contexto(usuarioId, filtro);
-    const subidas = sql`${this.lineas(c)} where l.precio_unitario > l.precio_lista`;
+    const subidas = sql`${this.lineas(c)}
+                        where l.precio_unitario > l.precio_lista and not l.es_devolucion`;
     const [lineas, total] = await Promise.all([
       sql<Fila>`
         select l.fecha, l.numero, l.sucursal, l.vendedor,
@@ -453,6 +514,128 @@ export class ReportesService {
         'Por sucursal',
         [{ clave: 'sucursal', titulo: 'Sucursal', tipo: 'texto' }, ...columnas],
         porSucursal.rows,
+      ),
+    ]);
+  }
+
+  // --------------------------------------------------------------------- Devoluciones
+
+  /**
+   * Devoluciones y cambios ejecutados en el rango, con su motivo y cómo se le entregó al cliente.
+   * Entran las de las ventas de las sucursales del usuario y las que se ejecutaron en ellas. El
+   * nombre y el teléfono del cliente solo salen para el administrador (DEVOLUCIONES_APROBAR).
+   */
+  async devoluciones(usuarioId: number, filtro: FiltroReporte): Promise<Reporte> {
+    const c = await this.contexto(usuarioId, filtro);
+    const clientes = sql<boolean>`(select fn_tiene_permiso(${usuarioId}, 'DEVOLUCIONES_APROBAR'))`;
+    const delReporte = sql`d.id in (${this.devolucionesDelReporte(c, 'AMBAS')})`;
+    const tipo = sql`case d.tipo when 'CAMBIO' then 'Cambio' else 'Devolución' end`;
+    const [resumen, lista, productos] = await Promise.all([
+      sql<FilaAgrupada>`
+        select grouping(d.tipo)::integer as es_total, ${tipo} as tipo, count(*)::integer as cantidad,
+               coalesce(sum(d.monto_total), 0)::numeric(14,2) as monto_total,
+               coalesce(sum(d.monto_saldo), 0)::numeric(14,2) as monto_saldo,
+               coalesce(sum(d.monto_efectivo), 0)::numeric(14,2) as monto_efectivo,
+               coalesce(sum(d.monto_transferencia), 0)::numeric(14,2) as monto_transferencia,
+               coalesce(sum(d.monto_transferencia) filter (where d.transferida_at is null), 0)::numeric(14,2)
+                 as por_transferir
+          from devolucion d
+         where ${delReporte}
+         group by grouping sets ((d.tipo), ())
+         order by 1, d.tipo desc`.execute(this.bd.db),
+      sql<Fila>`
+        select d.ejecutada_at as fecha, d.numero, ${tipo} as tipo, v.numero as factura,
+               se.nombre as sucursal, sv.nombre as sucursal_venta, uv.nombre_completo as vendedor,
+               d.monto_total, d.monto_saldo, d.monto_efectivo, d.monto_transferencia,
+               d.transferencia_referencia as referencia, d.motivo,
+               case when ${clientes} then d.cliente_nombre end as cliente,
+               case when ${clientes} then d.cliente_telefono end as telefono
+          from devolucion d
+          join venta v on v.id = d.venta_id
+          join sucursal sv on sv.id = v.sucursal_id
+          join sucursal se on se.id = d.sucursal_id
+          join usuario uv on uv.id = v.vendedor_id
+         where ${delReporte}
+         order by d.ejecutada_at, d.id`.execute(this.bd.db),
+      sql<Fila & { cantidad: number }>`
+        select d.ejecutada_at as fecha, d.numero, v.numero as factura, va.sku,
+               pr.nombre || ' — ' || va.nombre as producto, cg.nombre as categoria, dd.cantidad,
+               case dd.estado_producto when 'DEFECTUOSO' then 'Defectuoso' else 'Bueno' end as estado,
+               dd.monto, d.motivo
+          from devolucion_detalle dd
+          join devolucion d on d.id = dd.devolucion_id
+          join venta v on v.id = d.venta_id
+          join venta_detalle vd on vd.id = dd.venta_detalle_id
+          join variante va on va.id = vd.variante_id
+          join producto pr on pr.id = va.producto_id
+          join categoria cg on cg.id = pr.categoria_id
+         where ${delReporte}
+         order by d.ejecutada_at, d.id, dd.id`.execute(this.bd.db),
+    ]);
+    const montos: ColumnaDefinida[] = [
+      { clave: 'monto_total', titulo: 'Devuelto C$', tipo: 'monto' },
+      { clave: 'monto_saldo', titulo: 'Aplicado a cambios C$', tipo: 'monto' },
+      { clave: 'monto_efectivo', titulo: 'En efectivo C$', tipo: 'monto' },
+      { clave: 'monto_transferencia', titulo: 'Por transferencia C$', tipo: 'monto' },
+    ];
+    const suma = separar(resumen.rows);
+    const titulo = 'Devoluciones y cambios';
+    return this.deVentas(c, 'devoluciones', titulo, [
+      seccion(
+        'resumen',
+        'Resumen',
+        [
+          { clave: 'tipo', titulo: 'Tipo', tipo: 'texto' },
+          { clave: 'cantidad', titulo: 'Cantidad', tipo: 'entero' },
+          ...montos,
+          { clave: 'por_transferir', titulo: 'Falta transferir C$', tipo: 'monto' },
+        ],
+        suma.filas,
+        suma.totales,
+        c.veCostos,
+      ),
+      seccion(
+        'devoluciones',
+        titulo,
+        [
+          { clave: 'fecha', titulo: 'Fecha', tipo: 'fecha_hora' },
+          { clave: 'numero', titulo: 'Número', tipo: 'texto' },
+          { clave: 'tipo', titulo: 'Tipo', tipo: 'texto' },
+          { clave: 'factura', titulo: 'Factura', tipo: 'texto' },
+          { clave: 'sucursal', titulo: 'Se ejecutó en', tipo: 'texto' },
+          { clave: 'sucursal_venta', titulo: 'Sucursal de la venta', tipo: 'texto' },
+          { clave: 'vendedor', titulo: 'Vendió', tipo: 'texto' },
+          ...montos,
+          { clave: 'referencia', titulo: 'Ref. transferencia', tipo: 'texto' },
+          { clave: 'motivo', titulo: 'Motivo', tipo: 'texto' },
+          { clave: 'cliente', titulo: 'Cliente', tipo: 'texto', visible: c.veClientes },
+          { clave: 'telefono', titulo: 'Teléfono', tipo: 'texto', visible: c.veClientes },
+        ],
+        lista.rows,
+        suma.totales,
+        c.veCostos,
+      ),
+      seccion(
+        'productos',
+        'Productos devueltos',
+        [
+          { clave: 'fecha', titulo: 'Fecha', tipo: 'fecha_hora' },
+          { clave: 'numero', titulo: 'Número', tipo: 'texto' },
+          { clave: 'factura', titulo: 'Factura', tipo: 'texto' },
+          { clave: 'sku', titulo: 'SKU', tipo: 'texto' },
+          { clave: 'producto', titulo: 'Producto', tipo: 'texto' },
+          { clave: 'categoria', titulo: 'Categoría', tipo: 'texto' },
+          { clave: 'cantidad', titulo: 'Cantidad', tipo: 'entero' },
+          { clave: 'estado', titulo: 'Estado', tipo: 'texto' },
+          { clave: 'monto', titulo: 'Devuelto C$', tipo: 'monto' },
+          { clave: 'motivo', titulo: 'Motivo', tipo: 'texto' },
+        ],
+        productos.rows,
+        {
+          cantidad: productos.rows.reduce((total, fila) => total + fila.cantidad, 0),
+          monto: suma.totales?.monto_total ?? '0.00',
+        },
+        c.veCostos,
       ),
     ]);
   }
@@ -979,18 +1162,38 @@ export class ReportesService {
   // -------------------------------------------------------------------------- Comunes
 
   /**
-   * Las líneas de venta del reporte, como tabla `l` de un FROM. Cuáles entran lo decide
-   * fn_ventas_reporte: completadas, del rango, de las sucursales del usuario y, sin
-   * CAJA_VER_DIFERENCIAS, solo de turnos ya cerrados.
+   * Las líneas del reporte, como tabla `l` de un FROM: las de venta y, con los valores en negativo
+   * y `es_devolucion`, las devueltas en el rango (con la fecha de la devolución, y el vendedor y la
+   * sucursal de la venta original). Cuáles entran lo deciden fn_ventas_reporte y
+   * fn_devoluciones_reporte: del rango, de las sucursales del usuario y, sin CAJA_VER_DIFERENCIAS,
+   * solo de turnos ya cerrados.
    */
   private lineas(c: Contexto): RawBuilder<unknown> {
-    return sql`(select vl.* from v_ventas_linea vl
-                 where vl.venta_id in (${this.ventasDelReporte(c)})) l`;
+    const columnas = sql.join(COLUMNAS_LINEA);
+    return sql`(select ${columnas}, false as es_devolucion
+                  from v_ventas_linea x
+                 where x.venta_id in (${this.ventasDelReporte(c)})
+                 union all
+                select ${columnas}, true
+                  from v_devoluciones_linea x
+                 where x.devolucion_id in (${this.devolucionesDelReporte(c)})) l`;
   }
 
   private ventasDelReporte(c: Contexto, estado = 'COMPLETADA'): RawBuilder<unknown> {
     return sql`select fn_ventas_reporte(${c.usuarioId}, ${c.desde}::date, ${c.hasta}::date,
                       ${c.sucursal?.id ?? null}::integer, ${estado})`;
+  }
+
+  /**
+   * Las devoluciones ejecutadas en el rango. `por` dice a qué sucursal se refiere el filtro: la de
+   * la venta original (ventas netas), la de la caja donde se ejecutó (dinero) o cualquiera.
+   */
+  private devolucionesDelReporte(
+    c: Contexto,
+    por: 'VENTA' | 'CAJA' | 'AMBAS' = 'VENTA',
+  ): RawBuilder<unknown> {
+    return sql`select fn_devoluciones_reporte(${c.usuarioId}, ${c.desde}::date, ${c.hasta}::date,
+                      ${c.sucursal?.id ?? null}::integer, ${por})`;
   }
 
   /** Sección de una consulta con `grouping sets`: separa la fila de totales. */
@@ -1046,6 +1249,7 @@ export class ReportesService {
       costos: boolean;
       turnos_abiertos: boolean;
       bodega: boolean;
+      clientes: boolean;
       sucursal_id: number | null;
       codigo: string | null;
       nombre: string | null;
@@ -1053,6 +1257,7 @@ export class ReportesService {
       select fn_tiene_permiso(${usuarioId}, 'REPORTES_COSTOS') as costos,
              fn_tiene_permiso(${usuarioId}, 'CAJA_VER_DIFERENCIAS') as turnos_abiertos,
              fn_ve_cantidad_bodega(${usuarioId}) as bodega,
+             fn_tiene_permiso(${usuarioId}, 'DEVOLUCIONES_APROBAR') as clientes,
              s.id as sucursal_id, s.codigo, s.nombre
         from (select 1) uno
         left join sucursal s on s.id = ${filtro.sucursal_id ?? null}::integer
@@ -1072,6 +1277,7 @@ export class ReportesService {
       veCostos: fila.costos,
       veTurnosAbiertos: fila.turnos_abiertos,
       veBodega: fila.bodega,
+      veClientes: fila.clientes,
     };
   }
 }
