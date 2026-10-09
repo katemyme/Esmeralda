@@ -36,6 +36,10 @@ const PUBLICAS = new Set([
   'GET /api/fotos/:archivo',
   'GET /api/auth/pin/usuarios',
   'POST /api/auth/pin',
+  // la cola de impresión la atiende el equipo con su cookie, sin la sesión de nadie
+  'GET /api/cola-impresion',
+  'POST /api/cola-impresion/:id/ticket',
+  'POST /api/cola-impresion/:id/impreso',
 ]);
 
 /**
@@ -90,6 +94,9 @@ const DESDE_EL_CELULAR = [
   'GET /api/ventas',
   'GET /api/ventas/:id',
   'POST /api/ventas',
+  // el ticket de esas ventas: compartirlo en PDF, o decir que no hace falta imprimirlo en la sucursal
+  'GET /api/ventas/:id/ticket-digital',
+  'POST /api/cola-impresion/:id/no-imprimir',
 ].sort();
 
 interface Capa {

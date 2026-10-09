@@ -7,6 +7,7 @@ import { BaseDatosModule } from './base-datos/base-datos.module';
 import { CajaModule } from './caja/caja.module';
 import { CargaInicialModule } from './carga-inicial/carga-inicial.module';
 import { CategoriasModule } from './categorias/categorias.module';
+import { ColaImpresionModule } from './cola-impresion/cola-impresion.module';
 import { FiltroErrores } from './comun/filtro-errores';
 import { ComprasModule } from './compras/compras.module';
 import { ConfiguracionModule } from './configuracion/configuracion.module';
@@ -69,6 +70,8 @@ import { VentasModule } from './ventas/ventas.module';
     TareasModule,
     // B8: devoluciones y cambios
     DevolucionesModule,
+    // F2a: la cola de impresión (tickets de las ventas hechas desde un celular)
+    ColaImpresionModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

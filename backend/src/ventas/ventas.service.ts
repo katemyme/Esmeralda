@@ -1,12 +1,14 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { sql } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { BaseDatosService } from '../base-datos/base-datos.service';
+import type { DB } from '../base-datos/tipos-bd';
 import { exigirTurnoParaVenta } from '../caja/sesion-caja';
 import { donde, patronContiene, referencia, veOrigen } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
 import { armarTicket, type FormatoTicket, type TicketListo } from '../exportacion/ticket-formato';
+import { ticketPdf } from '../exportacion/ticket-pdf';
 import type { DatosRegistrarVenta, FiltroVentas } from './esquemas';
 import { renglonesTicketVenta } from './ticket-venta';
 
@@ -83,6 +85,11 @@ export interface VentaDetalle extends VentaResumen {
   /** Si la venta nació de un cambio: la devolución que la pagó (en `pagos`, el "saldo por cambio"). */
   cambio: { devolucion_id: number; numero: string } | null;
   /**
+   * El ticket en la cola de impresión del equipo de la sucursal (solo las ventas hechas desde un
+   * celular): PENDIENTE, IMPRESO o NO_IMPRESO. null: la venta no pasó por la cola.
+   */
+  cola: { id: number; estado: string } | null;
+  /**
    * Encabezado y pie del ticket (parámetros NEGOCIO_NOMBRE, NEGOCIO_RUC y TICKET_LEYENDA). `qr` es
    * el texto del código QR que va al pie: el número de factura, para buscar la venta al devolver.
    */
@@ -129,9 +136,25 @@ interface FilaVenta {
   anulada_por: string | null;
   cambio_id: number | null;
   cambio_numero: string | null;
+  cola_id: number | null;
+  cola_estado: string | null;
   negocio: string | null;
   ruc: string | null;
   leyenda: string | null;
+}
+
+/**
+ * ¿El ticket lleva la orden de abrir la gaveta? Lo decide la base (fn_abre_gaveta): el parámetro
+ * encendido, el original y una venta cobrada en efectivo. Solo sirve a la impresión por USB.
+ */
+export async function abreGaveta(
+  bd: Kysely<DB>,
+  ventaId: number,
+  impresion: number,
+): Promise<boolean> {
+  const { rows } = await sql<{ abre: boolean }>`
+    select fn_abre_gaveta(${ventaId}, ${impresion}) as abre`.execute(bd);
+  return rows[0].abre;
 }
 
 function aResumen(f: FilaVenta): VentaResumen {
@@ -186,7 +209,22 @@ export class VentasService {
   async buscar(usuario: UsuarioAutenticado, id: number): Promise<VentaDetalle> {
     const [fila] = await this.consultar(usuario, [sql`v.id = ${id}`], 1);
     if (!fila) throw new NoEncontrado(`La venta ${id} no existe`);
+    return this.detalle(fila);
+  }
 
+  /**
+   * La venta para el ticket que imprime la cola del equipo de la sucursal: ahí no hay una persona
+   * con sesión (la cola sigue con la pantalla bloqueada), así que no se aplica el alcance de
+   * nadie. Qué tickets puede pedir cada equipo lo decide la base (fn_cola_tomar).
+   */
+  async paraLaCola(id: number): Promise<VentaDetalle> {
+    const [fila] = await this.consultar(null, [sql`v.id = ${id}`], 1);
+    if (!fila) throw new NoEncontrado(`La venta ${id} no existe`);
+    return this.detalle(fila);
+  }
+
+  private async detalle(fila: FilaVenta): Promise<VentaDetalle> {
+    const { id } = fila;
     const [lineas, piezas, pagos] = await Promise.all([
       sql<{
         id: number;
@@ -283,6 +321,10 @@ export class VentasService {
         fila.cambio_id !== null && fila.cambio_numero !== null
           ? { devolucion_id: fila.cambio_id, numero: fila.cambio_numero }
           : null,
+      cola:
+        fila.cola_id !== null && fila.cola_estado !== null
+          ? { id: fila.cola_id, estado: fila.cola_estado }
+          : null,
       ticket: {
         negocio: fila.negocio,
         ruc: fila.ruc,
@@ -365,23 +407,49 @@ export class VentasService {
         `Ticket ${venta.numero}`,
         formato,
       );
-      return { ...ticket, numero: venta.numero };
+      return {
+        ...ticket,
+        numero: venta.numero,
+        abrirGaveta: await abreGaveta(trx, id, impresion),
+      };
     });
   }
 
-  private async consultar(
+  /**
+   * El ticket digital: el mismo ticket en PDF, para compartirlo desde el celular (WhatsApp u otra
+   * aplicación). No es una impresión en papel: no se anota ni cuenta para el original y las
+   * copias, y lo dice arriba («Ticket digital»). Lo pide quien puede ver la venta.
+   */
+  async ticketDigital(
     usuario: UsuarioAutenticado,
+    id: number,
+  ): Promise<{ pdf: Buffer; numero: string }> {
+    const venta = await this.buscar(usuario, id); // una venta que el usuario no puede ver responde 404
+    const renglones = renglonesTicketVenta(venta, 1, { digital: true });
+    return { pdf: await ticketPdf(renglones, `Ticket ${venta.numero}`), numero: venta.numero };
+  }
+
+  /** `usuario` null: sin alcance de nadie (solo para el ticket que imprime la cola de un equipo). */
+  private async consultar(
+    usuario: UsuarioAutenticado | null,
     condiciones: Parameters<typeof donde>,
     limite: number,
   ): Promise<FilaVenta[]> {
-    const usuarioId = usuario.id;
+    const usuarioId = usuario?.id ?? null;
     // Desde el celular: solo sus ventas del turno que sigue abierto (el detalle y el ticket)
-    const alcance = sql`(case when (select fn_equipo_autorizado(${usuarioId},
-                                                               ${usuario.equipo?.id ?? null}::uuid))
-                              then (v.vendedor_id = ${usuarioId}
-                                    or ((select fn_tiene_permiso(${usuarioId}, 'VENTAS_VER_TODAS'))
-                                        and fn_puede_operar_sucursal(${usuarioId}, v.sucursal_id)))
-                              else (v.vendedor_id = ${usuarioId} and t.estado = 'ABIERTO') end)`;
+    const alcance = usuario
+      ? sql`(case when (select fn_equipo_autorizado(${usuarioId},
+                                                    ${usuario.equipo?.id ?? null}::uuid))
+                  then (v.vendedor_id = ${usuarioId}
+                        or ((select fn_tiene_permiso(${usuarioId}, 'VENTAS_VER_TODAS'))
+                            and fn_puede_operar_sucursal(${usuarioId}, v.sucursal_id)))
+                  else (v.vendedor_id = ${usuarioId} and t.estado = 'ABIERTO') end)`
+      : sql`true`;
+    // Desde dónde se hizo la venta solo lo ve el administrador
+    const origen =
+      usuarioId === null
+        ? sql`null::text`
+        : sql`case when ${veOrigen(usuarioId)} then v.origen end`;
     const { rows } = await sql<FilaVenta>`
       select v.id, v.numero, v.fecha, v.estado, v.turno_id,
              s.id as sucursal_id, s.codigo as sucursal_codigo, s.nombre as sucursal_nombre,
@@ -392,13 +460,14 @@ export class VentasService {
              v.subtotal, v.descuento, v.total, v.tipo_cambio,
              (select coalesce(sum(d.cantidad), 0)::integer
                 from venta_detalle d where d.venta_id = v.id) as articulos,
-             case when ${veOrigen(usuarioId)} then v.origen end as origen,
+             ${origen} as origen,
              (select coalesce(-sum(p.monto), 0)::numeric(12,2)
                 from venta_pago p where p.venta_id = v.id and p.es_vuelto) as vuelto,
              pm.id as promocion_id, pm.nombre as promocion,
              v.fecha_anulacion, v.motivo_anulacion,
              ua.id as anulada_por_id, ua.nombre_completo as anulada_por,
              dc.id as cambio_id, dc.numero as cambio_numero,
+             q.id as cola_id, q.estado as cola_estado,
              (select fn_parametro_txt('NEGOCIO_NOMBRE')) as negocio,
              (select fn_parametro_txt('NEGOCIO_RUC')) as ruc,
              (select fn_parametro_txt('TICKET_LEYENDA')) as leyenda
@@ -410,6 +479,7 @@ export class VentasService {
         left join promocion pm on pm.id = v.promocion_id
         left join usuario ua on ua.id = v.anulada_por
         left join devolucion dc on dc.venta_cambio_id = v.id
+        left join ticket_cola q on q.venta_id = v.id
         ${donde(alcance, ...condiciones)}
        order by v.id desc
        limit ${limite}`.execute(this.bd.db);

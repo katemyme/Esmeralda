@@ -113,4 +113,22 @@ export class VentasController {
     const ticket = await this.ventas.imprimir(usuario, id, consulta.formato);
     return entregarTicket(respuesta, ticket, `ticket-${ticket.numero}`);
   }
+
+  /**
+   * El ticket digital: el mismo ticket en PDF para compartirlo (WhatsApp u otra aplicación). No es
+   * una impresión en papel: no se anota ni lleva COPIA, y también se pide desde el celular.
+   */
+  @Get(':id/ticket-digital')
+  @RequierePermiso('VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS')
+  async ticketDigital(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+  ): Promise<StreamableFile> {
+    const { pdf, numero } = await this.ventas.ticketDigital(usuario, id);
+    return new StreamableFile(pdf, {
+      type: 'application/pdf',
+      disposition: `inline; filename="ticket-${numero}.pdf"`,
+      length: pdf.length,
+    });
+  }
 }

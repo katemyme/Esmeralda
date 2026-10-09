@@ -1992,7 +1992,132 @@ SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin
 SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'PANTALLA_BLOQUEO_MINUTOS', '31'), 'no puede ser mayor que 30');
 SELECT pg_temp.espera_error($q$UPDATE parametro SET maximo = 5 WHERE clave = 'NEGOCIO_NOMBRE'$q$, 'ck_parametro_maximo');
 
-\echo '\n=== 27. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
+\echo '\n=== 27. COLA DE IMPRESIÓN: EL TICKET DE UNA VENTA HECHA DESDE UN CELULAR SALE EN EL EQUIPO DE LA SUCURSAL'
+SELECT set_config('app.usuario_id', :'admin', false);
+-- Sucursal Celular A: su PC de la caja 1 y una tablet (sin caja propia). Sucursal B: su PC.
+SELECT fn_registrar_dispositivo(:admin, 'Tablet CEL', 'TABLET', :cel, encode(sha256('cel-tablet'), 'hex')) AS tab_cel \gset
+SELECT fn_movimiento_inventario(:admin, :cel, :dcad, 'AJUSTE_POSITIVO', 20, 'Existencias para las pruebas de la cola de impresión');
+SELECT fn_abrir_turno(:admin, :caja_cel1, 500, 0) AS t_cola1 \gset
+SELECT fn_abrir_turno(:admin, :caja_cel2, 300, 0) AS t_cola2 \gset
+SELECT pg_temp.afirma(NOT fn_cola_automatica() AND fn_parametro_txt('IMPRESION_ABRIR_GAVETA') = 'NO',
+                      'datos iniciales: la cola espera a que alguien toque el ticket y la gaveta no se abre sola');
+
+-- Solo la venta hecha desde el celular entra a la cola
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq1 \gset
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]') AS vq_equipo \gset
+SELECT fn_registrar_venta(:nuria, :t_cola2, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"TARJETA","monto":600,"referencia":"445566"}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq2 \gset
+SELECT id AS q1 FROM ticket_cola WHERE venta_id = :vq1 \gset
+SELECT id AS q2 FROM ticket_cola WHERE venta_id = :vq2 \gset
+SELECT pg_temp.afirma((SELECT count(*) = 2 FROM ticket_cola WHERE estado = 'PENDIENTE')
+                  AND (SELECT estado = 'NO_IMPRESO' AND motivo = 'TURNO_CERRADO' FROM ticket_cola WHERE venta_id = :v_cel)
+                  AND (SELECT estado = 'PENDIENTE' AND sucursal_id = :cel AND caja_id = :caja_cel1 AND turno_id = :t_cola1
+                              AND impresion IS NULL AND resuelta_at IS NULL FROM ticket_cola WHERE id = :q1)
+                  AND (SELECT caja_id = :caja_cel2 FROM ticket_cola WHERE id = :q2)
+                  AND NOT EXISTS (SELECT 1 FROM ticket_cola WHERE venta_id = :vq_equipo),
+                      'la venta del celular queda esperando en la cola de la caja de su turno; la hecha en el equipo, no');
+
+-- La cola es del equipo abierto: cerrado no la atiende
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM fn_cola_impresion(:'tab_cel')) AND NOT EXISTS (SELECT 1 FROM fn_cola_impresion(NULL)),
+                      'un equipo que nadie ha abierto hoy no atiende la cola');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_tomar(%L, %s)', :'tab_cel', :q1), 'equipo registrado de la sucursal que esté abierto');
+SELECT pg_temp.afirma(pg_temp.codigo_error(format('SELECT fn_cola_tomar(NULL, %s)', :q1)) = '42501', 'sin equipo no se pide un ticket de la cola (permiso denegado)');
+SELECT * FROM fn_crear_sesion(:nuria, encode(sha256('cola-abre-tablet'), 'hex'), :'tab_cel');
+SELECT * FROM fn_crear_sesion(:nuria, encode(sha256('cola-abre-pc1'), 'hex'), :'pc_cel1');
+SELECT * FROM fn_crear_sesion(:nuria, encode(sha256('cola-abre-ceb'), 'hex'), :'pc_ceb');
+SELECT pg_temp.afirma((SELECT array_agg(cola_id ORDER BY cola_id) = ARRAY[:q1, :q2]::bigint[] AND bool_and(NOT en_curso)
+                              AND min(numero) = (SELECT numero FROM venta WHERE id = :vq1) AND min(vendedor) = 'Nuria Celular'
+                         FROM fn_cola_impresion(:'tab_cel'))
+                  AND (SELECT array_agg(cola_id) = ARRAY[:q1]::bigint[] FROM fn_cola_impresion(:'pc_cel1'))
+                  AND NOT EXISTS (SELECT 1 FROM fn_cola_impresion(:'pc_ceb')),
+                      'la tablet atiende los tickets de su sucursal; la PC de caja, los de su caja; el equipo de otra sucursal, ninguno');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_tomar(%L, %s)', :'pc_ceb', :q1), 'no está en la cola de impresión de este equipo');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_tomar(%L, %s)', :'pc_cel1', :q2), 'no está en la cola de impresión de este equipo');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_tomar(%L, 999999)', :'tab_cel'), 'no está en la cola de impresión de este equipo');
+
+-- Pedir el ticket anota la impresión una sola vez: el reintento no es una copia
+SELECT pg_temp.espera_error(format('SELECT fn_cola_impreso(%L, %s)', :'tab_cel', :q1), 'todavía no se ha pedido');
+SELECT pg_temp.afirma(fn_cola_tomar(:'tab_cel', :q1) = 1, 'desde la cola sale el original');
+SELECT pg_temp.afirma(fn_cola_tomar(:'tab_cel', :q1) = 1 AND fn_cola_tomar(:'tab_cel', :q1) = 1
+                  AND (SELECT count(*) = 1 AND min(usuario_id) = :vera FROM ticket_impresion WHERE venta_id = :vq1)
+                  AND (SELECT estado = 'PENDIENTE' AND impresion = 1 AND dispositivo_id = :'tab_cel' FROM ticket_cola WHERE id = :q1),
+                      'reintentar (falló la impresora, se recargó la pantalla) recibe el mismo original y anota una sola impresión, a nombre de quien vendió');
+SELECT pg_temp.afirma((SELECT en_curso FROM fn_cola_impresion(:'pc_cel1') WHERE cola_id = :q1)
+                  AND (SELECT NOT en_curso FROM fn_cola_impresion(:'tab_cel') WHERE cola_id = :q1)
+                  AND pg_temp.codigo_error(format('SELECT fn_cola_tomar(%L, %s)', :'pc_cel1', :q1)) = '23001',
+                      'mientras un equipo lo imprime, el otro equipo de la sucursal lo ve en curso y no lo puede pedir');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_tomar(%L, %s)', :'pc_cel1', :q1), 'Otro equipo está imprimiendo ese ticket');
+UPDATE ticket_cola SET pedido_at = now() - interval '2 minutes' WHERE id = :q1;
+SELECT pg_temp.afirma(fn_cola_tomar(:'pc_cel1', :q1, :nuria) = 1
+                  AND (SELECT count(*) = 1 FROM ticket_impresion WHERE venta_id = :vq1),
+                      'si el primer equipo no terminó (pasó un minuto), el otro lo imprime: sigue siendo el original');
+SELECT fn_cola_impreso(:'pc_cel1', :q1, :nuria);
+SELECT fn_cola_impreso(:'pc_cel1', :q1);
+SELECT pg_temp.afirma((SELECT estado = 'IMPRESO' AND resuelta_por = :nuria AND resuelta_at IS NOT NULL AND motivo IS NULL
+                              AND dispositivo_id = :'pc_cel1' FROM ticket_cola WHERE id = :q1)
+                  AND NOT EXISTS (SELECT 1 FROM fn_cola_impresion(:'pc_cel1')),
+                      'impreso: sale de la cola con quién lo imprimió y en qué equipo; avisarlo dos veces no hace daño');
+SELECT pg_temp.afirma(pg_temp.codigo_error(format('SELECT fn_cola_tomar(%L, %s)', :'tab_cel', :q1)) = '23001', 'un ticket que ya salió de la cola no se vuelve a pedir');
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:vera, :vq1) = 2, 'reimprimirlo después, desde la venta, ya es una copia');
+SELECT pg_temp.espera_error(format('UPDATE ticket_cola SET estado = %L, resuelta_at = NULL WHERE id = %s', 'PENDIENTE', :q1), 'ya salió de la cola');
+SELECT pg_temp.espera_error(format('DELETE FROM ticket_cola WHERE id = %s', :q2), 'no se borran');
+SELECT pg_temp.espera_error(format('UPDATE ticket_cola SET venta_id = %s WHERE id = %s', :vq_equipo, :q2), 'no cambia de venta');
+
+-- «No imprimir»: quien vendió, o quien vende en un equipo de esa sucursal; queda quién
+SELECT pg_temp.espera_error(format('SELECT fn_cola_no_imprimir(%s, NULL, %s)', :vera, :q2), 'No puede quitar ese ticket');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_no_imprimir(%s, %L, %s)', :ana, :'tab_cel', :q2), 'No puede quitar ese ticket');
+SELECT pg_temp.espera_error(format('SELECT fn_cola_no_imprimir(%s, %L, %s)', :nuria, :'pc_ceb', 999999), 'no está en la cola de impresión');
+SELECT fn_cola_no_imprimir(:nuria, NULL, :q2);
+SELECT pg_temp.afirma((SELECT estado = 'NO_IMPRESO' AND motivo = 'A_MANO' AND resuelta_por = :nuria AND impresion IS NULL FROM ticket_cola WHERE id = :q2)
+                  AND NOT EXISTS (SELECT 1 FROM ticket_impresion WHERE venta_id = :vq2),
+                      'quien vendió lo quita desde su celular (el cliente no quiere papel): no se anota ninguna impresión');
+SELECT pg_temp.afirma(pg_temp.codigo_error(format('SELECT fn_cola_no_imprimir(%s, NULL, %s)', :nuria, :q2)) = '23001'
+                  AND pg_temp.codigo_error(format('SELECT fn_cola_impreso(%L, %s)', :'tab_cel', :q2)) = '23001',
+                      'un ticket que se quitó de la cola ya no se quita otra vez ni se da por impreso');
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq3 \gset
+SELECT id AS q3 FROM ticket_cola WHERE venta_id = :vq3 \gset
+SELECT fn_cola_no_imprimir(:nuria, :'tab_cel', :q3);
+SELECT pg_temp.afirma((SELECT estado = 'NO_IMPRESO' AND resuelta_por = :nuria FROM ticket_cola WHERE id = :q3),
+                      'en el equipo de la sucursal lo quita cualquiera que venda ahí');
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:vera, :vq3) = 1, 'un ticket que se quitó sin pedirlo se puede imprimir después desde la venta: es el original');
+
+-- Imprimirlo desde la venta, anular la venta o cerrar el turno lo sacan de la cola
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq4 \gset
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq5 \gset
+SELECT fn_registrar_venta(:vera, :t_cola1, format('[{"variante_id":%s,"cantidad":1}]', :dcad)::jsonb,
+  '[{"metodo":"EFECTIVO","monto":600}]', NULL, NULL, NULL, NULL, NULL, NULL, 'CELULAR') AS vq6 \gset
+SELECT pg_temp.afirma(fn_registrar_impresion_venta(:nuria, :vq4) = 1, 'imprimirlo desde la venta, en el equipo, también es el original');
+SELECT pg_temp.afirma((SELECT estado = 'IMPRESO' AND resuelta_por = :nuria AND impresion IS NULL FROM ticket_cola WHERE venta_id = :vq4),
+                      'y lo saca de la cola: no sale dos veces');
+SELECT fn_anular_venta(:nuria, :vq5, 'La clienta se arrepintió');
+SELECT pg_temp.afirma((SELECT estado = 'NO_IMPRESO' AND motivo = 'VENTA_ANULADA' AND resuelta_por IS NULL FROM ticket_cola WHERE venta_id = :vq5),
+                      'al anular la venta su ticket deja de esperar');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND min(venta_id) = :vq6 FROM fn_cola_impresion(:'tab_cel')), 'queda un ticket esperando');
+SELECT fn_cierre_forzado(:admin, :t_cola1, 'Cierre de las pruebas de la cola');
+SELECT pg_temp.afirma((SELECT estado = 'NO_IMPRESO' AND motivo = 'TURNO_CERRADO' AND resuelta_por IS NULL AND resuelta_at IS NOT NULL
+                         FROM ticket_cola WHERE venta_id = :vq6)
+                  AND NOT EXISTS (SELECT 1 FROM ticket_cola WHERE estado = 'PENDIENTE'),
+                      'al cerrar el turno, lo que quedaba en la cola se marca solo como no impreso');
+SELECT fn_cierre_forzado(:admin, :t_cola2, 'Cierre de las pruebas de la cola');
+
+-- Los dos parámetros: la cola automática y la gaveta
+SELECT pg_temp.espera_error(format('SELECT fn_set_parametro(%s, %L, %L)', :admin, 'IMPRESION_AUTOMATICA_COLA', 'A VECES'), 'Opciones: SI, NO');
+SELECT fn_set_parametro(:admin, 'IMPRESION_AUTOMATICA_COLA', 'SI');
+SELECT pg_temp.afirma(fn_cola_automatica(), 'con el parámetro en SI, la cola imprime sola');
+SELECT fn_set_parametro(:admin, 'IMPRESION_AUTOMATICA_COLA', 'NO');
+SELECT pg_temp.afirma(NOT fn_abre_gaveta(:vq_equipo, 1), 'la gaveta viene apagada');
+SELECT fn_set_parametro(:admin, 'IMPRESION_ABRIR_GAVETA', 'SI');
+SELECT pg_temp.afirma(fn_abre_gaveta(:vq_equipo, 1) AND NOT fn_abre_gaveta(:vq_equipo, 2)
+                  AND NOT fn_abre_gaveta(:vq2, 1) AND NOT fn_abre_gaveta(:vq5, 1) AND NOT fn_abre_gaveta(999999, 1),
+                      'encendida, se abre con el original de una venta cobrada en efectivo: no con una copia, ni con tarjeta, ni con una anulada');
+SELECT fn_set_parametro(:admin, 'IMPRESION_ABRIR_GAVETA', 'NO');
+
+\echo '\n=== 28. NUMERACIÓN DE FACTURAS Y DE DEVOLUCIONES: CORRELATIVO POR SUCURSAL, SIN SALTOS'
 SELECT pg_temp.afirma((SELECT sum(ultimo_numero_devolucion) FROM sucursal) = 5
                   AND NOT EXISTS (
                         SELECT 1 FROM sucursal s

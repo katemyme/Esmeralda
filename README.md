@@ -137,7 +137,7 @@ solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualqui
 
 | Desde el celular | Qué |
 |---|---|
-| Sí | Productos, precios, existencias y kardex; ver y recibir envíos; conteos; buscar una factura y solicitar su devolución (ver y cancelar las suyas); **vender**; los avisos de su sucursal; cambiar su contraseña |
+| Sí | Productos, precios, existencias y kardex; ver y recibir envíos; conteos; buscar una factura y solicitar su devolución (ver y cancelar las suyas); **vender**, compartir el ticket digital de sus ventas y quitar su ticket de la cola de impresión; los avisos de su sucursal; cambiar su contraseña |
 | No | Abrir o cerrar la caja, movimientos de efectivo, anular, ejecutar devoluciones, imprimir en papel, registrar el tipo de cambio, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
 
 - **Vender.** La venta entra al turno abierto de su sucursal, con las reglas de siempre, y queda a su nombre.
@@ -150,6 +150,9 @@ solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualqui
 - **Sus ventas.** Desde el celular `GET /api/ventas` y `GET /api/ventas/:id` solo traen las ventas que esa
   persona hizo en un turno que sigue abierto, tenga el permiso que tenga; cerrado el turno, responden vacío y 404.
   La lista no trae sumas: el arqueo sigue a ciegas.
+- **El ticket.** Desde el celular no se imprime en papel. El ticket de la venta queda en la cola de impresión
+  del equipo de la sucursal (ver «Cola de impresión y ticket digital») y, además, se puede compartir en PDF
+  (`GET /api/ventas/:id/ticket-digital`).
 - **Solicitar una devolución.** La sucursal que la solicita es la de la venta si trabaja en ella, o la única
   en la que trabaja; quien trabaja en varias envía `sucursal_id`.
 - **Rutas que son solo del equipo** aunque su permiso valga en el celular: `GET /api/caja/turno`,
@@ -275,6 +278,7 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `GET /api/ventas` · `GET /api/ventas/:id` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, solo las propias: `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` |
 | `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
 | `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF para el rollo de 80 mm |
+| `GET /api/ventas/:id/ticket-digital` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El mismo ticket en PDF para compartirlo; no cuenta como impresión. También desde el celular |
 | `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
 | `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
 | `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los registrados, un día por fila del más reciente al más antiguo, con quién dejó cada valor y, en `registros`, todo lo que se registró ese día (el primero y sus correcciones): `?desde=&hasta=&limite=` |
@@ -300,13 +304,53 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   sin imprimir a cada lado) y tan alta como su contenido. Cada impresión queda anotada: la primera es el
   original y las siguientes llevan la palabra **COPIA**; la cabecera `X-Ticket-Impresion` dice cuál es (1, 2, 3…).
   El de cierre sale reducido o completo según el permiso, igual que su versión en datos.
-- **Tickets por USB.** Las mismas rutas con `?formato=renglones` devuelven `{ impresion, renglones }`: el
-  contenido del ticket renglón por renglón (`texto`, `par`, `qr`, `linea`, `espacio`), para que la pantalla lo
-  traduzca a ESC/POS y lo mande directo a la impresora. Cuenta igual como impresión (original o copia).
+- **Tickets por USB.** Las mismas rutas con `?formato=renglones` devuelven `{ impresion, renglones,
+  abrir_gaveta }`: el contenido del ticket renglón por renglón (`texto`, `par`, `qr`, `linea`, `espacio`), para
+  que la pantalla lo traduzca a ESC/POS y lo mande directo a la impresora. Cuenta igual como impresión (original
+  o copia).
+- **Gaveta.** `abrir_gaveta` llega en `true` cuando la pantalla debe mandar el pulso que abre la gaveta junto con
+  el ticket: con el parámetro `IMPRESION_ABRIR_GAVETA` en `SI` (viene en `NO`), en el original de una venta
+  cobrada, al menos en parte, en efectivo. Nunca en una copia. En una PC de caja la abre el driver de la impresora.
 - **Tipo de cambio.** Si el valor se aleja del último registrado más que el parámetro `TIPO_CAMBIO_VARIACION_MAX`
   (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
   El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango
   responde 422 aunque venga confirmado.
+
+### Cola de impresión y ticket digital
+
+Desde un celular no se imprime en papel. El ticket de una venta hecha ahí (`origen: CELULAR`) entra solo a la
+**cola de impresión** del equipo registrado de su sucursal, que lo imprime con un toque («Tickets por imprimir»)
+o sin que nadie lo toque, con el parámetro `IMPRESION_AUTOMATICA_COLA` en `SI` (viene en `NO`).
+
+La cola la atiende **el equipo, no una persona**: sigue imprimiendo con la pantalla bloqueada, mientras el equipo
+esté abierto (alguien entró hoy en él con su contraseña). Por eso sus tres primeras rutas no piden sesión: se
+identifican con la cookie del equipo (`esmeralda_equipo`), como la pantalla de PIN.
+
+| Ruta | Quién | Qué hace |
+|---|---|---|
+| `GET /api/cola-impresion` | El equipo (su cookie) | `{ atendida, automatica, tickets: [{ id, venta_id, numero, fecha, vendedor, en_curso }] }`. Fuera de un equipo registrado y abierto: `atendida: false`, sin tickets. Sin montos |
+| `POST /api/cola-impresion/:id/ticket` | El equipo | El ticket para imprimirlo ahí: PDF o, con `?formato=renglones`, para la impresora por USB |
+| `POST /api/cola-impresion/:id/impreso` | El equipo | Ya salió por la impresora: deja de esperar (204). Repetirlo no hace daño |
+| `POST /api/cola-impresion/:id/no-imprimir` | Con sesión | «No imprimir»: sale de la cola sin imprimirse y queda quién lo decidió (204) |
+
+- **Qué ve cada equipo.** Una PC de caja, los tickets de su caja; la tablet o el celular del negocio, los de su
+  sucursal. El ticket de otra sucursal responde 422; uno que no existe, 404; sin la cookie de un equipo, 403
+  `EQUIPO_REQUERIDO`; con el equipo cerrado, 403.
+- **Es el original, y el reintento también.** La impresión se anota la primera vez que el equipo pide el ticket.
+  Si la impresora falla o la pantalla se recarga, pedirlo otra vez devuelve el mismo (`impresion: 1`), nunca una
+  copia. Cuando el equipo avisa de que salió (`/impreso`) el ticket deja la cola; reimprimirlo después, desde la
+  venta, ya es **COPIA**.
+- **Dos equipos en la misma sucursal.** Mientras uno imprime un ticket, el otro lo ve con `en_curso: true` y no
+  lo puede pedir (409) durante un minuto: así no sale dos veces.
+- **«No imprimir».** Lo decide quien hizo la venta (desde su celular, si el cliente no quiere papel) o quien vende
+  en un equipo registrado de esa sucursal; cualquier otra persona recibe 403.
+- **Lo que sale solo de la cola.** Si el ticket se imprime desde la venta en el equipo (`/api/ventas/:id/imprimir`)
+  queda como impreso. Si la venta se anula, o si el turno se cierra con el ticket todavía esperando, queda como
+  no impreso. La venta lo dice en `cola: { id, estado }` (`PENDIENTE`, `IMPRESO` o `NO_IMPRESO`; `null` si no pasó
+  por la cola), para que la vendedora vea en su celular si su ticket ya salió.
+- **Ticket digital.** `GET /api/ventas/:id/ticket-digital` entrega el mismo ticket en PDF para compartirlo
+  (WhatsApp u otra aplicación). Dice «Ticket digital» arriba, nunca lleva COPIA y no se anota como impresión.
+  Lo pide quien puede ver la venta: desde el celular, solo las propias del turno abierto.
 
 ### Devoluciones y cambios
 

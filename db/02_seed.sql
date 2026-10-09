@@ -148,7 +148,11 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('DEVOLUCION_APROBADA_DIAS', '3', 'NUMERO', NULL, false, 1,
    'Días que tiene una devolución aprobada para ejecutarse en caja; después se cancela sola.'),
   ('PANTALLA_BLOQUEO_MINUTOS', '3', 'NUMERO', NULL, false, 1,
-   'Minutos sin tocar la pantalla tras los que un equipo registrado se bloquea y pide el PIN (de 1 a 30).');
+   'Minutos sin tocar la pantalla tras los que un equipo registrado se bloquea y pide el PIN (de 1 a 30).'),
+  ('IMPRESION_AUTOMATICA_COLA', 'NO', 'OPCION', ARRAY['SI','NO'], false, NULL,
+   'Tickets de las ventas hechas desde un celular: SI = el equipo de la sucursal los imprime solo; NO = esperan en «Tickets por imprimir» hasta que alguien los toca.'),
+  ('IMPRESION_ABRIR_GAVETA', 'NO', 'OPCION', ARRAY['SI','NO'], false, NULL,
+   'SI = al imprimir por USB el ticket de una venta cobrada en efectivo se abre la gaveta conectada a la impresora. En una PC de caja lo decide el driver de la impresora.');
 UPDATE parametro SET maximo = 30 WHERE clave = 'PANTALLA_BLOQUEO_MINUTOS';
 
 -- ---------------------------------------------------------------------

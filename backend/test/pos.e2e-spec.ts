@@ -638,6 +638,7 @@ describe('POS y caja', () => {
         vuelto: '300.00',
         anulacion: null,
         cambio: null,
+        cola: null, // hecha en el equipo: su ticket no pasa por la cola de impresión
         ticket: {
           negocio: 'Esmeralda Experience',
           ruc: null,

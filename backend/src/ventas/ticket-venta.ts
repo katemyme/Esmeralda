@@ -6,9 +6,14 @@ import type { VentaDetalle } from './ventas.service';
  * Lo que lleva impreso el ticket de una venta, renglón por renglón. `impresion` es cuántas veces
  * se ha impreso contando esta: la primera es el original y desde la segunda lleva la palabra COPIA.
  * Una venta anulada lo dice arriba, con quién la anuló y por qué. Nunca lleva costos. Al pie va el
- * número de factura en un código QR.
+ * número de factura en un código QR. `digital`: es el PDF que se comparte desde el celular, no una
+ * impresión en papel; lo dice arriba y nunca lleva COPIA.
  */
-export function renglonesTicketVenta(venta: VentaDetalle, impresion: number): Renglon[] {
+export function renglonesTicketVenta(
+  venta: VentaDetalle,
+  impresion: number,
+  { digital = false }: { digital?: boolean } = {},
+): Renglon[] {
   const renglones: Renglon[] = [];
   const centrado = (texto: string, destacado = false) =>
     renglones.push({ tipo: 'texto', texto, centrado: true, negrita: destacado, grande: destacado });
@@ -23,7 +28,8 @@ export function renglonesTicketVenta(venta: VentaDetalle, impresion: number): Re
   if (venta.ticket.direccion) centrado(venta.ticket.direccion);
   if (venta.ticket.telefono) centrado(`Tel. ${venta.ticket.telefono}`);
   linea();
-  if (impresion > 1) centrado('COPIA', true);
+  if (digital) centrado('Ticket digital');
+  else if (impresion > 1) centrado('COPIA', true);
   if (venta.estado === 'ANULADA') centrado('VENTA ANULADA', true);
 
   par(`Factura ${venta.numero}`, fechaHora(venta.fecha));

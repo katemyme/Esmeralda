@@ -470,6 +470,22 @@ export interface Sucursal {
   updated_at: Generated<Timestamp>;
 }
 
+export interface TicketCola {
+  caja_id: number;
+  creada_at: Generated<Timestamp>;
+  dispositivo_id: string | null;
+  estado: Generated<string>;
+  id: Generated<number>;
+  impresion: number | null;
+  motivo: string | null;
+  pedido_at: Timestamp | null;
+  resuelta_at: Timestamp | null;
+  resuelta_por: number | null;
+  sucursal_id: number;
+  turno_id: number;
+  venta_id: number;
+}
+
 export interface TicketImpresion {
   devolucion_id: number | null;
   id: Generated<number>;
@@ -1018,6 +1034,7 @@ export interface DB {
   sesion: Sesion;
   stock_sucursal: StockSucursal;
   sucursal: Sucursal;
+  ticket_cola: TicketCola;
   ticket_impresion: TicketImpresion;
   tipo_cambio: TipoCambio;
   turno_caja: TurnoCaja;

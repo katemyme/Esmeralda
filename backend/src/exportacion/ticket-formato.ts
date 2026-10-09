@@ -23,11 +23,15 @@ export interface TicketListo {
   renglones: Renglon[];
   /** null cuando se pidieron los renglones. */
   pdf: Buffer | null;
+  /** Solo el ticket de venta: si la impresora por USB debe abrir la gaveta (fn_abre_gaveta). */
+  abrirGaveta?: boolean;
 }
 
 export interface TicketEnRenglones {
   impresion: number;
   renglones: Renglon[];
+  /** La pantalla manda el pulso de la gaveta junto con el ticket (en la PC de caja lo hace el driver). */
+  abrir_gaveta: boolean;
 }
 
 /** Arma el ticket en el formato pedido (el PDF solo se dibuja si hace falta). */
@@ -51,7 +55,13 @@ export function entregarTicket(
   archivo: string,
 ): StreamableFile | TicketEnRenglones {
   respuesta.setHeader('X-Ticket-Impresion', String(ticket.impresion));
-  if (!ticket.pdf) return { impresion: ticket.impresion, renglones: ticket.renglones };
+  if (!ticket.pdf) {
+    return {
+      impresion: ticket.impresion,
+      renglones: ticket.renglones,
+      abrir_gaveta: ticket.abrirGaveta === true,
+    };
+  }
   return new StreamableFile(ticket.pdf, {
     type: 'application/pdf',
     disposition: `inline; filename="${archivo}.pdf"`,

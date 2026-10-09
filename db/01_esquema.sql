@@ -4791,6 +4791,9 @@ BEGIN
   END IF;
   INSERT INTO ticket_impresion (venta_id, usuario_id) VALUES (p_venta, p_usuario);
   SELECT count(*) INTO n FROM ticket_impresion WHERE venta_id = p_venta;
+  -- Si esperaba en la cola de impresión (venta hecha desde un celular), ya salió: no se repite
+  UPDATE ticket_cola SET estado = 'IMPRESO', resuelta_at = now(), resuelta_por = p_usuario
+   WHERE venta_id = p_venta AND estado = 'PENDIENTE';
   RETURN n;
 END $$;
 
@@ -4815,6 +4818,212 @@ BEGIN
   INSERT INTO ticket_impresion (turno_id, usuario_id) VALUES (p_turno, p_usuario);
   SELECT count(*) INTO n FROM ticket_impresion WHERE turno_id = p_turno;
   RETURN n;
+END $$;
+
+-- ¿Se abre la gaveta al imprimir este ticket de venta? Solo con el parámetro IMPRESION_ABRIR_GAVETA
+-- en SI, en el original (no en una copia) y si la venta se cobró, al menos en parte, en efectivo.
+-- La impresora por USB recibe el pulso junto con el ticket; en la PC de caja lo decide su driver.
+CREATE OR REPLACE FUNCTION fn_abre_gaveta(p_venta bigint, p_impresion integer) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(fn_parametro_txt('IMPRESION_ABRIR_GAVETA'), 'NO') = 'SI'
+     AND p_impresion = 1
+     AND EXISTS (SELECT 1 FROM venta v WHERE v.id = p_venta AND v.estado = 'COMPLETADA')
+     AND EXISTS (SELECT 1 FROM venta_pago p JOIN metodo_pago m ON m.id = p.metodo_pago_id
+                  WHERE p.venta_id = p_venta AND m.es_efectivo AND NOT p.es_vuelto)
+$$;
+
+-- ---------------------------------------------------------------------
+-- 11.1 Cola de impresión (frontend F2a)
+--   · Desde un celular no se imprime en papel: el ticket de una venta hecha ahí queda en la cola
+--     del equipo registrado de su sucursal («Tickets por imprimir»). Sale con un toque, o solo con
+--     el parámetro IMPRESION_AUTOMATICA_COLA en SI.
+--   · La cola es del equipo, no de una persona: sigue imprimiendo con la pantalla bloqueada,
+--     mientras el equipo esté abierto (alguien entró hoy en él con su contraseña). Por eso sus
+--     funciones reciben el equipo y no piden sesión.
+--   · Una PC de caja atiende los tickets de su caja; la tablet o el celular del negocio, los de
+--     su sucursal.
+--   · Imprimir desde la cola es el original, no una copia. La impresión se anota una sola vez al
+--     pedir el ticket: si la impresora falla o la pantalla se recarga, el reintento recibe la misma.
+--   · Cada ticket termina IMPRESO o NO_IMPRESO: alguien tocó «No imprimir» (queda quién), la venta
+--     se anuló, o el turno se cerró con el ticket todavía en la cola.
+-- ---------------------------------------------------------------------
+CREATE TABLE ticket_cola (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  venta_id        bigint      NOT NULL UNIQUE REFERENCES venta(id),
+  sucursal_id     integer     NOT NULL REFERENCES sucursal(id),
+  caja_id         integer     NOT NULL REFERENCES caja(id),
+  turno_id        bigint      NOT NULL REFERENCES turno_caja(id),
+  estado          varchar(10) NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('PENDIENTE','IMPRESO','NO_IMPRESO')),
+  creada_at       timestamptz NOT NULL DEFAULT now(),
+  impresion       integer,                                  -- cuál impresión de la venta le tocó (1 = original)
+  dispositivo_id  uuid        REFERENCES dispositivo(id),   -- el último equipo que lo pidió
+  pedido_at       timestamptz,
+  resuelta_at     timestamptz,
+  resuelta_por    bigint      REFERENCES usuario(id),       -- NULL: el equipo solo, o el sistema
+  motivo          varchar(15) CHECK (motivo IN ('A_MANO','VENTA_ANULADA','TURNO_CERRADO')),
+  CONSTRAINT ck_cola_resuelta CHECK ((estado = 'PENDIENTE') = (resuelta_at IS NULL)),
+  CONSTRAINT ck_cola_motivo CHECK ((estado = 'NO_IMPRESO') = (motivo IS NOT NULL)),
+  CONSTRAINT ck_cola_a_mano CHECK (motivo IS DISTINCT FROM 'A_MANO' OR resuelta_por IS NOT NULL)
+);
+CREATE INDEX ix_cola_pendiente ON ticket_cola (sucursal_id, id) WHERE estado = 'PENDIENTE';
+CREATE INDEX ix_cola_turno ON ticket_cola (turno_id) WHERE estado = 'PENDIENTE';
+
+-- Un ticket solo sale de la cola una vez; no se borra ni cambia de venta
+CREATE OR REPLACE FUNCTION fn_cola_proteger() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Los tickets de la cola de impresión no se borran';
+  END IF;
+  IF OLD.estado <> 'PENDIENTE' THEN
+    RAISE EXCEPTION 'Ese ticket ya salió de la cola de impresión';
+  END IF;
+  IF (NEW.venta_id, NEW.sucursal_id, NEW.caja_id, NEW.turno_id, NEW.creada_at)
+     IS DISTINCT FROM (OLD.venta_id, OLD.sucursal_id, OLD.caja_id, OLD.turno_id, OLD.creada_at) THEN
+    RAISE EXCEPTION 'Un ticket de la cola de impresión no cambia de venta ni de caja';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_cola_proteger BEFORE UPDATE OR DELETE ON ticket_cola
+  FOR EACH ROW EXECUTE FUNCTION fn_cola_proteger();
+
+-- La venta hecha desde un celular entra sola a la cola de la caja de su turno
+CREATE OR REPLACE FUNCTION fn_venta_a_la_cola() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO ticket_cola (venta_id, sucursal_id, caja_id, turno_id)
+  SELECT NEW.id, NEW.sucursal_id, t.caja_id, NEW.turno_id FROM turno_caja t WHERE t.id = NEW.turno_id;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER tg_venta_a_la_cola AFTER INSERT ON venta
+  FOR EACH ROW WHEN (NEW.origen = 'CELULAR') EXECUTE FUNCTION fn_venta_a_la_cola();
+
+-- Lo que quede esperando deja de esperar cuando la venta se anula o cuando su turno se cierra
+CREATE OR REPLACE FUNCTION fn_cola_soltar() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'venta' THEN
+    UPDATE ticket_cola SET estado = 'NO_IMPRESO', motivo = 'VENTA_ANULADA', resuelta_at = now()
+     WHERE venta_id = NEW.id AND estado = 'PENDIENTE';
+  ELSE
+    UPDATE ticket_cola SET estado = 'NO_IMPRESO', motivo = 'TURNO_CERRADO', resuelta_at = now()
+     WHERE turno_id = NEW.id AND estado = 'PENDIENTE';
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER tg_venta_anulada_cola AFTER UPDATE OF estado ON venta
+  FOR EACH ROW WHEN (NEW.estado = 'ANULADA' AND OLD.estado <> 'ANULADA') EXECUTE FUNCTION fn_cola_soltar();
+CREATE TRIGGER tg_turno_cerrado_cola AFTER UPDATE OF estado ON turno_caja
+  FOR EACH ROW WHEN (NEW.estado = 'CERRADO' AND OLD.estado <> 'CERRADO') EXECUTE FUNCTION fn_cola_soltar();
+
+-- ¿La cola de este equipo imprime sola?
+CREATE OR REPLACE FUNCTION fn_cola_automatica() RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(fn_parametro_txt('IMPRESION_AUTOMATICA_COLA'), 'NO') = 'SI'
+$$;
+
+-- Los tickets que esperan en la cola de un equipo, del más antiguo al más nuevo. Con el equipo
+-- cerrado (o desactivado) la cola no se atiende: no devuelve nada. `en_curso`: otro equipo de la
+-- misma sucursal lo pidió hace menos de un minuto (lo está imprimiendo).
+CREATE OR REPLACE FUNCTION fn_cola_impresion(p_dispositivo uuid)
+RETURNS TABLE (cola_id bigint, venta_id bigint, numero text, fecha timestamptz, vendedor text, en_curso boolean)
+LANGUAGE sql STABLE AS $$
+  SELECT q.id, v.id, v.numero::text, v.fecha, u.nombre_completo::text,
+         q.dispositivo_id IS DISTINCT FROM d.id AND coalesce(q.pedido_at > now() - interval '1 minute', false)
+    FROM dispositivo d
+    JOIN ticket_cola q ON q.estado = 'PENDIENTE' AND q.sucursal_id = d.sucursal_id
+                      AND (d.caja_id IS NULL OR q.caja_id = d.caja_id)
+    JOIN venta v ON v.id = q.venta_id
+    JOIN usuario u ON u.id = v.vendedor_id
+   WHERE d.id = p_dispositivo AND fn_equipo_abierto(d.id)
+   ORDER BY q.id
+$$;
+
+-- El ticket de la cola, visto desde un equipo: tiene que estar abierto y ser de esa sucursal (y de
+-- esa caja, si el equipo es una PC de caja). Deja la fila bloqueada hasta el final de la transacción.
+CREATE OR REPLACE FUNCTION fn_cola_de_equipo(p_dispositivo uuid, p_cola bigint) RETURNS ticket_cola
+LANGUAGE plpgsql AS $$
+DECLARE d dispositivo%ROWTYPE; q ticket_cola%ROWTYPE;
+BEGIN
+  SELECT * INTO d FROM dispositivo WHERE id = p_dispositivo;
+  IF d.id IS NULL OR NOT fn_equipo_abierto(d.id) THEN
+    RAISE EXCEPTION 'La cola de impresión se atiende desde un equipo registrado de la sucursal que esté abierto'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  SELECT * INTO q FROM ticket_cola WHERE id = p_cola FOR UPDATE;
+  IF q.id IS NULL OR q.sucursal_id <> d.sucursal_id OR (d.caja_id IS NOT NULL AND q.caja_id <> d.caja_id) THEN
+    RAISE EXCEPTION 'Ese ticket no está en la cola de impresión de este equipo';
+  END IF;
+  RETURN q;
+END $$;
+
+-- El equipo pide un ticket de su cola para imprimirlo: devuelve cuál impresión de la venta es
+-- (1 = original). La anota solo la primera vez; un reintento recibe la misma. p_usuario es quien
+-- tocó «Imprimir», si hay alguien con sesión: si no (la cola sola), queda a nombre de quien vendió.
+CREATE OR REPLACE FUNCTION fn_cola_tomar(p_dispositivo uuid, p_cola bigint, p_usuario bigint DEFAULT NULL)
+RETURNS integer
+LANGUAGE plpgsql AS $$
+DECLARE q ticket_cola%ROWTYPE; v_vendedor bigint; n integer;
+BEGIN
+  q := fn_cola_de_equipo(p_dispositivo, p_cola);
+  IF q.estado <> 'PENDIENTE' THEN
+    RAISE EXCEPTION 'Ese ticket ya salió de la cola de impresión' USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF q.dispositivo_id IS DISTINCT FROM p_dispositivo AND q.pedido_at > now() - interval '1 minute' THEN
+    RAISE EXCEPTION 'Otro equipo está imprimiendo ese ticket' USING ERRCODE = 'restrict_violation';
+  END IF;
+  n := q.impresion;
+  IF n IS NULL THEN
+    SELECT vendedor_id INTO v_vendedor FROM venta WHERE id = q.venta_id FOR UPDATE;   -- un solo original
+    INSERT INTO ticket_impresion (venta_id, usuario_id) VALUES (q.venta_id, coalesce(p_usuario, v_vendedor));
+    SELECT count(*) INTO n FROM ticket_impresion WHERE venta_id = q.venta_id;
+  END IF;
+  UPDATE ticket_cola SET impresion = n, dispositivo_id = p_dispositivo, pedido_at = now() WHERE id = q.id;
+  RETURN n;
+END $$;
+
+-- El equipo avisa de que el ticket salió por la impresora. Repetirlo no hace daño.
+CREATE OR REPLACE FUNCTION fn_cola_impreso(p_dispositivo uuid, p_cola bigint, p_usuario bigint DEFAULT NULL)
+RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE q ticket_cola%ROWTYPE;
+BEGIN
+  q := fn_cola_de_equipo(p_dispositivo, p_cola);
+  IF q.estado = 'IMPRESO' THEN RETURN; END IF;
+  IF q.estado <> 'PENDIENTE' THEN
+    RAISE EXCEPTION 'Ese ticket se quitó de la cola sin imprimirlo' USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF q.impresion IS NULL THEN
+    RAISE EXCEPTION 'Ese ticket todavía no se ha pedido para imprimirlo';
+  END IF;
+  UPDATE ticket_cola SET estado = 'IMPRESO', resuelta_at = now(), resuelta_por = p_usuario,
+                         dispositivo_id = p_dispositivo
+   WHERE id = q.id;
+END $$;
+
+-- «No imprimir»: el ticket sale de la cola sin imprimirse y queda quién lo decidió. Puede hacerlo
+-- quien hizo la venta (desde su celular, si el cliente no quiere papel) o quien vende en un equipo
+-- registrado de esa sucursal.
+CREATE OR REPLACE FUNCTION fn_cola_no_imprimir(p_usuario bigint, p_dispositivo uuid, p_cola bigint) RETURNS void
+LANGUAGE plpgsql AS $$
+DECLARE q ticket_cola%ROWTYPE; v_vendedor bigint;
+BEGIN
+  SELECT * INTO q FROM ticket_cola WHERE id = p_cola FOR UPDATE;
+  IF q.id IS NULL THEN RAISE EXCEPTION 'Ese ticket no está en la cola de impresión'; END IF;
+  SELECT vendedor_id INTO v_vendedor FROM venta WHERE id = q.venta_id;
+  IF NOT fn_sesion_permitida(p_usuario, p_dispositivo)
+     OR NOT (v_vendedor = p_usuario
+             OR (fn_equipo_autorizado(p_usuario, p_dispositivo)
+                 AND fn_tiene_permiso(p_usuario, 'VENTAS_REGISTRAR')
+                 AND fn_puede_operar_sucursal(p_usuario, q.sucursal_id))) THEN
+    RAISE EXCEPTION 'No puede quitar ese ticket de la cola de impresión'
+          USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF q.estado <> 'PENDIENTE' THEN
+    RAISE EXCEPTION 'Ese ticket ya salió de la cola de impresión' USING ERRCODE = 'restrict_violation';
+  END IF;
+  UPDATE ticket_cola SET estado = 'NO_IMPRESO', motivo = 'A_MANO', resuelta_at = now(), resuelta_por = p_usuario
+   WHERE id = q.id;
 END $$;
 
 -- Foto del inventario valorizado al cierre de cada mes, por ubicación y categoría.

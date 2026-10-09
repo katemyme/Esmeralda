@@ -72,6 +72,7 @@ const venta: VentaDetalle = {
   vuelto: '33.49',
   anulacion: null,
   cambio: null,
+  cola: null,
   ticket: {
     negocio: 'Esmeralda Experience',
     ruc: 'J0310000000001',
@@ -287,6 +288,24 @@ describe('ticket de venta', () => {
     );
     // el QR sigue ahí y cabe (sus cuadros se cuentan entre los trazos)
     expect(pagina.trazos.length).toBeGreaterThan(50);
+  });
+
+  it('el ticket digital lo dice arriba y nunca lleva COPIA, se pida las veces que se pida', () => {
+    for (const impresion of [1, 2, 5]) {
+      const texto = comoTexto(renglonesTicketVenta(venta, impresion, { digital: true }));
+      expect(texto.slice(5, 8)).toEqual([
+        '---',
+        'Ticket digital',
+        'Factura LAM-00000012 | 07/10/2026 15:42',
+      ]);
+      expect(texto).not.toContain('COPIA');
+      // por lo demás es el mismo ticket, con su QR
+      expect(texto.slice(8)).toEqual(comoTexto(renglonesTicketVenta(venta, 1)).slice(7));
+    }
+    // en una venta anulada sigue diciéndolo
+    const anulada = { ...venta, estado: 'ANULADA' };
+    const texto = comoTexto(renglonesTicketVenta(anulada, 1, { digital: true }));
+    expect(texto.slice(6, 8)).toEqual(['Ticket digital', 'VENTA ANULADA']);
   });
 
   it('la venta de un cambio dice de qué devolución viene y lleva el saldo entre sus pagos', () => {
