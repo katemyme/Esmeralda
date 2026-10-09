@@ -269,12 +269,12 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `POST /api/caja/turno/cerrar` | `CAJA_CERRAR` | Arqueo ciego: `{ efectivo: [{ moneda, valor, cantidad }], no_efectivo: [{ metodo, monto }], retiro_nio, retiro_usd, justificacion, observaciones }` → ticket de cierre |
 | `GET /api/turnos` · `GET /api/turnos/:id` | `CAJA_VER_DIFERENCIAS` | Historial con lo esperado, lo contado y las diferencias: `?sucursal_id=&estado=&desde=&hasta=&limite=&antes_de=` |
 | `GET /api/turnos/:id/ticket` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | Los datos del ticket de cierre |
-| `POST /api/turnos/:id/imprimir` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | El ticket de cierre en PDF de 80 mm |
+| `POST /api/turnos/:id/imprimir` | `CAJA_CERRAR` o `CAJA_VER_DIFERENCIAS` | El ticket de cierre en PDF para el rollo de 80 mm |
 | `POST /api/turnos/:id/cierre-forzado` | `CAJA_CIERRE_FORZADO` | `{ motivo }`: el admin cierra sin arqueo un turno que nadie cerró |
 | `POST /api/ventas` | `VENTAS_REGISTRAR` | `{ clave_idempotencia, items: [{ variante_id, cantidad, precio, piezas }], pagos: [{ metodo, moneda, monto, referencia }], promocion_id, cliente_nombre, cliente_telefono, notas }` → la venta, con lo que va en el ticket |
 | `GET /api/ventas` · `GET /api/ventas/:id` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, solo las propias: `?sucursal_id=&turno_id=&vendedor_id=&estado=&desde=&hasta=&buscar=&limite=&antes_de=` |
 | `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
-| `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF de 80 mm |
+| `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF para el rollo de 80 mm |
 | `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
 | `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
 | `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los registrados, un día por fila del más reciente al más antiguo, con quién dejó cada valor y, en `registros`, todo lo que se registró ese día (el primero y sus correcciones): `?desde=&hasta=&limite=` |
@@ -296,7 +296,8 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
   `qr` es el texto del código QR del pie: el número de factura, para escanearlo si el cliente vuelve a devolver o
   cambiar algo (el PDF ya lo dibuja; una venta anulada no lo lleva).
 - **Tickets en PDF.** `POST /api/ventas/:id/imprimir` y `POST /api/turnos/:id/imprimir` devuelven el ticket como
-  PDF de una sola página de 80 mm de ancho (impresora térmica). Cada impresión queda anotada: la primera es el
+  PDF de una sola página de 72 mm de ancho (lo que imprime una impresora térmica de 80 mm: el papel lleva 4 mm
+  sin imprimir a cada lado) y tan alta como su contenido. Cada impresión queda anotada: la primera es el
   original y las siguientes llevan la palabra **COPIA**; la cabecera `X-Ticket-Impresion` dice cuál es (1, 2, 3…).
   El de cierre sale reducido o completo según el permiso, igual que su versión en datos.
 - **Tickets por USB.** Las mismas rutas con `?formato=renglones` devuelven `{ impresion, renglones }`: el
@@ -322,7 +323,7 @@ donde está el cliente, que puede ser otra que la de la venta. La factura origin
 | `POST /api/devoluciones/:id/cancelar` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `{ motivo }`: mientras no se haya ejecutado; quien la solicitó o el administrador |
 | `POST /api/devoluciones/:id/ejecutar` | `DEVOLUCIONES_REGISTRAR` | 3) En el turno abierto de la caja de la sesión. Devolución: `{}`. Cambio: `{ clave_idempotencia, items, pagos, notas }`, como una venta |
 | `POST /api/devoluciones/:id/transferencia` | `DEVOLUCIONES_APROBAR` | `{ referencia }`: el administrador anota la transferencia de lo que no salió de la caja |
-| `POST /api/devoluciones/:id/imprimir` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | El ticket de la devolución en PDF de 80 mm, con la firma del cliente (la reimpresión lleva COPIA) |
+| `POST /api/devoluciones/:id/imprimir` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | El ticket de la devolución en PDF para el rollo de 80 mm, con la firma del cliente (la reimpresión lleva COPIA) |
 
 - **Qué se devuelve.** Solo artículos con stock de una categoría con la casilla «admite devolución»: nunca piezas de
   piercing, perforaciones ni paquetes. Por línea y cantidad, sin pasar de lo vendido menos lo ya devuelto y lo
@@ -464,7 +465,7 @@ npm run dev              # http://localhost:5173 (reenvía /api al backend, en h
 - **Menú.** Sale de los permisos que la API entrega para esa sesión (`src/menu.ts`): desde el celular llegan
   menos permisos y el menú sale más corto, sin reglas aparte.
 - **Impresión.** Cada equipo imprime como le toca (`src/equipo/imprimir.ts`): el celular o la tablet Android,
-  directo por USB en ESC/POS (WebUSB); la PC de caja y los demás, el PDF de 80 mm por el diálogo de imprimir.
+  directo por USB en ESC/POS (WebUSB); la PC de caja y los demás, el PDF del ticket por el diálogo de imprimir.
   El diálogo siempre queda de respaldo. El ticket se pide una sola vez: reintentar no lo marca como copia.
 - **Pantalla encendida.** En un equipo registrado y abierto la app pide al navegador que no apague la pantalla
   (Wake Lock); si no se puede o se pierde, lo avisa arriba y en «Este equipo».
@@ -510,14 +511,17 @@ Cada sucursal tiene un celular Android del negocio, con Chrome, que hace de caja
 ### Preparar una PC de caja
 
 Una computadora con Windows también puede ser la caja. Ahí la impresora la maneja su driver, y Chrome imprime
-el ticket (PDF de 80 mm) sin mostrar el diálogo.
+el ticket (un PDF de 72 mm de ancho: lo que imprime el rollo de 80 mm) sin mostrar el diálogo.
 
-1. **Instalar el driver** de la Xprinter (el del fabricante, serie XP-80) con la impresora conectada por USB, e
-   imprimir la página de prueba de Windows.
-2. **Configurarla** en Configuración → Impresoras → la Xprinter → Preferencias de impresión:
-   - Papel de 80 mm (rollo), sin márgenes.
-   - Corte al final del documento.
-   - Gaveta de dinero: «abrir antes de imprimir» (cuando haya gaveta conectada a la impresora).
+1. **Instalar el driver** de la Xprinter (el del fabricante, serie XP-80; Windows la muestra como «XP-80C») con
+   la impresora conectada por USB, e imprimir la página de prueba de Windows.
+2. **Configurarla** en Configuración → Bluetooth y dispositivos → Impresoras y escáneres → XP-80C:
+   - «Preferencias de impresión» → «Avanzadas…» → Tamaño del papel: **80(72.1) x 3276 mm** (el rollo continuo).
+   - «Propiedades de impresora» → pestaña «Configuración de dispositivo»:
+     - *Save Paper Mode*: **Top and Bottom** (así viene). Es lo que evita que avance papel en blanco: la
+       impresora solo saca lo que lleva impreso, aunque la hoja mida 3276 mm.
+     - *Paper Cutting Action*: **Cut paper per page** (así viene; cada ticket es una sola página).
+     - *Cashbox Action*: «Push out the Cashbox #1 before printing» (cuando haya gaveta conectada a la impresora).
    - Dejarla como **impresora predeterminada**.
 3. **Crear el acceso directo de Chrome** (clic derecho en el escritorio → Nuevo → Acceso directo) con este destino,
    cambiando la dirección por la del sistema:
@@ -530,7 +534,38 @@ el ticket (PDF de 80 mm) sin mostrar el diálogo.
    perfil de Chrome (sin él, si ya hay otro Chrome abierto, la opción no se aplica).
 4. **Registrar el equipo** abriendo el sistema desde ese acceso directo (el registro queda en ese perfil): el
    administrador entra, «Este equipo» → registrar como «Caja», con su sucursal y su caja.
-5. **La primera vez**, imprimir un ticket abriendo Chrome sin `--kiosk-printing` para dejar en el diálogo:
-   márgenes «Ninguno» y sin encabezados ni pies de página. Chrome lo recuerda.
+5. **La primera vez**, dejar listo el diálogo de imprimir: quitarle `--kiosk-printing` al acceso directo, abrir
+   el sistema, imprimir un ticket y, en el diálogo de Chrome (abriendo «Más ajustes»), elegir:
 
-Sin el acceso directo todo funciona igual, solo que cada ticket muestra el diálogo de imprimir.
+   | Opción | Qué elegir |
+   |---|---|
+   | Destino | **XP-80C** |
+   | Tamaño del papel | **80(72.1) x 3276 mm** |
+   | Escala | **Personalizado**, y en la casilla **100** |
+   | Márgenes | No aparece (tampoco encabezados y pies): el ticket es un PDF y ya trae sus 2 mm a cada lado |
+
+   Chrome recuerda estas opciones en ese perfil. Después se le vuelve a poner `--kiosk-printing` al acceso directo.
+
+Sin el acceso directo todo funciona igual, solo que cada ticket muestra el diálogo de imprimir (con las mismas
+opciones, que Chrome también recuerda).
+
+**Por qué esas opciones.** Una impresora térmica de 80 mm imprime 72 mm (576 puntos): el papel lleva 4 mm sin
+imprimir a cada lado. El driver lo sabe y sus hojas «80(72.1)» miden en realidad 72 mm de ancho, sin márgenes. El
+ticket mide lo mismo, así que a escala 100 cae exacto, de borde a borde de lo imprimible.
+
+- **Escala:** nunca «Ajustar al área de impresión» ni «Ajustar al papel», que estiran o encogen el ticket hasta
+  llenar la hoja. «Predeterminado» también imprime al 100 %, pero según la versión de Chrome puede centrar o
+  encoger el ticket: «Personalizado» con 100 no cambia nunca.
+- **Tamaño del papel:** con «80(72.1) x 210 mm» o «x 297 mm» sale igual mientras el ticket sea más corto que la
+  hoja; uno más largo (una venta con muchos artículos) saldría cortado al final. Con la de 3276 mm cabe cualquiera.
+  Las hojas «58(48)», «80(76)» y «82(80)» son para cabezales de otro ancho: no usarlas.
+
+**Si algo sale mal:**
+
+| Qué se ve | Qué revisar |
+|---|---|
+| Se corta el lado derecho | El tamaño del papel (uno de los «80(72.1)») y la escala (100) |
+| Sale más pequeño o más grande | La escala: «Personalizado» con 100 |
+| Un ticket largo sale cortado al final | El tamaño del papel: el de 3276 mm |
+| Avanza papel en blanco antes o después del ticket | *Save Paper Mode* en «Top and Bottom» (paso 2) |
+| No corta el papel | *Paper Cutting Action* en «Cut paper per page» (paso 2) |

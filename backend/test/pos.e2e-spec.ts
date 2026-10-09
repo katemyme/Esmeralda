@@ -994,7 +994,7 @@ describe('POS y caja', () => {
       expect(propia.body.venta.numero).toBe('PVE-00000001');
     });
 
-    it('POST /api/ventas/:id/imprimir: el ticket en PDF de 80 mm; la primera vez el original y después copia', async () => {
+    it('POST /api/ventas/:id/imprimir: el ticket en PDF para el rollo de 80 mm; la primera vez el original y después copia', async () => {
       const imprimir = (acceso: string, id: number) =>
         conSesion('post', `/api/ventas/${id}/imprimir`, acceso).buffer(true).parse(comoBytes);
 
@@ -1006,8 +1006,8 @@ describe('POS y caja', () => {
       expect(original.headers['x-ticket-impresion']).toBe('1');
       const pdf = (original.body as Buffer).toString('latin1');
       expect(pdf.startsWith('%PDF-')).toBe(true);
-      // una sola página de 80 mm (226.77 puntos) de ancho
-      expect(pdf).toMatch(/\/MediaBox \[0 0 226\.77\d* \d+(\.\d+)?\]/);
+      // una sola página de 72 mm (204.09 puntos) de ancho: lo imprimible del rollo de 80
+      expect(pdf).toMatch(/\/MediaBox \[0 0 204\.09\d* \d+(\.\d+)?\]/);
       expect(pdf.match(/\/Type \/Page\b/g)).toHaveLength(1);
 
       // desde la segunda impresión es copia, la pida quien la pida
@@ -1464,7 +1464,7 @@ describe('POS y caja', () => {
       );
       expect(original.headers['x-ticket-impresion']).toBe('1');
       const reducido = original.body as Buffer;
-      expect(reducido.toString('latin1')).toMatch(/\/MediaBox \[0 0 226\.77\d* \d+(\.\d+)?\]/);
+      expect(reducido.toString('latin1')).toMatch(/\/MediaBox \[0 0 204\.09\d* \d+(\.\d+)?\]/);
 
       // el encargado recibe el completo (más largo: lleva lo vendido y lo cobrado), ya como copia
       const copia = await imprimir(enzo.acceso).expect(200);

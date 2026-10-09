@@ -737,7 +737,7 @@ describe('Devoluciones y cambios', () => {
       expect(v1.lineas[1]).toMatchObject({ devuelta: 1, apartada: 0, disponible: 0 });
     });
 
-    it('POST /api/devoluciones/:id/imprimir: ticket de 80 mm; la reimpresión es COPIA', async () => {
+    it('POST /api/devoluciones/:id/imprimir: ticket de 72 mm de ancho; la reimpresión es COPIA', async () => {
       const imprimir = (acceso: string, id: number) =>
         con('post', `/api/devoluciones/${id}/imprimir`, acceso).buffer(true).parse(comoBytes);
       const original = await imprimir(beto.acceso, dev.s1).expect(200);
@@ -748,7 +748,7 @@ describe('Devoluciones y cambios', () => {
       expect(original.headers['x-ticket-impresion']).toBe('1');
       const pdf = (original.body as Buffer).toString('latin1');
       expect(pdf.startsWith('%PDF-')).toBe(true);
-      expect(pdf).toMatch(/\/MediaBox \[0 0 226\.77\d* [\d.]+\]/);
+      expect(pdf).toMatch(/\/MediaBox \[0 0 204\.09\d* [\d.]+\]/);
       // la imprime también la sucursal que la solicitó, y ya es copia
       const copia = await imprimir(dora.acceso, dev.s1).expect(200);
       expect(copia.headers['x-ticket-impresion']).toBe('2');

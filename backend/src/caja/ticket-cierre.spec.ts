@@ -1,3 +1,4 @@
+import { leerPdf, loQueSeSale } from '../../test/textos-pdf';
 import type { Renglon } from '../exportacion/ticket-pdf';
 import { ANCHO_TICKET, ticketPdf } from '../exportacion/ticket-pdf';
 import type { TicketCierre } from './caja.service';
@@ -147,12 +148,12 @@ describe('ticket de cierre de caja', () => {
   });
 });
 
-describe('ticketPdf', () => {
+describe('el ticket de cierre en PDF', () => {
   const alto = (pdf: Buffer) =>
     Number(/\/MediaBox \[0 0 [\d.]+ ([\d.]+)\]/.exec(pdf.toString('latin1'))?.[1]);
 
-  it('una sola página de 80 mm de ancho, tan larga como el contenido', async () => {
-    expect(ANCHO_TICKET).toBeCloseTo(226.77, 2); // 80 mm en puntos
+  it('una sola página de 72 mm de ancho (lo imprimible del rollo de 80), tan larga como el contenido', async () => {
+    expect(ANCHO_TICKET).toBeCloseTo(204.09, 2); // 72 mm en puntos
     const corto = await ticketPdf(
       renglonesTicketCierre(reducido, 1, 'Esmeralda Experience'),
       'Cierre',
@@ -165,18 +166,82 @@ describe('ticketPdf', () => {
       const texto = pdf.toString('latin1');
       expect(texto.startsWith('%PDF-')).toBe(true);
       expect(texto.trimEnd().endsWith('%%EOF')).toBe(true);
-      expect(texto).toMatch(/\/MediaBox \[0 0 226\.77\d* [\d.]+\]/);
+      expect(texto).toMatch(/\/MediaBox \[0 0 204\.09\d* [\d.]+\]/);
       expect(texto.match(/\/Type \/Page\b/g)).toHaveLength(1);
     }
     expect(alto(largo)).toBeGreaterThan(alto(corto));
     // un texto que no cabe en una línea alarga el ticket en vez de salirse del papel
     const conLeyenda = await ticketPdf(
       [
-        ...renglonesTicketCierre(reducido, 1, 'Esmeralda Experience'),
+        ...renglonesTicketCierre(completo, 2, 'Esmeralda Experience'),
         { tipo: 'texto', texto: 'Gracias por su compra. '.repeat(12), centrado: true },
       ],
       'Cierre',
     );
-    expect(alto(conLeyenda)).toBeGreaterThan(alto(corto) + 20);
+    expect(alto(conLeyenda)).toBeGreaterThan(alto(largo) + 20);
+  });
+
+  it('ningún texto pasa de 72 mm: la hora y los montos salen completos y lo largo se parte', async () => {
+    const deNombresLargos: TicketCierre = {
+      ...completo,
+      turno_id: 123456,
+      sucursal: 'Multicentro Las Américas, segundo piso frente a la entrada principal',
+      caja: 'Caja principal del mostrador de joyería',
+      abierto_por: 'María de los Ángeles Gutiérrez Sandoval de Martínez',
+      cerrado_por: 'Carlos Alberto Ruiz Hernández del Socorro Montenegro',
+      contado: [
+        { metodo: 'Efectivo', moneda: 'NIO', monto: '1234567.89' },
+        { metodo: 'Transferencia bancaria en dólares', moneda: 'USD', monto: '98765.43' },
+      ],
+      retiro_nio: '1233567.89',
+      fondo_siguiente_nio: '1000.00',
+      total_vendido: '9876543.21',
+      saldo_cambio: '940.00',
+      devoluciones: 3,
+      devuelto_efectivo: '366.67',
+    };
+    for (const ticket of [reducido, completo, deNombresLargos]) {
+      const pagina = leerPdf(
+        await ticketPdf(renglonesTicketCierre(ticket, 2, 'Esmeralda Experience'), 'Cierre'),
+      );
+      expect(pagina.ancho).toBeCloseTo(72, 2);
+      expect(loQueSeSale(pagina)).toEqual([]);
+      // la hora del cierre, entera y pegada al margen derecho
+      const hora = pagina.textos.find((t) => t.texto === '07/10/2026 21:35');
+      expect(hora?.derecha).toBeCloseTo(70, 1);
+    }
+
+    const pagina = leerPdf(
+      await ticketPdf(renglonesTicketCierre(deNombresLargos, 1, 'Esmeralda Experience'), 'Cierre'),
+    );
+    const escrito = pagina.textos.map((t) => t.texto);
+    // la sucursal con su caja no cabe en un renglón: sigue en el de abajo, sin perder nada
+    const sucursal = escrito.findIndex((t) => t.startsWith('Multicentro'));
+    const abrio = escrito.findIndex((t) => t.startsWith('Abrió:'));
+    expect(abrio - sucursal).toBeGreaterThan(1);
+    expect(escrito.slice(sucursal, abrio).join(' ')).toBe(
+      'Multicentro Las Américas, segundo piso frente a la entrada principal · Caja principal del mostrador de joyería',
+    );
+    const cerro = escrito.findIndex((t) => t.startsWith('Cerró:'));
+    expect(escrito.slice(abrio, cerro).join(' ')).toBe(
+      'Abrió: María de los Ángeles Gutiérrez Sandoval de Martínez (07/10/2026 08:05)',
+    );
+    // los montos, con todos sus dígitos y sus decimales, y sus etiquetas con «C$»
+    expect(escrito).toEqual(
+      expect.arrayContaining([
+        'Efectivo C$',
+        '1,234,567.89',
+        '98,765.43',
+        'Retiro C$',
+        '1,233,567.89',
+        'Fondo que queda C$',
+        '1,000.00',
+        'Total vendido C$',
+        '9,876,543.21',
+      ]),
+    );
+    for (const monto of ['1,234,567.89', '1,233,567.89', '9,876,543.21']) {
+      expect(pagina.textos.find((t) => t.texto === monto)?.derecha).toBeCloseTo(70, 1);
+    }
   });
 });

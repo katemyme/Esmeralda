@@ -5,8 +5,8 @@ import { ticketPdf, type Renglon } from './ticket-pdf';
 
 /**
  * Un ticket sale de dos formas, con el mismo contenido y la misma cuenta de impresiones:
- * - `pdf` (por defecto): la página de 80 mm, para el diálogo de imprimir (la PC de caja con su
- *   driver) y para verlo en pantalla;
+ * - `pdf` (por defecto): la página de 72 mm (lo imprimible del rollo de 80), para el diálogo de
+ *   imprimir (la PC de caja con su driver) y para verlo en pantalla;
  * - `renglones`: la lista de renglones en JSON, para que la pantalla la traduzca a ESC/POS y la
  *   mande directo a la impresora por USB (el celular o la tablet del mostrador).
  */

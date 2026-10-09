@@ -15,7 +15,7 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-08._
+_Actualizado el 2026-10-09._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
   `guardado-b2`), **B3**, **B4**, **B5**, **B6** y **B7** del backend. Con B5 se hizo también todo lo que había quedado fuera de
@@ -59,13 +59,21 @@ _Actualizado el 2026-10-08._
   turno lo que quede en la cola se marca solo como «no impreso»; Wake Lock en el equipo abierto.
 - **Terminada, pendiente de su revisión: F2a parte 1 (caja y consulta de precios)**, hecha el 2026-10-08.
   **No empezar la parte 2 (venta, tickets y cola) hasta su OK.**
+- **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
+  Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
+  tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
+  («Preparar una PC de caja») dice qué elegir en el diálogo de Chrome: papel «80(72.1) x 3276 mm» y escala
+  «Personalizado» con 100 (con un PDF, Chrome no muestra márgenes). Comprobado contra el driver de su PC con
+  salida a archivo, sin gastar papel: los 72 mm ocupan los 576 puntos del cabezal y el blanco de arriba y de
+  abajo no avanza (*Save Paper Mode* en «Top and Bottom», como viene). **Falta que el dueño lo imprima en
+  papel.** La etiqueta `backend-completo` y el respaldo se movieron a este punto.
 - **Cómo revisa el dueño:** sobre todo en su PC con Chrome en `localhost`, con la vista de celular (F12) y
   varias ventanas (normal, incógnito y otro perfil) como equipos distintos; la cámara, con la webcam; la
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 715 de base de datos, 571 del backend y, en el frontend, 43 de Vitest y 13 recorridos de
-  Playwright. Nada se ha subido a GitHub.
+- Pruebas en verde: 715 de base de datos, 583 del backend y, en el frontend, 43 de Vitest y 13 recorridos de
+  Playwright. El ajuste de impresión del 2026-10-09 no se ha subido a GitHub.
 - Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
   «Este equipo» la imprime el dueño cuando la tenga; los acentos dependen de cómo venga configurada), la cámara
   en un iPhone y en una tablet reales (solo se probó la lógica; hace falta el túnel), la aplicación instalada en
@@ -221,7 +229,7 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Inventario valorizado:** la foto de hoy y, además, una foto automática al cierre de cada mes.
   - **Mermas:** suman solo las aprobadas, con el costo del momento en que se aprobaron; las pendientes y las
     rechazadas se listan aparte.
-  - **Tickets en PDF:** papel de 80 mm; la reimpresión lleva la palabra «COPIA». Cada impresión se anota en
+  - **Tickets en PDF:** papel de 80 mm (la página mide 72 mm, lo imprimible); la reimpresión lleva la palabra «COPIA». Cada impresión se anota en
     `ticket_impresion` (`fn_registrar_impresion_venta` / `_cierre`): la primera es el original, la pida quien
     la pida; vale igual para el ticket de cierre.
   - **Alertas:** una nueva cuando alguien confirma un tipo de cambio fuera del límite
@@ -573,8 +581,13 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
     escrita como si fuera UTC, porque Excel no maneja zonas). En los PDF se usan las fuentes estándar de pdfkit
     (Helvetica): solo caracteres latinos.
   - Tickets en PDF: el contenido se arma como una lista de renglones (`ventas/ticket-venta.ts`,
-    `caja/ticket-cierre.ts`) y `exportacion/ticket-pdf.ts` la dibuja en una página de 80 mm de ancho y del alto
-    de su contenido (primero mide en un documento aparte). `POST /api/ventas/:id/imprimir` y
+    `caja/ticket-cierre.ts`) y `exportacion/ticket-pdf.ts` la dibuja en una página de **72 mm** de ancho (lo que
+    imprime el rollo de 80 mm; 2 mm de margen a cada lado) y del alto de su contenido (primero mide en un
+    documento aparte). No volver a la página de 80 mm: el driver de Windows de la Xprinter («XP-80C») declara
+    hojas de 72,07 mm sin márgenes y Chrome, al 100 %, pone el PDF en la esquina superior izquierda (se perdían
+    los 8 mm de la derecha, con los montos). La página nunca es más ancha que alta (Chrome gira los PDF
+    apaisados: un cierre forzado saldría de lado) y pide imprimirse a tamaño real (`/PrintScaling /None`). Un
+    `par` cuyo lado derecho no deja sitio lo baja a su propio renglón. `POST /api/ventas/:id/imprimir` y
     `POST /api/turnos/:id/imprimir` anotan la impresión dentro de la misma transacción que arma el PDF y
     devuelven cuál es en `X-Ticket-Impresion`. El ticket de cierre imprime lo que entrega `fn_ticket_cierre`:
     no decide nada por su cuenta.
@@ -584,9 +597,12 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   - Pruebas: `test/reportes.e2e-spec.ts` trabaja en la sucursal `RPT` (las ventas antiguas se insertan directo
     en la base, porque la API siempre vende «ahora»; crea el rol `ANALISTA_RPT` y lo elimina en `afterAll`) y
     `test/tareas.e2e-spec.ts` en la sucursal `TAR`. `comoBytes` (`test/utilidades.ts`) lee un archivo
-    descargado. Las pruebas de PDF solo revisan su estructura (tamaño de página, número de páginas); el
-    contenido se prueba en los renglones y en el Excel. Para ver cómo queda un PDF, generarlo a un archivo
-    temporal y abrirlo.
+    descargado. Las pruebas de PDF de los reportes solo revisan su estructura (tamaño de página, número de
+    páginas); el contenido se prueba en los renglones y en el Excel. En los tickets, además, se lee el PDF:
+    `leerPdf()` de `test/textos-pdf.ts` dice dónde quedó cada línea de texto y cada trazo (en milímetros) y
+    `loQueSeSale()` lista lo que pasa de los 72 mm; cada ticket lo prueba con nombres y montos largos
+    (`exportacion/ticket-pdf.spec.ts` y el spec de cada ticket). Para ver cómo queda un PDF, generarlo a un
+    archivo temporal y abrirlo.
 - Devoluciones y cambios (B8): módulo `devoluciones/` (rutas `/api/devoluciones...`), la casilla en
   `categorias/` (`PUT /api/categorias/:id/admite-devolucion`) y el QR en `exportacion/`.
   - Tablas `devolucion` y `devolucion_detalle` (sección 6.2 del esquema); funciones en la sección 12. Las reglas

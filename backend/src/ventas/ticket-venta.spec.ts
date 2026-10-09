@@ -1,3 +1,4 @@
+import { leerPdf, loQueSeSale } from '../../test/textos-pdf';
 import { matrizQr } from '../exportacion/qr';
 import { ticketPdf, type Renglon } from '../exportacion/ticket-pdf';
 import { renglonesTicketVenta } from './ticket-venta';
@@ -212,6 +213,80 @@ describe('ticket de venta', () => {
     const conQr = await alto(renglones);
     const sinQr = await alto(renglones.filter((r) => r.tipo !== 'qr'));
     expect(conQr - sinQr).toBeCloseTo((30 * 72) / 25.4, 0);
+  });
+
+  it('en el PDF ningún texto pasa de 72 mm, por largos que sean los nombres y los montos', async () => {
+    const larga: VentaDetalle = {
+      ...venta,
+      sucursal: {
+        ...venta.sucursal,
+        nombre: 'Multicentro Las Américas, segundo piso frente a la entrada principal',
+      },
+      caja: { id: 1, nombre: 'Caja principal del mostrador de joyería y perforaciones' },
+      vendedor: { id: 3, nombre_completo: 'María de los Ángeles Gutiérrez Sandoval de Martínez' },
+      cliente_nombre: 'Lucía Fernanda Pérez Castillo de la Concepción',
+      subtotal: '1234567.89',
+      descuento: '123456.79',
+      total: '1111111.10',
+      promocion: { id: 2, nombre: 'Aniversario: 10 % en toda la tienda hasta agotar existencias' },
+      lineas: [
+        { ...venta.lineas[0], cantidad: 12, precio_unitario: '102880.66', subtotal: '1234567.89' },
+        venta.lineas[1],
+      ],
+      pagos: [
+        { ...venta.pagos[0], monto: '30000.00', monto_nio: '1098729.00' },
+        { ...venta.pagos[1], referencia: `TRANSFERENCIA-${'0'.repeat(48)}1` },
+      ],
+      vuelto: '1000.50',
+      ticket: {
+        ...venta.ticket,
+        direccion: 'Carretera a Masaya km 4.5, Multicentro Las Américas, módulo 14, Managua',
+        leyenda:
+          'Cambios dentro de los 7 días con su ticket. No se aceptan devoluciones de piezas de piercing.',
+      },
+    };
+    const anulada: VentaDetalle = {
+      ...larga,
+      estado: 'ANULADA',
+      anulacion: {
+        fecha: new Date('2026-10-07T22:10:00Z'),
+        motivo: 'La clienta se arrepintió después de pagar y pidió que le devolvieran todo',
+        anulada_por: { id: 2, nombre_completo: 'María Auxiliadora López Zeledón' },
+      },
+    };
+    for (const caso of [venta, larga, anulada]) {
+      const pagina = leerPdf(await ticketPdf(renglonesTicketVenta(caso, 2), 'Ticket'));
+      expect(pagina.ancho).toBeCloseTo(72, 2);
+      expect(loQueSeSale(pagina)).toEqual([]);
+      // la fecha y la hora de la factura, enteras y pegadas al margen derecho
+      const hora = pagina.textos.find((t) => t.texto === '07/10/2026 15:42');
+      expect(hora?.derecha).toBeCloseTo(70, 1);
+    }
+
+    const pagina = leerPdf(await ticketPdf(renglonesTicketVenta(larga, 1), 'Ticket'));
+    const escrito = pagina.textos.map((t) => t.texto);
+    // el total, en negrita, con todos sus dígitos; y los demás montos, completos
+    const total = pagina.textos.find((t) => t.texto === '1,111,111.10');
+    expect(total).toMatchObject({ fuente: 'Helvetica-Bold' });
+    expect(total?.derecha).toBeCloseTo(70, 1);
+    expect(escrito).toEqual(
+      expect.arrayContaining([
+        'TOTAL C$',
+        '1,234,567.89',
+        '-123,456.79',
+        '1,098,729.00',
+        '1,000.50',
+      ]),
+    );
+    // la caja no cabe en un renglón: sigue en el de abajo
+    const caja = escrito.findIndex((t) => t.startsWith('Caja:'));
+    const atendio = escrito.findIndex((t) => t.startsWith('Atendió:'));
+    expect(atendio - caja).toBeGreaterThan(1);
+    expect(escrito.slice(caja, atendio).join(' ')).toBe(
+      'Caja: Caja principal del mostrador de joyería y perforaciones',
+    );
+    // el QR sigue ahí y cabe (sus cuadros se cuentan entre los trazos)
+    expect(pagina.trazos.length).toBeGreaterThan(50);
   });
 
   it('la venta de un cambio dice de qué devolución viene y lleva el saldo entre sus pagos', () => {
