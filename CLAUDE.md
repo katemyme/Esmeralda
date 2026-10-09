@@ -73,7 +73,8 @@ _Actualizado el 2026-10-09._
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
 - Pruebas en verde: 715 de base de datos, 583 del backend y, en el frontend, 43 de Vitest y 13 recorridos de
-  Playwright. El ajuste de impresión del 2026-10-09 no se ha subido a GitHub.
+  Playwright. Subido a GitHub (`main`) el 2026-10-09, a pedido del dueño, con el ajuste de impresión; las
+  etiquetas se quedan en este equipo (en GitHub solo está la rama).
 - Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
   «Este equipo» la imprime el dueño cuando la tenga; los acentos dependen de cómo venga configurada), la cámara
   en un iPhone y en una tablet reales (solo se probó la lógica; hace falta el túnel), la aplicación instalada en
