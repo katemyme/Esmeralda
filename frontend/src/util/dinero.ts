@@ -21,3 +21,22 @@ export function esMonto(texto: string): boolean {
 export function totalContado(conteo: { valor: string; cantidad: number }[]): number {
   return conteo.reduce((suma, c) => suma + aCentavos(c.valor) * c.cantidad, 0);
 }
+
+/**
+ * Dólares a córdobas con el tipo de cambio del día, todo en centavos y con el mismo redondeo que
+ * la base (`round(monto * tipo_cambio, 2)`): con enteros, para que no baile ni un centavo.
+ */
+export function dolaresACordobas(centavosUsd: number, usdANio: string | number): number {
+  const tasa = Math.round(Number(usdANio) * 10_000); // el tipo de cambio lleva 4 decimales
+  return Math.floor((centavosUsd * tasa + 5_000) / 10_000);
+}
+
+/** Un identificador único (UUID v4). `crypto.randomUUID` no existe fuera de https o localhost. */
+export function nuevoUuid(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}

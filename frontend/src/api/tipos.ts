@@ -213,3 +213,130 @@ export interface TipoCambio {
   usd_a_nio: string;
   es_de_hoy: boolean;
 }
+
+/** Lo que responde una ruta `.../imprimir?formato=renglones`: el ticket para la impresora por USB. */
+export interface TicketEnRenglones {
+  /** 1 = original; de 2 en adelante, copia. */
+  impresion: number;
+  renglones: Renglon[];
+  /** La impresora debe abrir la gaveta junto con el ticket (parámetro IMPRESION_ABRIR_GAVETA). */
+  abrir_gaveta: boolean;
+}
+
+/** Una caja con turno abierto donde puede entrar una venta hecha sin equipo registrado. */
+export interface CajaAbierta {
+  turno_id: number;
+  caja: { id: number; nombre: string };
+  sucursal: Sucursal;
+}
+
+/** Una perforación: se vende sola (servicio) o con pieza (paquete). */
+export interface Perforacion {
+  id: number;
+  codigo: string;
+  nombre: string;
+  /** Cuántas piezas lleva su paquete. */
+  piezas_por_paquete: number;
+  activa: boolean;
+  servicio_variante_id: number;
+  paquete_variante_id: number;
+  precio_servicio: string;
+}
+
+export interface PrecioPaquete {
+  precio: string;
+  /** ESPECIAL, TABLA_GAMA o SERVICIO_MAS_PIEZA. */
+  regla: string;
+  detalle: string;
+}
+
+/** Una promoción activa y vigente hoy, con lo que rebajaría del subtotal que se le preguntó. */
+export interface PromocionDisponible {
+  id: number;
+  nombre: string;
+  /** PORCENTAJE o MONTO. */
+  tipo: string;
+  valor: string;
+  compra_minima: string;
+  /** false: el subtotal no llega a la compra mínima. */
+  aplica: boolean;
+  descuento: string | null;
+}
+
+/** Una venta en las listas. La lista nunca trae sumas: el arqueo es a ciegas. */
+export interface VentaResumen {
+  id: number;
+  /** Número de factura (LAM-00000012). */
+  numero: string;
+  fecha: string;
+  /** COMPLETADA o ANULADA. */
+  estado: string;
+  sucursal: Sucursal;
+  turno_id: number;
+  vendedor: { id: number; nombre_completo: string };
+  cliente_nombre: string | null;
+  subtotal: string;
+  descuento: string;
+  total: string;
+  articulos: number;
+  /** EQUIPO o CELULAR; solo lo recibe el administrador. */
+  origen: string | null;
+}
+
+export interface VentaDetalle extends VentaResumen {
+  caja: { id: number; nombre: string };
+  cliente_telefono: string | null;
+  notas: string | null;
+  tipo_cambio: string;
+  promocion: { id: number; nombre: string } | null;
+  lineas: {
+    id: number;
+    variante: { id: number; sku: string; nombre: string };
+    tipo: string;
+    cantidad: number;
+    precio_lista: string;
+    precio_unitario: string;
+    subtotal: string;
+    piezas: { variante: { id: number; sku: string; nombre: string }; cantidad: number }[];
+  }[];
+  pagos: {
+    metodo: { codigo: string; nombre: string };
+    moneda: string;
+    monto: string;
+    tipo_cambio: string;
+    monto_nio: string;
+    referencia: string | null;
+  }[];
+  /** Lo que se le entregó de vuelto al cliente, en córdobas. */
+  vuelto: string;
+  anulacion: {
+    fecha: string;
+    motivo: string;
+    anulada_por: { id: number; nombre_completo: string };
+  } | null;
+  cambio: { devolucion_id: number; numero: string } | null;
+  /**
+   * El ticket en la cola de impresión del equipo de la sucursal (ventas hechas desde un celular):
+   * PENDIENTE, IMPRESO o NO_IMPRESO. null: no pasó por la cola.
+   */
+  cola: { id: number; estado: string } | null;
+}
+
+/** Un ticket que espera en la cola de impresión de este equipo. Sin montos. */
+export interface TicketEnCola {
+  id: number;
+  venta_id: number;
+  numero: string;
+  fecha: string;
+  vendedor: string;
+  /** Otro equipo de la sucursal lo está imprimiendo. */
+  en_curso: boolean;
+}
+
+export interface ColaDeEquipo {
+  /** false: este navegador no es un equipo registrado y abierto. */
+  atendida: boolean;
+  /** El equipo imprime los tickets sin que nadie los toque (IMPRESION_AUTOMATICA_COLA). */
+  automatica: boolean;
+  tickets: TicketEnCola[];
+}

@@ -10,7 +10,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
 | Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios) |
-| Frontend (React + Vite, PWA) | Pendiente |
+| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base) y F2a (caja, consulta de precios, venta, tickets y cola de impresión). Siguen devoluciones, inventario, administración y reportes |
 
 ## Estructura
 
@@ -482,6 +482,10 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
   (con confirmación si se aleja), entradas y salidas de efectivo, cierre a ciegas por billetes y monedas con un
   solo reconteo, ticket de cierre impreso, historial de turnos con sus diferencias y cierre forzado (para quien
   puede verlos), y el buscador de precios y existencias con escáner.
+- **F2a, segunda parte (venta, tickets y cola):** vender buscando o escaneando (también una perforación con su
+  pieza), promoción, cobro en varias formas (córdobas, dólares, tarjeta, transferencia) con el vuelto a la vista,
+  ventas del turno, anular, el ticket que sale solo al registrar la venta, el ticket digital y «Tickets por
+  imprimir» (la cola de las ventas hechas desde un celular).
 
 Lo demás del menú aparece marcado «Pronto».
 
@@ -513,7 +517,49 @@ npm run dev              # http://localhost:5173 (reenvía /api al backend, en h
   El diálogo siempre queda de respaldo. El ticket se pide una sola vez: reintentar no lo marca como copia.
 - **Pantalla encendida.** En un equipo registrado y abierto la app pide al navegador que no apague la pantalla
   (Wake Lock); si no se puede o se pierde, lo avisa arriba y en «Este equipo».
-- **Arqueo a ciegas.** Ninguna pantalla de la vendedora muestra lo esperado, la diferencia ni lo vendido.
+- **Arqueo a ciegas.** Ninguna pantalla de la vendedora muestra lo esperado, la diferencia ni lo vendido. En
+  «Ventas del turno» cada venta lleva su monto, pero nunca hay una suma.
+
+### Vender
+
+La pantalla «Vender» está pensada primero para el celular. La venta entra al turno abierto: en un equipo
+registrado, el de su caja; desde el celular de la vendedora, el de la caja abierta de su sucursal (si hay más de
+una, la elige). Con la caja cerrada no se vende.
+
+1. **Armar la venta.** Se escribe el nombre o el código, o se escanea con la cámara; un código exacto (también el
+   de un lector de códigos conectado a la computadora, que «escribe» y da Enter) entra sin más toques. Una
+   **perforación con pieza** se arma en dos pasos: primero la perforación y después su pieza; el precio lo da el
+   servidor según la pieza. La pantalla no deja pasar de las existencias.
+2. **Precio y promoción.** Quien tiene el permiso puede cobrar más que el precio establecido, nunca menos. La
+   única rebaja es una promoción vigente: se elige de la lista y el servidor dice cuánto rebaja.
+3. **Cobrar.** Una o varias formas de pago: efectivo en córdobas o en dólares (al tipo de cambio de hoy; sin él
+   no se cobra en dólares), tarjeta o transferencia con su referencia. «Exacto» pone lo que falta. Se ve lo
+   pagado, lo que falta y el **vuelto** antes de registrar.
+4. **Registrar.** Si no hay internet la venta no se da por hecha: la pantalla lo dice y «Reintentar» envía lo
+   mismo con la misma clave, así que no se duplica.
+5. **El ticket.**
+   - En el equipo de la sucursal sale solo al registrar la venta (por USB en el celular o la tablet Android; por
+     el diálogo en la PC de caja). Si falla, «Reintentar la impresión» manda el mismo: no sale como COPIA.
+   - Desde el celular de la vendedora no se imprime en papel: el ticket queda en «Tickets por imprimir» del
+     equipo de su sucursal, y su pantalla avisa cuando ya salió. Si la clienta no quiere papel, «No hace falta
+     imprimirlo».
+   - En los dos casos, **ticket digital**: el PDF para compartirlo por WhatsApp u otra aplicación (en una
+     computadora, se descarga).
+
+**Ventas del turno** (enlace arriba, en «Vender»): las del turno abierto, con su detalle, la reimpresión (ya como
+COPIA), el ticket digital y, para quien tiene el permiso, **anular** con su motivo.
+
+**Tickets por imprimir.** El equipo de la sucursal muestra una franja con cuántos tickets esperan. Se imprimen con
+un toque («Imprimir») o se quitan con «No imprimir», que anota quién lo decidió. Con el parámetro
+`IMPRESION_AUTOMATICA_COLA` en `SI` el equipo los imprime solo, también con la pantalla bloqueada (la pantalla de
+PIN dice cuántos esperan); si la impresora falla no insiste sola: avisa, y alguien revisa y toca «Reintentar».
+Lo que quede en la cola al cerrar el turno se marca solo como no impreso.
+
+**Gaveta.** Con `IMPRESION_ABRIR_GAVETA` en `SI`, el ticket por USB de una venta cobrada en efectivo abre la
+gaveta conectada a la impresora. En una PC de caja eso lo decide el driver (ver «Preparar una PC de caja»).
+
+Los dos parámetros vienen en `NO`. Mientras no esté la pantalla de administración (F4) se cambian con
+`PUT /api/parametros/IMPRESION_AUTOMATICA_COLA` y `{ "valor": "SI" }`, como administrador.
 
 ### Probar en la tablet y en el celular (túnel de Cloudflare)
 

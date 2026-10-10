@@ -1,22 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { ScanLine, Search } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { api, detalleDeError } from '../api/cliente';
 import type { ExistenciaUbicacion, SucursalConCajas, VarianteEncontrada } from '../api/tipos';
 import { EscanerCamara } from '../equipo/EscanerCamara';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Boton, Campo, Cargando, Etiqueta, Selector, Tarjeta } from '../ui/basicos';
 import { formatoMonto } from '../util/formato';
-
-/** Espera a que la persona deje de escribir antes de buscar. */
-function useRetrasado(valor: string, ms = 300): string {
-  const [retrasado, setRetrasado] = useState(valor);
-  useEffect(() => {
-    const reloj = window.setTimeout(() => setRetrasado(valor), ms);
-    return () => window.clearTimeout(reloj);
-  }, [valor, ms]);
-  return retrasado;
-}
+import { useRetrasado } from '../util/retrasado';
 
 /** Cuánto hay de un producto en cada ubicación (la bodega, según lo que cada quien puede ver). */
 function Existencias({ varianteId }: { varianteId: number }) {

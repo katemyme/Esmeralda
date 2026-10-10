@@ -1,7 +1,7 @@
 import { Printer } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, apiArchivo, mensajeDeError, ErrorApi } from '../api/cliente';
-import type { Renglon } from '../api/tipos';
+import type { TicketEnRenglones } from '../api/tipos';
 import { Aviso, Boton } from '../ui/basicos';
 import { comandosDeTicket, imprimirConDialogo, imprimirPorUsb, modoDeImpresion } from './imprimir';
 import { mensajeDeImpresora } from './impresora';
@@ -10,6 +10,8 @@ interface Props {
   /** La ruta de la API que entrega el ticket, p. ej. `/turnos/9/imprimir`. */
   ruta: string;
   texto?: string;
+  /** Lo manda a imprimir al aparecer, sin esperar el toque (el ticket de una venta recién hecha). */
+  automatico?: boolean;
 }
 
 /**
@@ -19,8 +21,9 @@ interface Props {
  *
  * El ticket se le pide a la API una sola vez y se guarda: si la impresora falla, «Reintentar»
  * vuelve a enviar el mismo, sin que la API lo cuente como otra impresión (saldría como COPIA).
+ * Por USB, el ticket trae si hay que abrir la gaveta (una venta cobrada en efectivo).
  */
-export function BotonImprimir({ ruta, texto = 'Imprimir ticket' }: Props) {
+export function BotonImprimir({ ruta, texto = 'Imprimir ticket', automatico = false }: Props) {
   const [ocupado, setOcupado] = useState(false);
   const [resultado, setResultado] = useState<{ tipo: 'exito' | 'error'; texto: string } | null>(
     null,
@@ -36,9 +39,10 @@ export function BotonImprimir({ ruta, texto = 'Imprimir ticket' }: Props) {
     setResultado(null);
     try {
       if (forma === 'usb') {
-        porUsb.current ??= comandosDeTicket(
-          (await api<{ renglones: Renglon[] }>('POST', `${ruta}?formato=renglones`)).renglones,
-        );
+        if (!porUsb.current) {
+          const ticket = await api<TicketEnRenglones>('POST', `${ruta}?formato=renglones`);
+          porUsb.current = comandosDeTicket(ticket.renglones, { gaveta: ticket.abrir_gaveta });
+        }
         await imprimirPorUsb(porUsb.current);
         setResultado({ tipo: 'exito', texto: 'El ticket se envió a la impresora.' });
       } else {
@@ -59,10 +63,23 @@ export function BotonImprimir({ ruta, texto = 'Imprimir ticket' }: Props) {
     }
   };
 
+  // Una sola vez, aunque la pantalla se vuelva a dibujar
+  const yaSalio = useRef(false);
+  const alAparecer = useRef(imprimir);
+  useEffect(() => {
+    if (!automatico || yaSalio.current) return;
+    yaSalio.current = true;
+    void alAparecer.current(modo);
+  }, [automatico, modo]);
+
   return (
     <div className="flex flex-col gap-3">
       {resultado && <Aviso tipo={resultado.tipo}>{resultado.texto}</Aviso>}
-      <Boton ocupado={ocupado} onClick={() => void imprimir(modo)}>
+      <Boton
+        variante={automatico && !fallo ? 'secundario' : 'primario'}
+        ocupado={ocupado}
+        onClick={() => void imprimir(modo)}
+      >
         <Printer className="size-5" aria-hidden />
         {fallo ? 'Reintentar la impresión' : pedido ? '¿No salió? Reimprimir' : texto}
       </Boton>

@@ -74,6 +74,9 @@ function preparar({ recuperada = null, pantalla = SIN_EQUIPO, pendientes = 0 }: 
         tipo_cambio: { fecha: '2026-10-08', usd_a_nio: '36.6243', es_de_hoy: true },
       }),
     ),
+    http.get('*/api/cola-impresion', () =>
+      HttpResponse.json({ atendida: false, automatica: false, tickets: [] }),
+    ),
     http.get('*/api/caja/turno', () =>
       HttpResponse.json({
         turno: {

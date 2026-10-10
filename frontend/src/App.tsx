@@ -3,15 +3,18 @@ import { Hammer } from 'lucide-react';
 import { lazy, Suspense, type ReactNode } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
 import { Disposicion } from './disposicion/Disposicion';
+import { ProveedorCola } from './equipo/cola';
 import { PantallaDespierta } from './equipo/despierta';
 import { MENU, estaLista } from './menu';
 import { Acceso } from './pantallas/Acceso';
 import { Alertas } from './pantallas/Alertas';
 import { Caja } from './pantallas/Caja';
 import { CambiarPassword } from './pantallas/CambiarPassword';
+import { TicketsPorImprimir } from './pantallas/Cola';
 import { Inicio } from './pantallas/Inicio';
 import { MiPin } from './pantallas/MiPin';
 import { Turno, Turnos } from './pantallas/Turnos';
+import { VentaVer, VentasDelTurno } from './pantallas/Ventas';
 import { tienePermiso, useSesion, useSesionActiva } from './sesion/sesion';
 import { Boton, Cargando, Tarjeta } from './ui/basicos';
 
@@ -24,6 +27,11 @@ const EsteEquipo = lazy(() =>
 const Consulta = lazy(() =>
   import('./pantallas/Consulta').then((modulo) => ({ default: modulo.Consulta })),
 );
+
+// Y la venta: trae también el lector de códigos
+const Venta = lazy(() => import('./pantallas/Venta').then((modulo) => ({ default: modulo.Venta })));
+
+const VER_VENTAS = ['VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS'];
 
 const FASES = {
   F1: 'la base',
@@ -136,6 +144,40 @@ function Contenido() {
             </ConPermiso>
           }
         />
+        <Route
+          path="venta"
+          element={
+            <ConPermiso permisos={['VENTAS_REGISTRAR']}>
+              <Suspense fallback={<Cargando />}>
+                <Venta />
+              </Suspense>
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="venta/del-turno"
+          element={
+            <ConPermiso permisos={VER_VENTAS}>
+              <VentasDelTurno />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="venta/del-turno/:id"
+          element={
+            <ConPermiso permisos={VER_VENTAS}>
+              <VentaVer />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="venta/cola"
+          element={
+            <ConPermiso permisos={['VENTAS_REGISTRAR']}>
+              <TicketsPorImprimir />
+            </ConPermiso>
+          }
+        />
         <Route path="*" element={<EnConstruccion />} />
       </Route>
     </Routes>
@@ -146,7 +188,9 @@ export function App() {
   return (
     <BrowserRouter>
       <PantallaDespierta>
-        <Contenido />
+        <ProveedorCola>
+          <Contenido />
+        </ProveedorCola>
       </PantallaDespierta>
       <AvisoDeVersion />
     </BrowserRouter>

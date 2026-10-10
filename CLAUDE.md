@@ -57,24 +57,38 @@ _Actualizado el 2026-10-09._
   (driver de Xprinter, Chrome con `--kiosk-printing`, gaveta por el driver); la cola imprime aunque la pantalla
   esté bloqueada mientras el equipo esté abierto; botón «No imprimir» en la cola anotando quién, y al cerrar el
   turno lo que quede en la cola se marca solo como «no impreso»; Wake Lock en el equipo abierto.
-- **Terminada, pendiente de su revisión: F2a parte 1 (caja y consulta de precios)**, hecha el 2026-10-08.
-  **No empezar la parte 2 (venta, tickets y cola) hasta su OK.**
+- **F2a parte 1 (caja y consulta de precios) aprobada el 2026-10-09:** el dueño imprimió el ticket de cierre en
+  papel, ya con el ajuste de 72 mm («salió bien»), y pidió seguir con la parte 2.
+- **Terminada, pendiente de su revisión: F2a parte 2 (venta, tickets y cola)**, hecha el 2026-10-09 con las
+  decisiones tomadas al programarla (están en «Decisiones de negocio clave», «Venta, tickets y cola»). Incluyó
+  backend nuevo: la cola de impresión, el ticket digital y el parámetro de la gaveta. **No empezar F2b
+  (devoluciones y cambios) hasta su OK.**
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
   («Preparar una PC de caja») dice qué elegir en el diálogo de Chrome: papel «80(72.1) x 3276 mm» y escala
   «Personalizado» con 100 (con un PDF, Chrome no muestra márgenes). Comprobado contra el driver de su PC con
   salida a archivo, sin gastar papel: los 72 mm ocupan los 576 puntos del cabezal y el blanco de arriba y de
-  abajo no avanza (*Save Paper Mode* en «Top and Bottom», como viene). **Falta que el dueño lo imprima en
-  papel.** La etiqueta `backend-completo` y el respaldo se movieron a este punto.
+  abajo no avanza (*Save Paper Mode* en «Top and Bottom», como viene). El dueño lo imprimió en papel el
+  2026-10-09: salió bien.
 - **Cómo revisa el dueño:** sobre todo en su PC con Chrome en `localhost`, con la vista de celular (F12) y
   varias ventanas (normal, incógnito y otro perfil) como equipos distintos; la cámara, con la webcam; la
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 715 de base de datos, 583 del backend y, en el frontend, 43 de Vitest y 13 recorridos de
-  Playwright. Subido a GitHub (`main`) el 2026-10-09, a pedido del dueño, con el ajuste de impresión; las
-  etiquetas se quedan en este equipo (en GitHub solo está la rama).
+- Pruebas en verde: 752 de base de datos, 600 del backend y, en el frontend, 77 de Vitest y 19 recorridos de
+  Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
+  la parte 2 de F2a no se ha subido. Las etiquetas se quedan en este equipo (en GitHub solo está la rama). La
+  etiqueta `backend-completo` y el respaldo se movieron al final de la parte 2 de F2a.
+- Fuera de F2a parte 2 (decidir si entran más adelante): cambiar los dos parámetros nuevos desde una pantalla
+  (va en F4; mientras, `PUT /api/parametros/...`); que la búsqueda ignore los acentos («lobulo» no encuentra
+  «Lóbulo»: es de la base, `fn_buscar_variantes`); abrir la gaveta al ejecutar una devolución en efectivo (F2b);
+  fotos de los productos en el buscador de la venta; notas de la venta; vender algo que no tiene existencias en
+  el sistema (la base no lo permite). Sin probar con equipo real: la impresión por USB desde un Android con la
+  Xprinter (los recorridos usan una impresora simulada que guarda lo que el navegador le manda), el pulso de la
+  gaveta, compartir el ticket digital desde un iPhone y desde un Android (en la computadora se descarga), la
+  cola automática con la pantalla bloqueada en un celular real (depende de que Android no duerma a Chrome) y
+  un lector de códigos USB en la PC de caja.
 - Fuera de F1 / sin probar con equipo real: la impresora (no hay XP-T80A todavía: la página de prueba de
   «Este equipo» la imprime el dueño cuando la tenga; los acentos dependen de cómo venga configurada), la cámara
   en un iPhone y en una tablet reales (solo se probó la lógica; hace falta el túnel), la aplicación instalada en
@@ -99,6 +113,11 @@ _Actualizado el 2026-10-09._
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
   (Se recreó el 2026-10-08 al terminar el backend de F1: solo tenía los datos demo.)
+- **La base local ya tiene datos del dueño** (el 2026-10-09: 2 equipos registrados, 7 turnos, tipo de cambio):
+  **no usar `db:recrear`** sin que él lo pida. Para un cambio de esquema se le aplica solo lo nuevo, dentro de
+  una transacción y con un respaldo antes (`pg_dump -Fc` a `C:\Respaldos\`), y se comprueba que quede igual
+  a una base nueva comparando `pg_dump --schema-only` con `esmeralda_test`. Así se hizo con la cola de
+  impresión (respaldo: `C:\Respaldos\esmeralda-local-2026-10-09-antes-de-la-cola.dump`).
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -138,7 +157,7 @@ Las tres usan bases propias que se borran y recrean en cada corrida (`esmeralda_
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      715 pruebas de reglas de negocio
+db/04_pruebas.sql      752 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -293,10 +312,11 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     lo ve: en la venta, en el reporte de ventas y en el de cierres.
   - **Desde el celular solo se ven las ventas propias del turno abierto**, sin totales; ni las de otras
     personas ni las de turnos anteriores. El arqueo sigue a ciegas.
-  - **Ticket de una venta hecha desde el celular (va en F2a, todavía no programado):** las dos opciones siempre.
-    (1) Cola de impresión: la venta aparece en la tablet de esa sucursal en «Tickets por imprimir» y se imprime
+  - **Ticket de una venta hecha desde el celular (hecho en F2a parte 2):** las dos opciones siempre.
+    (1) Cola de impresión: la venta aparece en el equipo de esa sucursal en «Tickets por imprimir» y se imprime
     con un toque, o sola con el parámetro `IMPRESION_AUTOMATICA_COLA`; imprimir desde la cola cuenta como
     original, no como COPIA. (2) Ticket digital: compartir el PDF desde el celular (WhatsApp u otra app).
+    El detalle está en «Venta, tickets y cola».
   - **PIN de 4 dígitos** para el cambio rápido en un equipo registrado. El equipo **se abre una vez al día**
     con una contraseña (la primera persona); abierto, acepta el PIN de quienes están asignadas a su sucursal,
     hasta que alguien lo cierre o pasen las 12 h. Sin eso el PIN no sirve. Cada PIN abre la sesión de esa
@@ -308,6 +328,37 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     equipos registrados.
   - **Código de los productos (va en F3b):** prefijo de la categoría + correlativo de 5 dígitos por categoría
     (`PTI-00001`), uno por variante, en el campo `sku`; el QR de la etiqueta lleva solo el código.
+
+- Venta, tickets y cola (F2a parte 2; decisiones tomadas al programarla el 2026-10-09, **pendientes de la
+  revisión del dueño**). Las reglas de la cola están en la base:
+  - **Qué entra a la cola:** solo el ticket de una venta hecha sin equipo registrado (`venta.origen =
+    'CELULAR'`), y entra solo. La venta hecha en el equipo imprime su ticket ahí mismo, sola, al registrarse.
+    La venta del administrador sin equipo cuenta como «desde celular»: va a la cola, y él además puede
+    imprimirla desde donde esté.
+  - **La cola es del equipo, no de una persona:** la atiende el equipo registrado con su cookie, sin sesión,
+    mientras esté abierto (por eso sigue con la pantalla bloqueada). Una PC de caja ve los tickets de su caja;
+    la tablet o el celular del negocio, los de su sucursal.
+  - **Original una sola vez:** la impresión se anota la primera vez que el equipo pide el ticket; pedirlo otra
+    vez (falló la impresora, se recargó la pantalla) devuelve el mismo original. Cuando el equipo avisa de que
+    salió, deja la cola; reimprimirlo después desde la venta ya es COPIA.
+  - **Dos equipos en la misma sucursal:** mientras uno imprime un ticket, el otro no lo puede pedir durante un
+    minuto (lo ve «imprimiéndose en otro equipo»).
+  - **«No imprimir»:** lo decide quien hizo la venta (desde su celular: «No hace falta imprimirlo») o quien
+    vende en un equipo de esa sucursal. Queda quién. Si después hace falta, se imprime desde la venta.
+  - **Sale sola de la cola:** si se imprime desde la venta en el equipo (impreso); si la venta se anula o el
+    turno se cierra con el ticket esperando (no impreso).
+  - **Cola automática:** `IMPRESION_AUTOMATICA_COLA` viene en `NO`. En `SI` el equipo imprime sin que nadie
+    toque nada; si la impresora falla **no insiste sola**: avisa (también en la pantalla de PIN) hasta que
+    alguien toque «Reintentar».
+  - **Ticket digital:** el mismo ticket en PDF; dice «Ticket digital», nunca lleva COPIA y no cuenta como
+    impresión. Lo pide quien puede ver la venta (desde el celular, las propias del turno abierto).
+  - **Gaveta:** `IMPRESION_ABRIR_GAVETA` viene en `NO`. En `SI`, el ticket por USB lleva la orden de abrirla
+    solo en el original de una venta cobrada, al menos en parte, en efectivo. En la PC de caja lo decide el
+    driver.
+  - **Dólares:** la pantalla solo deja cobrar en dólares con el tipo de cambio **de hoy** registrado (la base
+    aceptaría el último que haya).
+  - **Arqueo ciego en «Ventas del turno»:** cada venta con su monto, nunca una suma.
+  - **Abajo, en el celular,** quedan Inicio, Vender y lo que siga del menú; las alertas, por la campana.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -323,7 +374,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 | Fase | Contenido |
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
-| F2a | En dos partes: (1) caja y consulta de precios, hecha; (2) venta, tickets y cola. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
+| F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, hecha y pendiente de revisión. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
@@ -419,6 +470,28 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   `comandosDeTicket()`; por diálogo pide el PDF (`apiArchivo`) y lo imprime desde un marco oculto. Guarda lo
   pedido: reintentar no vuelve a llamar a la API (no sale COPIA). La conexión con la impresora se comparte
   (`impresoraLista()`, `conectarImpresora()`, `imprimirPorUsb()` en `equipo/imprimir.ts`).
+  `automatico` lo manda a imprimir al aparecer (el ticket de la venta recién hecha, en el equipo); por USB,
+  `abrir_gaveta` de la respuesta decide si va el pulso de la gaveta.
+- Venta (F2a parte 2): `pantallas/Venta.tsx` (se carga aparte, `lazy`: trae el escáner) con sus pasos (carrito,
+  cobro) y `venta/VentaHecha.tsx` (vuelto y ticket). Las cuentas, sin React y en centavos, en
+  `venta/carrito.ts` (`cuenta()` dice lo pagado, lo que falta, el vuelto y qué falta para poder registrar); los
+  dólares con `dolaresACordobas()`, que redondea como la base. `venta/destino.ts` (`useDestinoDeVenta`) dice
+  dónde entra la venta: el turno del equipo, o la caja abierta de `GET /api/caja/abiertas` sin equipo (ahí sí
+  se envía `caja_id`). El precio del paquete y el descuento de la promoción **los da la API**
+  (`/perforaciones/:id/precio-paquete`, `/promociones/disponibles?subtotal=`): no calcularlos en pantalla. Una
+  clave de idempotencia por venta (`nuevoUuid()`), la misma en cada reintento. Los resultados del buscador
+  solo se muestran cuando son de lo que está escrito (`alDia`).
+- Ventas del turno: `pantallas/Ventas.tsx` (`/venta/del-turno` y `/venta/del-turno/:id`). Nunca sumar los
+  montos de la lista.
+- Cola de impresión: `equipo/cola.tsx` (`ProveedorCola` envuelve la app, también la pantalla de PIN;
+  `useCola()`). Pregunta cada 8 s con `{ publica: true }` (la API reconoce al equipo por su cookie: nada de
+  la cola lleva token, salvo «No imprimir»). Guarda cada ticket pedido y cuáles ya salieron: reintentar no pide
+  otro ni imprime dos veces. La automática va de uno en uno, no reintenta sola un ticket que falló y, con la
+  app en dos pestañas, solo imprime la que tiene el candado (`navigator.locks`). Se ve en
+  `pantallas/Cola.tsx` (`/venta/cola`), en la franja de `Disposicion` y en `Acceso` (pantalla bloqueada).
+- Ticket digital: `equipo/TicketDigital.tsx` pide el PDF **al aparecer** y comparte en el toque
+  (`navigator.share` con el archivo: el iPhone lo rechaza si hubo una espera entre el toque y el compartir);
+  donde no se puede compartir archivos, lo descarga.
 - Pantalla encendida: `equipo/despierta.tsx` (`PantallaDespierta` envuelve la app; `useDespierta()` da el
   estado). Activa con sesión en un equipo registrado o en su pantalla de PIN con el equipo abierto.
 - Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
@@ -431,8 +504,13 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 - Pruebas: `src/**/*.spec.{ts,tsx}` con Vitest + Testing Library; `App.spec.tsx` monta la app completa contra una
   API simulada con MSW (cada respuesta se crea nueva: un cuerpo no se lee dos veces). Recorridos en `e2e/` con
   Playwright contra el backend real: `e2e/servidor-api.mjs` recrea `esmeralda_ui_test`, compila el backend y lo
-  levanta en el puerto 3100; van en orden y con un solo trabajador (`tablet.spec.ts`, `celular.spec.ts` y
-  `caja.spec.ts`, que registra un celular del negocio en cada sucursal y trabaja con las dos a la vez).
+  levanta en el puerto 3100; van en orden y con un solo trabajador (`tablet.spec.ts`, `celular.spec.ts`,
+  `caja.spec.ts`, que registra un celular del negocio en cada sucursal y trabaja con las dos a la vez, y
+  `venta.spec.ts`). `venta.spec.ts` le pone al celular del negocio un navegador de Android y una **impresora
+  USB simulada** (`impresoraDePrueba`, con `addInitScript`): lo que la app le manda queda en
+  `window.__impreso` y ahí se lee el ticket (número, total, que no diga COPIA). Toda prueba de Vitest que monte
+  la app con la sesión de un equipo tiene que simular `GET /api/cola-impresion`. En jsdom, `URL.createObjectURL`
+  no existe: las pruebas que muestran el ticket digital lo definen.
   Para ver cómo queda una pantalla: una captura con Playwright a un archivo temporal.
 
 ## Etapa terminada: backend (`backend/`)
@@ -659,6 +737,25 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
     `PUT /api/auth/pin` crea el propio. El PIN se guarda con `hashearPassword` y su forma se valida en
     `autenticacion/esquemas.ts` (la base nunca lo ve). Entrar con PIN no lleva el límite por IP del login.
     `test/pin.e2e-spec.ts` trabaja en las sucursales `PNA` y `PNB`.
+- Cola de impresión, ticket digital y gaveta (backend de F2a parte 2):
+  - Base: sección 11.1 del esquema (`ticket_cola`, `fn_cola_impresion`, `fn_cola_tomar`, `fn_cola_impreso`,
+    `fn_cola_no_imprimir`, `fn_cola_automatica`, `fn_abre_gaveta`). El ticket entra y sale de la cola con
+    disparadores (`tg_venta_a_la_cola`, `tg_venta_anulada_cola`, `tg_turno_cerrado_cola`) y
+    `fn_registrar_impresion_venta` lo da por impreso: no hace falta tocar la cola desde otras funciones.
+    «Ya salió de la cola» y «otro equipo lo está imprimiendo» salen con `restrict_violation` (23001 → 409).
+  - Módulo `cola-impresion/`: `GET /api/cola-impresion`, `POST .../:id/ticket` y `POST .../:id/impreso` son
+    `@Publica()` y dependen de la cookie del equipo (como el PIN); `POST .../:id/no-imprimir` pide sesión. El
+    equipo se busca **solo leyendo** (`dispositivo.token_hash`), no con `fn_dispositivo_por_token`, que anota
+    `ultimo_uso`: la cola pregunta cada pocos segundos. Sin persona, las transacciones van con
+    `transaccion(null, ...)` y la venta del ticket con `VentasService.paraLaCola(id)` (sin alcance de nadie:
+    qué ve cada equipo lo decide `fn_cola_tomar`).
+  - `TicketEnRenglones` lleva `abrir_gaveta` (lo decide `fn_abre_gaveta`, con `abreGaveta()` de
+    `ventas.service.ts`). `renglonesTicketVenta(venta, impresion, { digital: true })` es el ticket digital
+    (`GET /api/ventas/:id/ticket-digital`): no llama a `fn_registrar_impresion_venta`.
+  - La venta trae `cola: { id, estado } | null`.
+  - Pruebas: `test/cola-impresion.e2e-spec.ts` trabaja en las sucursales `CQA` y `CQB`, cambia los dos
+    parámetros nuevos y los deja en `NO` en `afterAll`. En `test/celular.e2e-spec.ts`, las tres rutas del
+    equipo están en `PUBLICAS` y las otras dos (`ticket-digital`, `no-imprimir`) en `DESDE_EL_CELULAR`.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

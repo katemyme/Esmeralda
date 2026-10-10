@@ -1,8 +1,8 @@
-import { Bell, KeyRound, Smartphone, Wallet } from 'lucide-react';
+import { Bell, KeyRound, ShoppingCart, Smartphone, Wallet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { usePendientes, useTurno } from '../api/consultas';
-import { useSesionActiva } from '../sesion/sesion';
+import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Tarjeta } from '../ui/basicos';
 import { formatoHora, primerNombre } from '../util/formato';
 
@@ -33,7 +33,8 @@ function Acceso({
 }
 
 export function Inicio() {
-  const { usuario, equipo, acceso } = useSesionActiva();
+  const sesion = useSesionActiva();
+  const { usuario, equipo, acceso } = sesion;
   const pendientes = usePendientes();
   const turno = useTurno();
   const esAdmin = usuario.rol.codigo === 'ADMIN';
@@ -56,13 +57,22 @@ export function Inicio() {
           </p>
           <p className="mt-1 font-normal">
             Desde aquí puede consultar precios y existencias, recibir envíos, hacer conteos,
-            solicitar devoluciones y vender. Abrir y cerrar la caja, anular y lo demás se hace en la
-            tablet de la sucursal.
+            solicitar devoluciones y vender. Abrir y cerrar la caja, anular y lo demás se hace en el
+            equipo de la sucursal.
           </p>
         </Aviso>
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
+        {tienePermiso(sesion, ['VENTAS_REGISTRAR']) && (
+          <Acceso
+            a="/venta"
+            icono={<ShoppingCart className="size-6" aria-hidden />}
+            titulo="Vender"
+          >
+            Buscar o escanear, cobrar y entregar el ticket.
+          </Acceso>
+        )}
         <Acceso a="/alertas" icono={<Bell className="size-6" aria-hidden />} titulo="Alertas">
           {pendientes === 0
             ? 'No tiene nada pendiente.'

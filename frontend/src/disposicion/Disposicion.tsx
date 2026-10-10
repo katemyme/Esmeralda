@@ -1,8 +1,19 @@
-import { Bell, KeyRound, Lock, LogOut, Menu as IconoMenu, Power, UserRound, X } from 'lucide-react';
+import {
+  Bell,
+  KeyRound,
+  Lock,
+  LogOut,
+  Menu as IconoMenu,
+  Power,
+  Printer,
+  UserRound,
+  X,
+} from 'lucide-react';
 import { DropdownMenu } from 'radix-ui';
 import { useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router';
 import { usePendientes, useTipoCambio, useTurno } from '../api/consultas';
+import { useCola } from '../equipo/cola';
 import { estaLista, opcionesPara, type OpcionMenu } from '../menu';
 import { useSesion, useSesionActiva } from '../sesion/sesion';
 import { EspacioLogo, Etiqueta, Marca } from '../ui/basicos';
@@ -26,6 +37,26 @@ function FranjaDeCaja() {
         <Etiqueta tono="aviso">Falta el tipo de cambio de hoy</Etiqueta>
       )}
     </div>
+  );
+}
+
+/** En el equipo de la sucursal: los tickets de las ventas hechas desde un celular que esperan. */
+function FranjaDeCola() {
+  const { tickets, estados, automatica } = useCola();
+  if (tickets.length === 0) return null;
+  const conError = tickets.some((t) => estados[t.id]?.fase === 'error');
+  return (
+    <Link
+      to="/venta/cola"
+      className="flex min-h-11 items-center gap-2 bg-oro-claro px-4 py-1.5 text-sm font-semibold text-oro-texto"
+    >
+      <Printer className="size-5 shrink-0" aria-hidden />
+      <span className="flex-1">
+        {tickets.length === 1 ? '1 ticket por imprimir' : `${tickets.length} tickets por imprimir`}
+        {conError && ': revise la impresora'}
+      </span>
+      <span className="underline">{automatica && !conError ? 'Ver' : 'Imprimir'}</span>
+    </Link>
   );
 }
 
@@ -143,6 +174,7 @@ export function Disposicion() {
           </div>
         </div>
         <FranjaDeCaja />
+        <FranjaDeCola />
       </header>
 
       <div className="flex flex-1">

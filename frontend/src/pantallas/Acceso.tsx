@@ -1,11 +1,12 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { ArrowLeft, Lock } from 'lucide-react';
+import { ArrowLeft, Lock, Printer } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useNavigate } from 'react-router';
 import { z } from 'zod';
 import { ErrorApi, mensajeDeError } from '../api/cliente';
 import type { PantallaPin } from '../api/tipos';
+import { useCola } from '../equipo/cola';
 import { useSesion } from '../sesion/sesion';
 import { Aviso, Boton, Campo, EspacioLogo, Etiqueta, Marca } from '../ui/basicos';
 import { TecladoPin } from '../ui/TecladoPin';
@@ -152,6 +153,28 @@ function ConPin({ usuarios }: { usuarios: PantallaPin['usuarios'] }) {
   );
 }
 
+/** Con la pantalla bloqueada la cola sigue atendida: aquí se ve si hay tickets esperando. */
+function TicketsEnEspera() {
+  const { tickets, estados, automatica } = useCola();
+  if (tickets.length === 0) return null;
+  const conError = tickets.some((t) => estados[t.id]?.fase === 'error');
+  return (
+    <p className="flex max-w-md items-center gap-2 rounded-2xl bg-oro-claro px-4 py-3 text-sm font-semibold text-oro-texto">
+      <Printer className="size-5 shrink-0" aria-hidden />
+      <span>
+        {tickets.length === 1
+          ? '1 ticket por imprimir.'
+          : `${tickets.length} tickets por imprimir.`}{' '}
+        {conError
+          ? 'No se pudo imprimir: entre y revise la impresora.'
+          : automatica
+            ? 'Este equipo los imprime solo.'
+            : 'Entre para imprimirlos.'}
+      </span>
+    </p>
+  );
+}
+
 /** Lo que se ve sin sesión: el inicio con contraseña o, en un equipo abierto, la pantalla de PIN. */
 export function Acceso({ pantalla }: { pantalla: PantallaPin }) {
   const hayPin = pantalla.equipo !== null && pantalla.abierto && pantalla.usuarios.length > 0;
@@ -194,6 +217,7 @@ export function Acceso({ pantalla }: { pantalla: PantallaPin }) {
           </Boton>
         )}
       </div>
+      <TicketsEnEspera />
     </main>
   );
 }

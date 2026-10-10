@@ -70,6 +70,9 @@ function preparar() {
         tipo_cambio: { fecha: '2026-10-07', usd_a_nio: '36.6243', es_de_hoy: false },
       }),
     ),
+    http.get('*/api/cola-impresion', () =>
+      HttpResponse.json({ atendida: false, automatica: false, tickets: [] }),
+    ),
     http.get('*/api/caja/turno', () =>
       HttpResponse.json({
         turno: turnoAbierto ? { ...TURNO, cierre_pide_justificacion: intentos > 0 } : null,

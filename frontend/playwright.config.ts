@@ -43,6 +43,13 @@ export default defineConfig({
       dependencies: ['celular'],
       use: { browserName: 'chromium', hasTouch: true },
     },
+    {
+      // La venta: en el celular del negocio, desde el celular de la vendedora, y la cola de tickets
+      name: 'venta',
+      testMatch: 'venta.spec.ts',
+      dependencies: ['caja'],
+      use: { browserName: 'chromium', hasTouch: true },
+    },
   ],
   webServer: [
     {

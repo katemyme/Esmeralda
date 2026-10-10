@@ -36,11 +36,14 @@ test('desde su celular entra con el acceso limitado: sin caja, con el menú abaj
   await expect(page.getByText(/Por eso tiene el acceso del celular/)).toBeVisible();
   await expect(page.getByRole('button', { name: 'Registrar este equipo' })).toHaveCount(0);
 
-  // Los avisos son los de su sucursal
+  // Abajo quedan lo que más usa: el inicio, vender y los precios
+  const abajo = page.getByRole('navigation', { name: 'Menú' }).last();
+  await expect(abajo.getByRole('link')).toHaveText(['Inicio', 'Vender', 'Precios y existencias']);
+
+  // Los avisos son los de su sucursal: se llega por la campana
   await page
-    .getByRole('navigation', { name: 'Menú' })
-    .last()
-    .getByRole('link', { name: 'Alertas' })
+    .getByRole('banner')
+    .getByRole('link', { name: /^Alertas/ })
     .click();
   await expect(page.getByRole('heading', { name: 'Avisos de mi sucursal' })).toBeVisible();
 
