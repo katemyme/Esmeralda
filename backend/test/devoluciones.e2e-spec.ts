@@ -11,6 +11,7 @@ import type {
   DevolucionDetalle,
   DevolucionResumen,
   VentaParaDevolver,
+  VentasRecientes,
 } from '../src/devoluciones/devoluciones.service';
 import type { Existencia, Movimiento } from '../src/inventario/inventario.service';
 import type { Merma } from '../src/mermas/mermas.service';
@@ -342,6 +343,7 @@ describe('Devoluciones y cambios', () => {
     const rutas: [Metodo, string, string][] = [
       ['get', '/api/devoluciones', cualquiera],
       ['get', '/api/devoluciones/venta?numero=DEA-1', cualquiera],
+      ['get', '/api/devoluciones/ventas-recientes', cualquiera],
       ['get', '/api/devoluciones/1', cualquiera],
       ['post', '/api/devoluciones', 'DEVOLUCIONES_REGISTRAR'],
       ['post', '/api/devoluciones/1/resolver', 'DEVOLUCIONES_APROBAR'],
@@ -573,6 +575,7 @@ describe('Devoluciones y cambios', () => {
         venta_cambio: null,
         transferencia: null,
         ticket: { negocio: 'Esmeralda Experience', ruc: null, direccion: null, telefono: null },
+        aviso_whatsapp: null, // el administrador todavía no pone su número
       });
       expect(await alertas('DEVOLUCION_PENDIENTE')).toEqual([
         expect.objectContaining({
@@ -1568,6 +1571,173 @@ describe('Devoluciones y cambios', () => {
       expect(despues).toMatchObject({ devoluciones: '2360.00', venta_neta: '2390.00' });
       const completa = seccion(await reporte(nora.acceso, 'devoluciones'), 'devoluciones');
       expect(completa.filas).toHaveLength(4);
+    });
+  });
+
+  // F2b. Va al final porque hace una venta más (la de Elsa) y los reportes de arriba cuentan las ventas.
+  describe('«No tiene el ticket» y el aviso por WhatsApp', () => {
+    const nueva = { id: 0, numero: '', turno: 0, linea: 0 };
+
+    async function recientes(acceso: string, consulta = ''): Promise<VentasRecientes> {
+      const { body } = await con(
+        'get',
+        `/api/devoluciones/ventas-recientes?${consulta}`,
+        acceso,
+      ).expect(200);
+      return body as VentasRecientes;
+    }
+
+    async function completadasEnA(vendedorId?: number): Promise<string[]> {
+      const { rows } = await sql<{ numero: string }>`
+        select numero from venta
+         where sucursal_id = ${ids.a} and estado = 'COMPLETADA'
+           and (${vendedorId ?? null}::bigint is null or vendedor_id = ${vendedorId ?? null}::bigint)
+         order by id desc`.execute(bd.db);
+      return rows.map((v) => v.numero);
+    }
+
+    /** Mueve la fecha de una venta (la base no deja tocar una venta: se aparta su disparador). */
+    async function moverFecha(ventaId: number, dias: number): Promise<void> {
+      await bd.db.transaction().execute(async (trx) => {
+        await sql`alter table venta disable trigger tg_venta_proteger`.execute(trx);
+        await sql`update venta set fecha = fecha + make_interval(days => ${dias}) where id = ${ventaId}`.execute(
+          trx,
+        );
+        await sql`alter table venta enable trigger tg_venta_proteger`.execute(trx);
+      });
+    }
+
+    it('la encargada y el administrador ven todas las de la sucursal; la vendedora, solo las suyas', async () => {
+      // Elsa (encargada) abre la caja de la A y vende un perfume: es la única venta que no es de Dora
+      const turno = await con('post', '/api/caja/turno/abrir', elsa.acceso)
+        .send({ inicial_nio: 500 })
+        .expect(201);
+      nueva.turno = turno.body.turno.id;
+      const v = (
+        await vender(elsa.acceso, {
+          items: [{ variante_id: pieza.perfume, cantidad: 1 }],
+          pagos: [{ metodo: 'EFECTIVO', monto: 400 }],
+        })
+      ).body.venta as VentaDetalle;
+      Object.assign(nueva, { id: v.id, numero: v.numero, linea: v.lineas[0].id });
+
+      const deLaEncargada = await recientes(elsa.acceso);
+      expect(deLaEncargada).toMatchObject({ dias: 7, desde: sumarDias(hoy, -7) });
+      expect(deLaEncargada.ventas.map((x) => x.numero)).toEqual(await completadasEnA());
+      expect(deLaEncargada.ventas[0].numero).toBe(nueva.numero); // de la más reciente a la más antigua
+
+      const deLaVendedora = (await recientes(dora.acceso)).ventas;
+      expect(deLaVendedora.map((x) => x.numero)).toEqual(await completadasEnA(ids.dora));
+      expect(deLaVendedora.map((x) => x.numero)).not.toContain(nueva.numero);
+      expect(deLaVendedora.every((x) => x.vendedor === 'Dora Devoluciones')).toBe(true);
+      expect(deLaVendedora.length).toBeGreaterThan(0);
+
+      // Beto es vendedor de la B y no ha vendido nada; el administrador (sin equipo) ve todas
+      expect((await recientes(beto.acceso)).ventas).toEqual([]);
+      const delAdministrador = (await recientes(jefa.acceso, 'buscar=DEA-&limite=200')).ventas;
+      expect(delAdministrador.map((x) => x.numero)).toEqual(await completadasEnA());
+    });
+
+    it('cada venta trae su monto y por qué no se podría devolver; la lista no trae ninguna suma', async () => {
+      const lista = await recientes(elsa.acceso);
+      expect(Object.keys(lista).sort()).toEqual(['desde', 'dias', 'ventas']);
+      expect(lista.ventas[0]).toEqual({
+        id: nueva.id,
+        numero: nueva.numero,
+        fecha: expect.any(String),
+        sucursal: { id: ids.a, codigo: 'DEA', nombre: SUC_A },
+        vendedor: 'Elsa Devoluciones',
+        cliente_nombre: null,
+        total: '400.00',
+        articulos: 1,
+        productos: ['Regalo DVE — Perfume'],
+        motivo_no: `La venta ${nueva.numero} es de un turno que sigue abierto: se anula, no se devuelve`,
+      });
+      expect(lista.ventas.find((x) => x.id === venta.v1)).toMatchObject({
+        numero: 'DEA-00000001',
+        total: '900.00',
+        articulos: 2,
+        productos: ['Regalo DVE — Cadena', 'Regalo DVE — Perfume'],
+        motivo_no: null,
+      });
+      expect(JSON.stringify(lista)).not.toMatch(/costo|esperado|suma|total_/i);
+    });
+
+    it('filtros por día y por número; lo que ya pasó del plazo de devolución no sale', async () => {
+      const numeros = async (consulta: string) =>
+        (await recientes(elsa.acceso, consulta)).ventas.map((x) => x.numero);
+      const todas = await completadasEnA();
+      expect(await numeros(`fecha=${hoy}`)).toEqual(todas);
+      expect(await numeros(`fecha=${sumarDias(hoy, -1)}`)).toEqual([]);
+      expect(await numeros('buscar=0000001')).toEqual(['DEA-00000001']);
+      expect(await numeros('limite=2')).toEqual(todas.slice(0, 2));
+      expect(await numeros(`antes_de=${venta.v2}`)).toEqual(['DEA-00000001']);
+      const invalida = await con(
+        'get',
+        '/api/devoluciones/ventas-recientes?fecha=ayer',
+        elsa.acceso,
+      ).expect(400);
+      expect(invalida.body.errores[0].campo).toBe('fecha');
+
+      // La V3 pasa a tener 8 días: con un plazo de 7 ya no se puede devolver, y deja de salir
+      await moverFecha(venta.v3, -8);
+      try {
+        expect(await numeros('')).toEqual(todas.filter((n) => n !== 'DEA-00000003'));
+        // con 7 días justos todavía entra: el día 1 se puede solicitar hasta el 8
+        await moverFecha(venta.v3, 1);
+        expect(await numeros(`fecha=${sumarDias(hoy, -7)}`)).toEqual(['DEA-00000003']);
+        await moverFecha(venta.v3, -1);
+      } finally {
+        await moverFecha(venta.v3, 8);
+      }
+      expect(await numeros('')).toEqual(todas);
+    });
+
+    it('es solo del equipo de la sucursal: desde el celular → 403 EQUIPO_REQUERIDO', async () => {
+      const enSuCelular = await tokenDeAcceso(app, 'elsa.dve', 'Devolver#2026');
+      await con('get', '/api/devoluciones/ventas-recientes', enSuCelular).expect(403).expect({
+        codigo: 'EQUIPO_REQUERIDO',
+        mensaje:
+          'Esto solo se puede hacer desde un equipo registrado de la sucursal (la tablet o la caja)',
+      });
+      // buscarla por su número sí se puede desde el celular
+      await con('get', '/api/devoluciones/venta?numero=DEA-1', enSuCelular).expect(200);
+    });
+
+    it('la solicitud pendiente trae el WhatsApp del administrador (solo dígitos); resuelta, ya no', async () => {
+      await comoJefa('post', `/api/turnos/${nueva.turno}/cierre-forzado`)
+        .send({ motivo: 'Cierre de la caja A para devolver la venta de Elsa' })
+        .expect(200);
+      const { body } = await solicitar(dora.acceso, {
+        venta_id: nueva.id,
+        tipo: 'DEVOLUCION',
+        motivo: 'No le gustó el aroma',
+        lineas: [{ detalle_id: nueva.linea, cantidad: 1, estado: 'BUENO' }],
+      }).expect(201);
+      const id = (body.devolucion as DevolucionDetalle).id;
+      // sin el número del administrador no hay a quién avisar
+      expect((body.devolucion as DevolucionDetalle).aviso_whatsapp).toBeNull();
+
+      try {
+        await comoJefa('put', '/api/parametros/WHATSAPP_ADMINISTRADOR')
+          .send({ valor: '+505 8888-7777' })
+          .expect(200);
+        expect((await ver(dora.acceso, id)).aviso_whatsapp).toBe('50588887777');
+        // la lista no lo trae: el aviso se da desde la solicitud
+        const lista = await con('get', '/api/devoluciones?estado=pendiente', dora.acceso).expect(
+          200,
+        );
+        expect(JSON.stringify(lista.body)).not.toContain('50588887777');
+
+        await comoJefa('post', `/api/devoluciones/${id}/resolver`)
+          .send({ aprobar: false, comentario: 'El perfume ya se abrió' })
+          .expect(200);
+        expect((await ver(dora.acceso, id)).aviso_whatsapp).toBeNull();
+      } finally {
+        await comoJefa('put', '/api/parametros/WHATSAPP_ADMINISTRADOR')
+          .send({ valor: null })
+          .expect(200);
+      }
     });
   });
 });

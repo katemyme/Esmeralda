@@ -40,6 +40,24 @@ export const esquemaBuscarVenta = z.object({
 export type DatosBuscarVenta = z.output<typeof esquemaBuscarVenta>;
 
 /**
+ * «No tiene el ticket»: las ventas de los últimos días (el plazo de devolución) para elegir la
+ * factura. `?fecha=` deja solo las de ese día de Managua; `?buscar=`, parte del número de factura o
+ * del nombre del cliente.
+ */
+export const esquemaVentasRecientes = z.object({
+  fecha: fechaDeConsulta('fecha').optional(),
+  buscar: z
+    .string('El texto a buscar no es válido')
+    .trim()
+    .max(80, 'El texto a buscar es demasiado largo')
+    .optional()
+    .transform((texto) => texto || undefined),
+  limite: limiteDeConsulta(),
+  antes_de: enteroDeConsulta('antes_de debe ser el id de una venta').optional(),
+});
+export type FiltroVentasRecientes = z.output<typeof esquemaVentasRecientes>;
+
+/**
  * 1) La solicitud. `detalle_id` es la línea de la factura (viene en la búsqueda de la venta); una
  * línea puede ir dos veces, una parte en buen estado y otra defectuosa. El monto lo calcula la
  * base. No lleva sucursal: es la del equipo de la sesión. `sucursal_id` es para quien no está en un

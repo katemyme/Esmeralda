@@ -348,6 +348,7 @@ describe('Acceso desde el celular', () => {
         ['post', '/api/caja/turno/movimientos', { tipo: 'EGRESO', moneda: 'NIO', monto: 50 }],
         ['post', '/api/ventas/1/anular', { motivo: 'Desde el celular no' }],
         ['post', '/api/ventas/1/imprimir'],
+        ['get', '/api/devoluciones/ventas-recientes'],
         ['post', '/api/devoluciones/1/ejecutar', {}],
         ['post', '/api/devoluciones/1/imprimir'],
         ['put', '/api/tipo-cambio', { usd_a_nio: 36.7 }],

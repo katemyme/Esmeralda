@@ -21,6 +21,7 @@ import {
   type DevolucionDetalle,
   type DevolucionResumen,
   type VentaParaDevolver,
+  type VentasRecientes,
 } from './devoluciones.service';
 import {
   esquemaBuscarVenta,
@@ -29,12 +30,14 @@ import {
   esquemaResolverDevolucion,
   esquemaSolicitarDevolucion,
   esquemaTransferencia,
+  esquemaVentasRecientes,
   type DatosBuscarVenta,
   type DatosEjecutarDevolucion,
   type DatosResolverDevolucion,
   type DatosSolicitarDevolucion,
   type DatosTransferencia,
   type FiltroDevoluciones,
+  type FiltroVentasRecientes,
 } from './esquemas';
 
 /**
@@ -57,6 +60,21 @@ export class DevolucionesController {
     @Query(new ValidacionZod(esquemaBuscarVenta)) filtro: DatosBuscarVenta,
   ): Promise<{ venta: VentaParaDevolver }> {
     return { venta: await this.devoluciones.buscarVenta(usuario, filtro.numero) };
+  }
+
+  /**
+   * «No tiene el ticket»: `?fecha=&buscar=&limite=&antes_de=` — las ventas de los últimos días (el
+   * plazo de devolución) para elegir la factura. Solo en el equipo de la sucursal (o el
+   * administrador): con VENTAS_VER_TODAS, las de sus sucursales; si no, las propias. Sin sumas.
+   */
+  @Get('ventas-recientes')
+  @RequierePermiso('DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR')
+  @SoloEnEquipo()
+  async ventasRecientes(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Query(new ValidacionZod(esquemaVentasRecientes)) filtro: FiltroVentasRecientes,
+  ): Promise<VentasRecientes> {
+    return this.devoluciones.ventasRecientes(usuario, filtro);
   }
 
   /**

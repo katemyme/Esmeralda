@@ -5567,6 +5567,15 @@ LANGUAGE sql STABLE AS $$
                   OR fn_puede_operar_sucursal(p_usuario, d.sucursal_id) ) ) ))
 $$;
 
+-- El WhatsApp del administrador para avisarle de una solicitud nueva (parámetro WHATSAPP_ADMINISTRADOR),
+-- solo con dígitos, como lo pide el enlace de WhatsApp. NULL si está vacío o no parece un número con
+-- código de país (de 8 a 15 dígitos): entonces la pantalla no ofrece el botón «Avisar al administrador».
+CREATE OR REPLACE FUNCTION fn_whatsapp_administrador() RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT CASE WHEN length(n.digitos) BETWEEN 8 AND 15 THEN n.digitos END
+    FROM (SELECT regexp_replace(coalesce(fn_parametro_txt('WHATSAPP_ADMINISTRADOR'), ''), '[^0-9]', '', 'g') AS digitos) n
+$$;
+
 -- Anota la impresión del ticket de una devolución ya ejecutada y devuelve cuál es (1 = original).
 CREATE OR REPLACE FUNCTION fn_registrar_impresion_devolucion(p_usuario bigint, p_devolucion bigint) RETURNS integer
 LANGUAGE plpgsql AS $$

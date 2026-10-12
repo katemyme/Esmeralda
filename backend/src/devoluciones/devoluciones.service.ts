@@ -12,6 +12,7 @@ import type {
   DatosResolverDevolucion,
   DatosSolicitarDevolucion,
   FiltroDevoluciones,
+  FiltroVentasRecientes,
 } from './esquemas';
 import { renglonesTicketDevolucion } from './ticket-devolucion';
 
@@ -93,6 +94,36 @@ export interface DevolucionDetalle extends DevolucionResumen {
     direccion: string | null;
     telefono: string | null;
   };
+  /**
+   * Pendiente y con el parámetro WHATSAPP_ADMINISTRADOR puesto: ese número, solo con dígitos, para
+   * el botón «Avisar al administrador». null: no hay a quién avisar o ya no hace falta.
+   */
+  aviso_whatsapp: string | null;
+}
+
+/** Una venta de los últimos días en «No tiene el ticket»: lo justo para reconocerla. Sin costos. */
+export interface VentaReciente {
+  id: number;
+  numero: string;
+  fecha: Date;
+  sucursal: Ubicacion;
+  vendedor: string;
+  cliente_nombre: string | null;
+  total: string;
+  articulos: number;
+  /** Los primeros productos de la factura, para reconocerla sin abrirla. */
+  productos: string[];
+  /** null: se puede solicitar. Si no, por qué no (su turno sigue abierto). */
+  motivo_no: string | null;
+}
+
+/** «No tiene el ticket»: las ventas del plazo de devolución que quien pregunta puede ver. */
+export interface VentasRecientes {
+  /** El plazo para devolver (DEVOLUCION_DIAS_MAX) y el primer día que todavía entra en él. */
+  dias: number;
+  desde: string;
+  /** Cada venta con su monto: la lista nunca trae sumas. */
+  ventas: VentaReciente[];
 }
 
 /** Una factura buscada por su número, con lo que se puede devolver de ella. */
@@ -187,6 +218,7 @@ interface FilaDevolucion {
   transferida_por: string | null;
   negocio: string | null;
   ruc: string | null;
+  whatsapp_administrador: string | null;
 }
 
 function persona(id: number | null, nombre: string | null): UsuarioReferido | null {
@@ -362,6 +394,87 @@ export class DevolucionesService {
     };
   }
 
+  /**
+   * «No tiene el ticket»: las ventas completadas de los últimos días (el plazo de devolución, el
+   * parámetro DEVOLUCION_DIAS_MAX) para elegir la factura sin su número. Con VENTAS_VER_TODAS, las
+   * de sus sucursales; si no, solo las que hizo esa persona. La ruta es solo del equipo de la
+   * sucursal (o del administrador). Cada venta trae su monto; la lista, ninguna suma.
+   */
+  async ventasRecientes(
+    usuario: UsuarioAutenticado,
+    filtro: FiltroVentasRecientes,
+  ): Promise<VentasRecientes> {
+    const patron = filtro.buscar && patronContiene(filtro.buscar);
+    const [plazo, ventas] = await Promise.all([
+      sql<{ dias: number; desde: string }>`
+        select p.dias, (now() at time zone 'America/Managua')::date - p.dias as desde
+          from (select coalesce(fn_parametro_num('DEVOLUCION_DIAS_MAX'), 0)::integer as dias) p`.execute(
+        this.bd.db,
+      ),
+      sql<{
+        id: number;
+        numero: string;
+        fecha: Date;
+        total: string;
+        cliente_nombre: string | null;
+        sucursal_id: number;
+        sucursal_codigo: string;
+        sucursal_nombre: string;
+        vendedor: string;
+        articulos: number;
+        productos: string[];
+        motivo_no: string | null;
+      }>`
+        select v.id, v.numero, v.fecha, v.total, v.cliente_nombre,
+               s.id as sucursal_id, s.codigo as sucursal_codigo, s.nombre as sucursal_nombre,
+               u.nombre_completo as vendedor,
+               (select coalesce(sum(d.cantidad), 0)::integer
+                  from venta_detalle d where d.venta_id = v.id) as articulos,
+               array(select pr.nombre || ' — ' || va.nombre
+                       from venta_detalle d
+                       join variante va on va.id = d.variante_id
+                       join producto pr on pr.id = va.producto_id
+                      where d.venta_id = v.id
+                      order by d.id
+                      limit 4) as productos,
+               fn_venta_no_devoluble(v.id) as motivo_no
+          from venta v
+          join sucursal s on s.id = v.sucursal_id
+          join usuario u on u.id = v.vendedor_id
+          ${donde(
+            sql`v.estado = 'COMPLETADA'`,
+            sql`v.fecha >= ((now() at time zone 'America/Managua')::date
+                            - coalesce(fn_parametro_num('DEVOLUCION_DIAS_MAX'), 0)::integer
+                           )::timestamp at time zone 'America/Managua'`,
+            sql`(v.vendedor_id = ${usuario.id}
+                 or ((select fn_tiene_permiso(${usuario.id}, 'VENTAS_VER_TODAS'))
+                     and fn_puede_operar_sucursal(${usuario.id}, v.sucursal_id)))`,
+            filtro.fecha &&
+              sql`v.fecha >= ${inicioDelDia(filtro.fecha)} and v.fecha < ${finDelDia(filtro.fecha)}`,
+            patron && sql`(v.numero ilike ${patron} or v.cliente_nombre ilike ${patron})`,
+            filtro.antes_de && sql`v.id < ${filtro.antes_de}`,
+          )}
+         order by v.id desc
+         limit ${filtro.limite}`.execute(this.bd.db),
+    ]);
+    return {
+      dias: plazo.rows[0].dias,
+      desde: plazo.rows[0].desde,
+      ventas: ventas.rows.map((v) => ({
+        id: v.id,
+        numero: v.numero,
+        fecha: v.fecha,
+        sucursal: { id: v.sucursal_id, codigo: v.sucursal_codigo, nombre: v.sucursal_nombre },
+        vendedor: v.vendedor,
+        cliente_nombre: v.cliente_nombre,
+        total: v.total,
+        articulos: v.articulos,
+        productos: v.productos,
+        motivo_no: v.motivo_no,
+      })),
+    };
+  }
+
   async listar(usuarioId: number, filtro: FiltroDevoluciones): Promise<DevolucionResumen[]> {
     const patron = filtro.buscar && patronContiene(filtro.buscar);
     const filas = await this.consultar(
@@ -476,6 +589,7 @@ export class DevolucionesService {
         direccion: fila.sucursal_direccion,
         telefono: fila.sucursal_telefono,
       },
+      aviso_whatsapp: fila.estado === 'PENDIENTE' ? fila.whatsapp_administrador : null,
     };
   }
 
@@ -625,7 +739,8 @@ export class DevolucionesService {
              d.transferencia_referencia, d.transferida_at,
              ut.id as transferida_por_id, ut.nombre_completo as transferida_por,
              (select fn_parametro_txt('NEGOCIO_NOMBRE')) as negocio,
-             (select fn_parametro_txt('NEGOCIO_RUC')) as ruc
+             (select fn_parametro_txt('NEGOCIO_RUC')) as ruc,
+             (select fn_whatsapp_administrador()) as whatsapp_administrador
         from devolucion d
         join venta v on v.id = d.venta_id
         join sucursal sv on sv.id = v.sucursal_id

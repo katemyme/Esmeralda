@@ -773,6 +773,16 @@ SELECT fn_set_parametro(:admin, 'TICKET_LEYENDA', 'Gracias por su compra');
 SELECT fn_set_parametro(:admin, 'TICKET_LEYENDA', '');
 SELECT pg_temp.afirma(fn_parametro_txt('TICKET_LEYENDA') IS NULL, 'un parámetro que permite vacío puede quedar sin valor');
 
+-- El WhatsApp del administrador, para avisarle de una solicitud de devolución (F2b)
+SELECT pg_temp.afirma((SELECT valor IS NULL AND permite_vacio FROM parametro WHERE clave = 'WHATSAPP_ADMINISTRADOR'), 'el WhatsApp del administrador nace vacío');
+SELECT pg_temp.afirma(fn_whatsapp_administrador() IS NULL, 'sin número no hay a quién avisar por WhatsApp');
+SELECT fn_set_parametro(:admin, 'WHATSAPP_ADMINISTRADOR', '+505 8888-7777');
+SELECT pg_temp.afirma(fn_whatsapp_administrador() = '50588887777', 'el número sale solo con dígitos, como lo pide el enlace de WhatsApp');
+SELECT fn_set_parametro(:admin, 'WHATSAPP_ADMINISTRADOR', 'llamar al 8888');
+SELECT pg_temp.afirma(fn_whatsapp_administrador() IS NULL, 'lo que no es un número con código de país no sirve para avisar');
+SELECT fn_set_parametro(:admin, 'WHATSAPP_ADMINISTRADOR', '');
+SELECT pg_temp.afirma(fn_whatsapp_administrador() IS NULL, 'al vaciar el parámetro deja de haber a quién avisar');
+
 -- Permisos de los roles
 SELECT permisos AS perm_enc FROM v_roles_admin WHERE codigo = 'ENCARGADO' \gset
 SELECT permisos AS perm_ven FROM v_roles_admin WHERE codigo = 'VENDEDOR'  \gset

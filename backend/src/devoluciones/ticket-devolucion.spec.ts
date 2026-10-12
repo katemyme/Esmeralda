@@ -65,6 +65,7 @@ const devolucion: DevolucionDetalle = {
     direccion: 'Multicentro Las Brisas, Managua',
     telefono: '2222-4444',
   },
+  aviso_whatsapp: null,
 };
 
 function comoTexto(renglones: Renglon[]): string[] {
