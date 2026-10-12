@@ -15,7 +15,7 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-09._
+_Actualizado el 2026-10-12._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
   `guardado-b2`), **B3**, **B4**, **B5**, **B6** y **B7** del backend. Con B5 se hizo también todo lo que había quedado fuera de
@@ -59,10 +59,15 @@ _Actualizado el 2026-10-09._
   turno lo que quede en la cola se marca solo como «no impreso»; Wake Lock en el equipo abierto.
 - **F2a parte 1 (caja y consulta de precios) aprobada el 2026-10-09:** el dueño imprimió el ticket de cierre en
   papel, ya con el ajuste de 72 mm («salió bien»), y pidió seguir con la parte 2.
-- **Terminada, pendiente de su revisión: F2a parte 2 (venta, tickets y cola)**, hecha el 2026-10-09 con las
-  decisiones tomadas al programarla (están en «Decisiones de negocio clave», «Venta, tickets y cola»). Incluyó
-  backend nuevo: la cola de impresión, el ticket digital y el parámetro de la gaveta. **No empezar F2b
-  (devoluciones y cambios) hasta su OK.**
+- **F2a parte 2 (venta, tickets y cola) aprobada el 2026-10-11:** el dueño la probó completa en su PC («todo
+  salió bien») y aprobó las decisiones tomadas al programarla (están en «Decisiones de negocio clave», «Venta,
+  tickets y cola»). Incluyó backend nuevo: la cola de impresión, el ticket digital y el parámetro de la gaveta.
+- **Ajuste pedido al aprobarla, ya hecho (2026-10-12):** al abrir el turno, si todavía no hay tipo de cambio de
+  hoy, la pantalla lo recuerda con un aviso ámbar. No obliga: la caja se abre igual. Quien puede registrarlo
+  (`TIPO_CAMBIO_GESTIONAR`: encargada y administrador) tiene ahí el acceso directo «Registrarlo ahora», que
+  lleva al campo; a los demás les dice a quién pedírselo. Solo cambió el frontend.
+- **F2b (devoluciones y cambios): plan presentado el 2026-10-12, pendiente de su OK.** No programarla hasta
+  que lo dé y responda las decisiones que le tocan.
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -76,10 +81,11 @@ _Actualizado el 2026-10-09._
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 752 de base de datos, 600 del backend y, en el frontend, 77 de Vitest y 19 recorridos de
+- Pruebas en verde: 752 de base de datos, 600 del backend y, en el frontend, 79 de Vitest y 19 recorridos de
   Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
-  la parte 2 de F2a no se ha subido. Las etiquetas se quedan en este equipo (en GitHub solo está la rama). La
-  etiqueta `backend-completo` y el respaldo se movieron al final de la parte 2 de F2a.
+  la parte 2 de F2a y su ajuste no se han subido. Las etiquetas se quedan en este equipo (en GitHub solo está
+  la rama). La etiqueta `backend-completo` y el respaldo siguen en el backend de la parte 2 de F2a (`952c8a3`):
+  el ajuste del 2026-10-12 no tocó el backend.
 - Fuera de F2a parte 2 (decidir si entran más adelante): cambiar los dos parámetros nuevos desde una pantalla
   (va en F4; mientras, `PUT /api/parametros/...`); que la búsqueda ignore los acentos («lobulo» no encuentra
   «Lóbulo»: es de la base, `fn_buscar_variantes`); abrir la gaveta al ejecutar una devolución en efectivo (F2b);
@@ -329,8 +335,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Código de los productos (va en F3b):** prefijo de la categoría + correlativo de 5 dígitos por categoría
     (`PTI-00001`), uno por variante, en el campo `sku`; el QR de la etiqueta lleva solo el código.
 
-- Venta, tickets y cola (F2a parte 2; decisiones tomadas al programarla el 2026-10-09, **pendientes de la
-  revisión del dueño**). Las reglas de la cola están en la base:
+- Venta, tickets y cola (F2a parte 2; decisiones tomadas al programarla el 2026-10-09 y aprobadas por el dueño
+  el 2026-10-11). Las reglas de la cola están en la base:
   - **Qué entra a la cola:** solo el ticket de una venta hecha sin equipo registrado (`venta.origen =
     'CELULAR'`), y entra solo. La venta hecha en el equipo imprime su ticket ahí mismo, sola, al registrarse.
     La venta del administrador sin equipo cuenta como «desde celular»: va a la cola, y él además puede
@@ -374,7 +380,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 | Fase | Contenido |
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
-| F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, hecha y pendiente de revisión. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
+| F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
@@ -464,7 +470,9 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   `pantallas/Turnos.tsx` (historial con diferencias y cierre forzado: solo con `CAJA_VER_DIFERENCIAS`) y
   `pantallas/Consulta.tsx` (buscador + escáner). El administrador sin equipo elige la caja y todas sus
   llamadas llevan `caja_id`. Las cuentas de la pantalla van en centavos (`util/dinero.ts`) y solo suman lo
-  que la persona escribe: nada de esperados.
+  que la persona escribe: nada de esperados. Al abrir, si falta el tipo de cambio de hoy, `AbrirTurno` lo
+  recuerda en ámbar sin impedir abrir (`useFaltaTipoCambioDeHoy()` de `api/consultas.ts`, que no avisa
+  mientras todavía se pregunta); su acceso directo enfoca el campo de `TipoDeCambio`.
 - Imprimir un ticket: `<BotonImprimir ruta="/turnos/9/imprimir" />`. Decide el modo con `modoDeImpresion()`
   (`usb` solo en Android con WebUSB; si no, `dialogo`): por USB pide `?formato=renglones` y los traduce con
   `comandosDeTicket()`; por diálogo pide el PDF (`apiArchivo`) y lo imprime desde un marco oculto. Guarda lo
