@@ -66,8 +66,19 @@ _Actualizado el 2026-10-12._
   hoy, la pantalla lo recuerda con un aviso ámbar. No obliga: la caja se abre igual. Quien puede registrarlo
   (`TIPO_CAMBIO_GESTIONAR`: encargada y administrador) tiene ahí el acceso directo «Registrarlo ahora», que
   lleva al campo; a los demás les dice a quién pedírselo. Solo cambió el frontend.
-- **F2b (devoluciones y cambios): plan presentado el 2026-10-12, pendiente de su OK.** No programarla hasta
-  que lo dé y responda las decisiones que le tocan.
+- **Cambio de regla del dueño (2026-10-12), ya hecho:** el precio de venta se sube **sin tope** (antes, máximo
+  +50 %). Se quitó la regla de `fn_registrar_venta` y el parámetro `VENTA_SOBREPRECIO_MAX_PCT` ya no existe; la
+  pantalla de venta pide confirmar un precio de más del doble del de catálogo. Lo demás sigue igual (ver
+  «Decisiones de negocio clave»).
+- **F2b (devoluciones y cambios) aprobada en plan el 2026-10-12, en dos partes** con su revisión entre una y
+  otra. Sus respuestas a las cinco decisiones están en «Decisiones de negocio clave», «Devoluciones en
+  pantalla». La parte 2 es ejecutar en caja (devolución y cambio), el ticket (también por USB), la gaveta y
+  las transferencias pendientes.
+- **Terminada, pendiente de su revisión: F2b parte 1 (solicitar y aprobar)**, hecha el 2026-10-12: buscar la
+  factura por número o QR, «No tiene el ticket», solicitar desde el equipo y desde el celular, la lista,
+  aprobar o rechazar, cancelar y el aviso por WhatsApp. Incluyó backend nuevo: la ruta de las ventas recientes,
+  el parámetro `WHATSAPP_ADMINISTRADOR` y `aviso_whatsapp` en la solicitud. Las decisiones tomadas al
+  programarla están en «Devoluciones en pantalla». **No empezar la parte 2 hasta su OK.**
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -81,14 +92,22 @@ _Actualizado el 2026-10-12._
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 752 de base de datos, 600 del backend y, en el frontend, 79 de Vitest y 19 recorridos de
+- Pruebas en verde: 759 de base de datos, 605 del backend y, en el frontend, 103 de Vitest y 27 recorridos de
   Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
-  la parte 2 de F2a y su ajuste no se han subido. Las etiquetas se quedan en este equipo (en GitHub solo está
-  la rama). La etiqueta `backend-completo` y el respaldo siguen en el backend de la parte 2 de F2a (`952c8a3`):
-  el ajuste del 2026-10-12 no tocó el backend.
+  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope ni la parte 1 de F2b. Las etiquetas se
+  quedan en este equipo (en GitHub solo está la rama). La etiqueta `backend-completo` y el respaldo se movieron
+  el 2026-10-12 dos veces: al quitar el tope del precio y al terminar el backend de la parte 1 de F2b.
+- Fuera de F2b parte 1 (decidir si entran más adelante): avisar solo al administrador (notificaciones: las
+  alertas siguen en el panel y el WhatsApp lo manda la persona); buscar una venta sin ticket desde el celular
+  personal (decisión del dueño: solo en el equipo); corregir una solicitud (se cancela y se hace otra); los
+  demás parámetros en pantalla (F4: aquí solo está el número del WhatsApp). Sin probar con equipo real: leer el
+  QR de un ticket impreso con la cámara de un celular (los recorridos escriben el número), abrir WhatsApp desde
+  un Android y un iPhone reales (se prueba el enlace y su texto) y ver cómo quedan las pantallas (no se sacaron
+  capturas; se comprueba que en el celular no se desbordan).
 - Fuera de F2a parte 2 (decidir si entran más adelante): cambiar los dos parámetros nuevos desde una pantalla
   (va en F4; mientras, `PUT /api/parametros/...`); que la búsqueda ignore los acentos («lobulo» no encuentra
-  «Lóbulo»: es de la base, `fn_buscar_variantes`); abrir la gaveta al ejecutar una devolución en efectivo (F2b);
+  «Lóbulo»: es de la base, `fn_buscar_variantes`); abrir la gaveta al ejecutar una devolución en efectivo
+  (aprobado el 2026-10-12: va en la parte 2 de F2b);
   fotos de los productos en el buscador de la venta; notas de la venta; vender algo que no tiene existencias en
   el sistema (la base no lo permite). Sin probar con equipo real: la impresión por USB desde un Android con la
   Xprinter (los recorridos usan una impresora simulada que guarda lo que el navegador le manda), el pulso de la
@@ -119,11 +138,15 @@ _Actualizado el 2026-10-12._
   (borra lo que tenga: mirar antes si el dueño ya guardó datos propios). `npm run db:tipos` lee esa base: con
   ella atrasada, regenerar los tipos apuntando `DATABASE_URL` a la base de pruebas, que Jest deja al día.
   (Se recreó el 2026-10-08 al terminar el backend de F1: solo tenía los datos demo.)
-- **La base local ya tiene datos del dueño** (el 2026-10-09: 2 equipos registrados, 7 turnos, tipo de cambio):
-  **no usar `db:recrear`** sin que él lo pida. Para un cambio de esquema se le aplica solo lo nuevo, dentro de
-  una transacción y con un respaldo antes (`pg_dump -Fc` a `C:\Respaldos\`), y se comprueba que quede igual
-  a una base nueva comparando `pg_dump --schema-only` con `esmeralda_test`. Así se hizo con la cola de
-  impresión (respaldo: `C:\Respaldos\esmeralda-local-2026-10-09-antes-de-la-cola.dump`).
+- **La base local ya tiene datos del dueño** (el 2026-10-12: 2 equipos registrados, 12 turnos, 10 ventas, tipo
+  de cambio): **no usar `db:recrear`** sin que él lo pida. Para un cambio de esquema se le aplica solo lo nuevo,
+  dentro de una transacción y con un respaldo antes (`pg_dump -Fc` a `C:\Respaldos\`), y se comprueba que quede
+  igual a una base nueva comparando `pg_dump --schema-only` con `esmeralda_test` (las dos líneas `\restrict` y
+  `\unrestrict` de pg_dump 18 llevan una clave al azar: se quitan antes de comparar) y, si cambió el seed, los
+  parámetros (todo menos su valor). Así se hizo con la cola de impresión
+  (`esmeralda-local-2026-10-09-antes-de-la-cola.dump`), al quitar el tope del precio
+  (`esmeralda-local-2026-10-12-antes-de-quitar-el-tope.dump`) y con el parámetro del WhatsApp
+  (`esmeralda-local-2026-10-12-antes-del-aviso-por-whatsapp.dump`); los respaldos están en `C:\Respaldos\`.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -163,7 +186,7 @@ Las tres usan bases propias que se borran y recrean en cada corrida (`esmeralda_
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      752 pruebas de reglas de negocio
+db/04_pruebas.sql      759 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -369,6 +392,39 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Arqueo ciego en «Ventas del turno»:** cada venta con su monto, nunca una suma.
   - **Abajo, en el celular,** quedan Inicio, Vender y lo que siga del menú; las alertas, por la campana.
 
+- Devoluciones en pantalla (F2b; respuestas del dueño del 2026-10-12 al aprobar el plan):
+  - **En dos partes**, con su revisión entre una y otra: (1) solicitar y aprobar; (2) ejecutar, tickets y
+    transferencias.
+  - **Gaveta (parte 2):** se abre al ejecutar una devolución con efectivo, con el mismo
+    `IMPRESION_ABRIR_GAVETA`, solo en el ticket original y solo si sale efectivo de la caja.
+  - **Tickets al ejecutar (parte 2):** uno automático (el que firma el cliente y se queda en la tienda) y un
+    botón «Copia para el cliente».
+  - **«No tiene el ticket»:** solo en el equipo de la sucursal y solo con las ventas de los últimos 7 días (el
+    plazo de devolución, `DEVOLUCION_DIAS_MAX`). La encargada y el administrador ven todas; la vendedora, solo
+    las suyas. Cada venta con su monto, nunca sumas.
+  - **Aviso al administrador:** un botón «Avisar al administrador» que abre WhatsApp con el texto ya escrito
+    (número de solicitud, factura, monto y sucursal), **sin** el nombre ni el teléfono del cliente. El número
+    del administrador va en el parámetro `WHATSAPP_ADMINISTRADOR`, vacío en el seed: vacío, el botón no sale.
+    La app no envía nada por su cuenta (las alertas siguen solo en el panel).
+  - Decisiones tomadas al programar la parte 1 (el 2026-10-12, **pendientes de la revisión del dueño**):
+    - «No tiene el ticket» le sale también al **administrador sin equipo** (entra desde cualquier lado con
+      todo, como siempre); a encargadas y vendedoras, solo en un equipo registrado.
+    - El número del WhatsApp lo pone el administrador en la propia pantalla «Devoluciones» (tarjeta «Aviso por
+      WhatsApp», con `PARAMETROS_GESTIONAR`), para no esperar a F4. Se guarda solo con dígitos; lo que no es un
+      número de 8 a 15 dígitos no se guarda, y la base lo trata como vacío.
+    - El «número de solicitud» del mensaje es el número interno de la solicitud («n.º 12»): el `DEV-…` se toma
+      al ejecutarla.
+    - El número de factura se puede escribir corto (`lam-12`) y, en el equipo o si la persona trabaja en una
+      sola sucursal, solo el correlativo (`12`).
+    - El administrador **rechaza** lo pendiente y **cancela** solo lo que ya aprobó; quien la solicitó cancela
+      la suya mientras no se ejecute.
+    - La solicitud abierta en pantalla se vuelve a pedir sola cada 15 segundos mientras está pendiente: quien
+      la solicitó la ve pasar a aprobada o rechazada sin tocar nada.
+    - La lista: para la sucursal «Aprobadas», «Esperando aprobación» y «Todas»; para el administrador «Por
+      aprobar», «Aprobadas» y «Todas». El inicio del administrador dice cuántas esperan su aprobación (un
+      conteo, sin montos). La alerta de una devolución lleva a ella con «Ver la solicitud».
+    - Una aprobada dice que ejecutarla en caja llega con la parte 2 (todavía no hay botón).
+
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
 
@@ -384,7 +440,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
 | F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
-| F2b | Devoluciones y cambios: buscar la factura por el QR, solicitar, aprobar, ejecutar, anotar transferencias |
+| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: hecha y pendiente de revisión; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
 | F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
@@ -503,6 +559,23 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 - Ticket digital: `equipo/TicketDigital.tsx` pide el PDF **al aparecer** y comparte en el toque
   (`navigator.share` con el archivo: el iPhone lo rechaza si hubo una espera entre el toque y el compartir);
   donde no se puede compartir archivos, lo descarga.
+- Devoluciones (F2b parte 1): `pantallas/Devoluciones.tsx` (la lista con sus pestañas, y la tarjeta del número
+  de WhatsApp para quien tiene `PARAMETROS_GESTIONAR`), `pantallas/DevolucionNueva.tsx` (se carga aparte,
+  `lazy`: buscar la factura con escáner, «No tiene el ticket», `FacturaParaDevolver` y el formulario) y
+  `pantallas/Devolucion.tsx` (el detalle: aprobar, rechazar, cancelar y el aviso). Rutas: `/devoluciones`,
+  `/devoluciones/nueva`, `/devoluciones/factura/:numero` y `/devoluciones/:id`. La lógica, sin React, en
+  `devoluciones/solicitud.ts` (`numeroDeFactura()` acepta lo escrito corto; `pedir()` no deja pasar de lo
+  disponible; `lineasDeSolicitud()` separa lo bueno de lo defectuoso; `pendienteDeSolicitud()` dice qué falta)
+  y `devoluciones/aviso.ts` (el texto y el enlace `wa.me`; **nunca** datos del cliente). Qué se puede
+  devolver, el monto exacto y el reparto efectivo/transferencia **los da la API**: la pantalla solo muestra un
+  «monto aproximado» de la solicitud que se está armando. La factura se pide siempre de nuevo (`staleTime: 0`,
+  `gcTime: 0`): lo devoluble cambia al cerrarse la caja. «No tiene el ticket» solo se ofrece con
+  `sesion.acceso === 'COMPLETO'`. Nunca sumar los montos de las listas (ni devoluciones ni ventas recientes).
+  El inicio del administrador usa `usePorAprobar()` (`api/consultas.ts`): toda prueba de Vitest que monte la
+  app con una sesión que tenga `DEVOLUCIONES_APROBAR` tiene que simular `GET /api/devoluciones`. Datos de
+  ejemplo para las pruebas en `pruebas/devoluciones.ts`. `Confirmacion` acepta `textoCancelar` para cuando
+  «Cancelar» se confundiría con lo que se confirma. El recorrido `e2e/devoluciones.spec.ts` va después de
+  `venta.spec.ts` (usa sus facturas), cierra la caja de Las Américas y la deja cerrada.
 - Pantalla encendida: `equipo/despierta.tsx` (`PantallaDespierta` envuelve la app; `useDespierta()` da el
   estado). Activa con sesión en un equipo registrado o en su pantalla de PIN con el equipo abierto.
 - Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
@@ -522,7 +595,10 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   `window.__impreso` y ahí se lee el ticket (número, total, que no diga COPIA). Toda prueba de Vitest que monte
   la app con la sesión de un equipo tiene que simular `GET /api/cola-impresion`. En jsdom, `URL.createObjectURL`
   no existe: las pruebas que muestran el ticket digital lo definen.
-  Para ver cómo queda una pantalla: una captura con Playwright a un archivo temporal.
+  Para ver cómo queda una pantalla: `e2e/devoluciones.spec.ts` tiene `captura(pagina, nombre)`, que guarda una
+  imagen solo cuando se corre con la variable `CAPTURAS=<carpeta fuera del repositorio>` (sin ella no hace
+  nada). Ese es el camino: **nada de specs temporales dentro del repositorio** (el `zz-capturas.spec.ts` del
+  2026-10-09 llevaba contraseñas escritas y el dueño pidió comprobar que no quedara rastro).
 
 ## Etapa terminada: backend (`backend/`)
 
@@ -767,6 +843,20 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   - Pruebas: `test/cola-impresion.e2e-spec.ts` trabaja en las sucursales `CQA` y `CQB`, cambia los dos
     parámetros nuevos y los deja en `NO` en `afterAll`. En `test/celular.e2e-spec.ts`, las tres rutas del
     equipo están en `PUBLICAS` y las otras dos (`ticket-digital`, `no-imprimir`) en `DESDE_EL_CELULAR`.
+- Devoluciones en pantalla (backend de F2b parte 1), en el mismo módulo `devoluciones/`:
+  - `GET /api/devoluciones/ventas-recientes` («No tiene el ticket»): `@SoloEnEquipo()` (equipo registrado o
+    administrador; desde el celular, 403 `EQUIPO_REQUERIDO`). Ventas `COMPLETADA` desde hoy menos
+    `DEVOLUCION_DIAS_MAX` (día de Managua), con el mismo alcance que la lista de ventas (`VENTAS_VER_TODAS` →
+    sus sucursales; si no, las propias). Devuelve `{ dias, desde, ventas }`; cada venta con su `total`, hasta
+    cuatro `productos` y `motivo_no` (`fn_venta_no_devoluble`). Sin sumas. Va declarada antes de `:id`.
+  - `aviso_whatsapp` en `GET /api/devoluciones/:id` (y en la respuesta de solicitar): el número del
+    administrador mientras la solicitud está `PENDIENTE`; lo limpia la base (`fn_whatsapp_administrador`: solo
+    dígitos, de 8 a 15; si no, null). No sale en la lista. El parámetro es `WHATSAPP_ADMINISTRADOR` (TEXTO,
+    permite vacío).
+  - Pruebas: al final de `test/devoluciones.e2e-spec.ts` (hace una venta más, la de Elsa, por eso va después
+    de los reportes; para probar el plazo mueve la fecha de una venta apartando `tg_venta_proteger` y la
+    devuelve a su sitio; deja el parámetro vacío en un `finally`). En `test/celular.e2e-spec.ts` la ruta
+    nueva está entre las que piden el equipo.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

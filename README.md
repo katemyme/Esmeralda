@@ -10,7 +10,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
 | Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios) |
-| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base) y F2a (caja, consulta de precios, venta, tickets y cola de impresión). Siguen devoluciones, inventario, administración y reportes |
+| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base), F2a (caja, consulta de precios, venta, tickets y cola de impresión) y la primera parte de F2b (solicitar y aprobar devoluciones). Siguen ejecutar las devoluciones en caja, inventario, administración y reportes |
 
 ## Estructura
 
@@ -138,7 +138,7 @@ solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualqui
 | Desde el celular | Qué |
 |---|---|
 | Sí | Productos, precios, existencias y kardex; ver y recibir envíos; conteos; buscar una factura y solicitar su devolución (ver y cancelar las suyas); **vender**, compartir el ticket digital de sus ventas y quitar su ticket de la cola de impresión; los avisos de su sucursal; cambiar su contraseña |
-| No | Abrir o cerrar la caja, movimientos de efectivo, anular, ejecutar devoluciones, imprimir en papel, registrar el tipo de cambio, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
+| No | Abrir o cerrar la caja, movimientos de efectivo, anular, buscar una venta sin su ticket («No tiene el ticket»), ejecutar devoluciones, imprimir en papel, registrar el tipo de cambio, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
 
 - **Vender.** La venta entra al turno abierto de su sucursal, con las reglas de siempre, y queda a su nombre.
   `GET /api/caja/abiertas` (`VENTAS_REGISTRAR`) dice dónde puede vender: las cajas con turno abierto de sus
@@ -156,7 +156,8 @@ solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualqui
 - **Solicitar una devolución.** La sucursal que la solicita es la de la venta si trabaja en ella, o la única
   en la que trabaja; quien trabaja en varias envía `sucursal_id`.
 - **Rutas que son solo del equipo** aunque su permiso valga en el celular: `GET /api/caja/turno`,
-  `POST /api/ventas/:id/imprimir`, `POST /api/devoluciones/:id/ejecutar` y `POST /api/devoluciones/:id/imprimir`.
+  `POST /api/ventas/:id/imprimir`, `GET /api/devoluciones/ventas-recientes` («No tiene el ticket»),
+  `POST /api/devoluciones/:id/ejecutar` y `POST /api/devoluciones/:id/imprimir`.
 - La lista completa de lo que responde desde el celular está en `backend/test/celular.e2e-spec.ts`, en una
   prueba que recorre todas las rutas de la API: una ruta nueva que no esté en la lista debe pedir el equipo.
 
@@ -362,6 +363,7 @@ donde está el cliente, que puede ser otra que la de la venta. La factura origin
 | Ruta | Permiso | Qué hace |
 |---|---|---|
 | `GET /api/devoluciones/venta?numero=` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | Busca la factura por su número (el QR del ticket; `lam-12` también vale), de la sucursal que sea: qué líneas se pueden devolver, cuántas quedan, lo pagado por unidad y las solicitudes que ya tiene |
+| `GET /api/devoluciones/ventas-recientes` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | «No tiene el ticket»: `?fecha=&buscar=&limite=&antes_de=` → `{ dias, desde, ventas }`, las ventas completadas del plazo de devolución (`DEVOLUCION_DIAS_MAX`) con su monto, sus primeros productos y `motivo_no`. **Solo en el equipo de la sucursal** (o el administrador): desde el celular, 403 `EQUIPO_REQUERIDO`. Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, las propias. Sin sumas |
 | `POST /api/devoluciones` | `DEVOLUCIONES_REGISTRAR` | 1) La solicitud: `{ venta_id, tipo: DEVOLUCION/CAMBIO, motivo, cliente_nombre, cliente_telefono, lineas: [{ detalle_id, cantidad, estado: BUENO/DEFECTUOSO }] }`. Queda pendiente, aparta lo pedido y deja una alerta al administrador |
 | `GET /api/devoluciones` · `GET /api/devoluciones/:id` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `?estado=&tipo=&sucursal_id=&desde=&hasta=&por_transferir=&buscar=&limite=&antes_de=` |
 | `POST /api/devoluciones/:id/resolver` | `DEVOLUCIONES_APROBAR` | 2) `{ aprobar, comentario }`: solo el administrador. Para rechazar, el comentario es obligatorio |
@@ -388,6 +390,10 @@ donde está el cliente, que puede ser otra que la de la venta. La factura origin
   `clave_idempotencia` responde lo mismo con `repetida: true`.
 - **Inventario.** Lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo con
   que se vendió); lo defectuoso sale enseguida como merma ya aprobada.
+- **Aviso por WhatsApp.** `GET /api/devoluciones/:id` trae `aviso_whatsapp`: el número del administrador (el
+  parámetro `WHATSAPP_ADMINISTRADOR`, solo con dígitos; lo limpia `fn_whatsapp_administrador`) mientras la
+  solicitud está pendiente, y null si el parámetro está vacío, no es un número de 8 a 15 dígitos o la solicitud ya
+  se resolvió. El mensaje lo arma la pantalla, sin datos del cliente; la API no envía nada.
 - **Número.** Cada devolución toma el suyo al ejecutarse, sin saltos: `DEV-<sucursal>-000001`.
 - **Arqueo ciego.** La vendedora ve el monto de cada devolución (tiene que entregarlo), nunca sumas ni lo esperado.
   En el ticket de cierre, las devoluciones del turno y el efectivo que salió por ellas solo llegan con
@@ -488,6 +494,11 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
   pieza), promoción, cobro en varias formas (córdobas, dólares, tarjeta, transferencia) con el vuelto a la vista,
   ventas del turno, anular, el ticket que sale solo al registrar la venta, el ticket digital y «Tickets por
   imprimir» (la cola de las ventas hechas desde un celular).
+- **F2b, primera parte (solicitar y aprobar devoluciones):** buscar la factura por su número o escaneando el QR
+  del ticket, «No tiene el ticket» (las ventas de los últimos días, solo en el equipo de la sucursal), solicitar
+  una devolución o un cambio desde el equipo o desde el celular, la lista de devoluciones, aprobar o rechazar
+  (el administrador, también desde su celular), cancelar y el aviso por WhatsApp al administrador. Ejecutarlas en
+  caja, su ticket y las transferencias van en la segunda parte.
 
 Lo demás del menú aparece marcado «Pronto».
 
@@ -562,6 +573,33 @@ gaveta conectada a la impresora. En una PC de caja eso lo decide el driver (ver 
 
 Los dos parámetros vienen en `NO`. Mientras no esté la pantalla de administración (F4) se cambian con
 `PUT /api/parametros/IMPRESION_AUTOMATICA_COLA` y `{ "valor": "SI" }`, como administrador.
+
+### Devoluciones y cambios (parte 1: solicitar y aprobar)
+
+En el menú, «Devoluciones». Son para ventas de un turno ya cerrado (con la caja abierta, la venta se anula).
+
+1. **Buscar la factura** («Nueva solicitud»). Se escanea el código QR del ticket o se escribe el número, que vale
+   corto: `lam-12` y, en el equipo de la sucursal, solo `12`. La pantalla dice qué se puede devolver de cada
+   línea, cuántas quedan y, de lo que no se puede, por qué (pieza de piercing, plazo vencido, ya está en otra
+   solicitud).
+2. **«No tiene el ticket».** Solo en el equipo de la sucursal (y el administrador): las ventas de los últimos días
+   —el plazo de devolución—, por día. La encargada y el administrador ven todas las de la sucursal; la vendedora,
+   las suyas. Cada venta lleva su monto; no hay ninguna suma.
+3. **Solicitar.** Devolución o cambio, cuántas unidades de cada línea y cuáles vienen defectuosas, el motivo y el
+   nombre y teléfono del cliente. Se puede desde el equipo y desde el celular de la vendedora. Queda esperando la
+   aprobación y muestra lo previsto: cuánto saldría en efectivo de la caja y cuánto por transferencia.
+4. **Avisar al administrador.** Si el administrador puso su número de WhatsApp (en «Devoluciones», abajo: «Aviso
+   por WhatsApp»; es el parámetro `WHATSAPP_ADMINISTRADOR`), la solicitud recién enviada trae el botón «Avisar
+   al administrador»: abre WhatsApp con el mensaje ya escrito (número de solicitud, factura, monto y sucursal;
+   nunca el nombre ni el teléfono del cliente). La app no envía nada por su cuenta. Sin número, el botón no sale.
+5. **Aprobar o rechazar.** Solo el administrador, desde cualquier equipo: la alerta «Devolución por aprobar»
+   lleva a la solicitud con un toque, y el inicio dice cuántas esperan. Rechazar pide un comentario. A quien la
+   solicitó le cambia en pantalla sin tocar nada.
+6. **Cancelar.** Quien la solicitó, mientras no se ejecute; el administrador, la que ya aprobó.
+
+La lista tiene tres pestañas (para la sucursal: «Aprobadas», «Esperando aprobación» y «Todas»; para el
+administrador: «Por aprobar», «Aprobadas» y «Todas») y un buscador por factura, número de devolución o cliente.
+Cada devolución muestra su monto; nunca hay una suma.
 
 ### Probar en la tablet y en el celular (túnel de Cloudflare)
 
