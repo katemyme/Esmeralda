@@ -42,11 +42,19 @@ export function useTurno(): TurnoActual | null {
   return data?.turno ?? null;
 }
 
+const tipoCambioVigente = {
+  queryKey: ['tipo-cambio'],
+  queryFn: () => api<{ tipo_cambio: TipoCambio | null }>('GET', '/tipo-cambio'),
+  refetchInterval: 5 * CADA_MINUTO,
+};
+
 export function useTipoCambio(): TipoCambio | null {
-  const { data } = useQuery({
-    queryKey: ['tipo-cambio'],
-    queryFn: () => api<{ tipo_cambio: TipoCambio | null }>('GET', '/tipo-cambio'),
-    refetchInterval: 5 * CADA_MINUTO,
-  });
+  const { data } = useQuery(tipoCambioVigente);
   return data?.tipo_cambio ?? null;
+}
+
+/** Ya se sabe que hoy todavía no se registra el tipo de cambio (mientras se pregunta, no). */
+export function useFaltaTipoCambioDeHoy(): boolean {
+  const { data } = useQuery(tipoCambioVigente);
+  return data !== undefined && !data.tipo_cambio?.es_de_hoy;
 }

@@ -68,6 +68,8 @@ test.afterAll(async () => {
 test('cada celular del negocio abre la caja de su sucursal, las dos a la vez', async () => {
   await entrar(americas, ANA);
   await irA(americas, 'Caja');
+  // todavía nadie registró el tipo de cambio de hoy: lo recuerda, pero deja abrir
+  await expect(americas.getByText(/Falta registrar el tipo de cambio de hoy/)).toBeVisible();
   await americas.getByLabel('Efectivo en córdobas (C$)').fill('500');
   await americas.getByRole('button', { name: 'Abrir turno' }).click();
   await expect(americas.getByText('Turno abierto')).toBeVisible();

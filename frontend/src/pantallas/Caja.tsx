@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Minus, Plus } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Link } from 'react-router';
 import { ErrorApi, api, detalleDeError } from '../api/cliente';
-import { useTipoCambio } from '../api/consultas';
+import { useFaltaTipoCambioDeHoy, useTipoCambio } from '../api/consultas';
 import type {
   Denominacion,
   MetodoPago,
@@ -50,8 +50,11 @@ function useRefrescarCaja() {
 
 // ---------------------------------------------------------------------------- Tipo de cambio
 
-/** El tipo de cambio de hoy: sin él no se cobra en dólares. Lo registra quien tiene el permiso. */
-function TipoDeCambio() {
+/**
+ * El tipo de cambio de hoy: sin él no se cobra en dólares. Lo registra quien tiene el permiso.
+ * `campo` es donde se escribe: al abrir la caja hay un acceso directo que lleva hasta él.
+ */
+function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) {
   const sesion = useSesionActiva();
   const consultas = useQueryClient();
   const vigente = useTipoCambio();
@@ -102,6 +105,7 @@ function TipoDeCambio() {
         >
           <div className="flex-1">
             <Campo
+              ref={campo}
               etiqueta={vigente?.es_de_hoy ? 'Corregir: córdobas por dólar' : 'Córdobas por dólar'}
               name="usd_a_nio"
               inputMode="decimal"
@@ -138,9 +142,20 @@ function TipoDeCambio() {
 
 // ---------------------------------------------------------------------------- Abrir
 
-/** Se abre declarando lo contado, sin ver el fondo que dejó el cierre anterior. */
-function AbrirTurno({ cajaId }: { cajaId: number | null }) {
+/**
+ * Se abre declarando lo contado, sin ver el fondo que dejó el cierre anterior. Si todavía no hay
+ * tipo de cambio de hoy lo recuerda, pero no obliga: la caja se abre igual.
+ */
+function AbrirTurno({
+  cajaId,
+  alRegistrarTipoCambio,
+}: {
+  cajaId: number | null;
+  alRegistrarTipoCambio: () => void;
+}) {
+  const sesion = useSesionActiva();
   const refrescar = useRefrescarCaja();
+  const faltaTipoCambio = useFaltaTipoCambioDeHoy();
   const [nio, setNio] = useState('');
   const [usd, setUsd] = useState('');
   const valido = esMonto(nio || '0') && esMonto(usd || '0');
@@ -192,6 +207,23 @@ function AbrirTurno({ cajaId }: { cajaId: number | null }) {
           </Aviso>
         )}
         {abrir.isError && <Aviso tipo="error">{detalleDeError(abrir.error)}</Aviso>}
+        {faltaTipoCambio && (
+          <Aviso tipo="aviso">
+            <p>
+              Falta registrar el tipo de cambio de hoy. Puede abrir la caja igual, pero sin él no se
+              cobra en dólares.
+            </p>
+            {tienePermiso(sesion, ['TIPO_CAMBIO_GESTIONAR']) ? (
+              <Boton variante="secundario" className="mt-3" onClick={alRegistrarTipoCambio}>
+                Registrarlo ahora
+              </Boton>
+            ) : (
+              <p className="mt-1 font-normal">
+                Pídale a la encargada o al administrador que lo registre.
+              </p>
+            )}
+          </Aviso>
+        )}
         <Boton type="submit" ocupado={abrir.isPending} disabled={!valido}>
           Abrir turno
         </Boton>
@@ -655,6 +687,7 @@ export function Caja() {
   const [cajaId, setCajaId] = useState<number | null>(null);
   const [vista, setVista] = useState<'resumen' | 'cerrar'>('resumen');
   const [ticket, setTicket] = useState<TicketCierre | null>(null);
+  const campoTipoCambio = useRef<HTMLInputElement>(null);
   const lista = !eligeCaja || cajaId !== null;
 
   const turno = useQuery({
@@ -719,11 +752,15 @@ export function Caja() {
               )}
             </Bloque>
           ) : tienePermiso(sesion, ['CAJA_ABRIR']) ? (
-            <AbrirTurno cajaId={cajaId} />
+            <AbrirTurno
+              cajaId={cajaId}
+              // enfocarlo lo trae a la vista y, en el celular, abre el teclado
+              alRegistrarTipoCambio={() => campoTipoCambio.current?.focus()}
+            />
           ) : (
             <Aviso tipo="info">La caja está cerrada.</Aviso>
           )}
-          <TipoDeCambio />
+          <TipoDeCambio campo={campoTipoCambio} />
           {abierto && tienePermiso(sesion, ['CAJA_MOVIMIENTOS']) && <Movimientos cajaId={cajaId} />}
         </>
       )}

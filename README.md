@@ -479,9 +479,10 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
   inactividad, registro del equipo, menú según los permisos de la sesión, centro de alertas y la pantalla
   «Este equipo» (cámara, impresora, pantalla encendida).
 - **F2a, primera parte (caja y consulta de precios):** abrir el turno contando a ciegas, tipo de cambio de hoy
-  (con confirmación si se aleja), entradas y salidas de efectivo, cierre a ciegas por billetes y monedas con un
-  solo reconteo, ticket de cierre impreso, historial de turnos con sus diferencias y cierre forzado (para quien
-  puede verlos), y el buscador de precios y existencias con escáner.
+  (con confirmación si se aleja, y un recordatorio al abrir la caja si todavía falta), entradas y salidas de
+  efectivo, cierre a ciegas por billetes y monedas con un solo reconteo, ticket de cierre impreso, historial de
+  turnos con sus diferencias y cierre forzado (para quien puede verlos), y el buscador de precios y existencias
+  con escáner.
 - **F2a, segunda parte (venta, tickets y cola):** vender buscando o escaneando (también una perforación con su
   pieza), promoción, cobro en varias formas (córdobas, dólares, tarjeta, transferencia) con el vuelto a la vista,
   ventas del turno, anular, el ticket que sale solo al registrar la venta, el ticket digital y «Tickets por

@@ -20,6 +20,8 @@ const servidor = setupServer();
 const enviados: { ruta: string; cuerpo: unknown }[] = [];
 let turnoAbierto = false;
 let intentos = 0;
+let tipoCambioDeHoy = false;
+let registraTipoCambio = false; // como la encargada; la vendedora no lo registra
 
 const TURNO = {
   id: 9,
@@ -46,6 +48,8 @@ afterEach(() => {
   enviados.length = 0;
   turnoAbierto = false;
   intentos = 0;
+  tipoCambioDeHoy = false;
+  registraTipoCambio = false;
   ponerToken(null);
   window.history.pushState({}, '', '/');
 });
@@ -59,15 +63,24 @@ function preparar() {
     return cuerpo;
   };
   servidor.use(
-    http.post('*/api/auth/refresh', () =>
-      HttpResponse.json(respuestaDeSesion(sesionDeVendedora('tablet'))),
-    ),
+    http.post('*/api/auth/refresh', () => {
+      const sesion = sesionDeVendedora('tablet');
+      const permisos = [
+        ...sesion.usuario.permisos,
+        ...(registraTipoCambio ? ['TIPO_CAMBIO_GESTIONAR'] : []),
+      ];
+      return HttpResponse.json(
+        respuestaDeSesion({ ...sesion, usuario: { ...sesion.usuario, permisos } }),
+      );
+    }),
     http.get('*/api/alertas/sucursal', () =>
       HttpResponse.json({ alertas: [], total_pendientes: 0 }),
     ),
     http.get('*/api/tipo-cambio', () =>
       HttpResponse.json({
-        tipo_cambio: { fecha: '2026-10-07', usd_a_nio: '36.6243', es_de_hoy: false },
+        tipo_cambio: tipoCambioDeHoy
+          ? { fecha: '2026-10-08', usd_a_nio: '36.6243', es_de_hoy: true }
+          : { fecha: '2026-10-07', usd_a_nio: '36.6243', es_de_hoy: false },
       }),
     ),
     http.get('*/api/cola-impresion', () =>
@@ -167,6 +180,12 @@ describe('caja', () => {
     expect(
       screen.queryByRole('button', { name: 'Guardar tipo de cambio' }),
     ).not.toBeInTheDocument();
+    // al abrir también se le recuerda, sin acceso directo: le dice a quién pedírselo
+    const recordatorio = (
+      await screen.findByText(/Falta registrar el tipo de cambio de hoy/)
+    ).closest('[role="status"]');
+    expect(recordatorio).toHaveTextContent(/Pídale a la encargada o al administrador/);
+    expect(screen.queryByRole('button', { name: 'Registrarlo ahora' })).not.toBeInTheDocument();
 
     await usuario.type(screen.getByLabelText('Efectivo en córdobas (C$)'), '500');
     await usuario.click(screen.getByRole('button', { name: 'Abrir turno' }));
@@ -176,6 +195,38 @@ describe('caja', () => {
     ]);
     // la vendedora no registra movimientos de efectivo (no tiene ese permiso)
     expect(screen.queryByText('Entradas y salidas de efectivo')).not.toBeInTheDocument();
+  });
+
+  it('al abrir recuerda en ámbar que falta el tipo de cambio de hoy, con un acceso directo para quien lo registra, y no obliga', async () => {
+    registraTipoCambio = true;
+    const usuario = await abrirLaPantallaDeCaja();
+    expect(await screen.findByRole('heading', { name: 'Abrir la caja' })).toBeInTheDocument();
+    const recordatorio = (
+      await screen.findByText(/Falta registrar el tipo de cambio de hoy/)
+    ).closest<HTMLElement>('[role="status"]')!;
+    expect(recordatorio).toHaveClass('bg-aviso-claro'); // ámbar, no rojo
+    expect(recordatorio).toHaveTextContent(/Puede abrir la caja igual/);
+
+    // el acceso directo lleva al campo donde se registra, listo para escribir
+    await usuario.click(within(recordatorio).getByRole('button', { name: 'Registrarlo ahora' }));
+    expect(screen.getByLabelText('Córdobas por dólar')).toHaveFocus();
+
+    // no obliga: la caja se abre igual, sin haberlo registrado
+    await usuario.type(screen.getByLabelText('Efectivo en córdobas (C$)'), '500');
+    await usuario.click(screen.getByRole('button', { name: 'Abrir turno' }));
+    expect(await screen.findByText('Turno abierto')).toBeInTheDocument();
+    expect(enviados.map((e) => e.ruta)).toEqual(['/api/caja/turno/abrir']);
+    expect(screen.queryByText(/Falta registrar el tipo de cambio de hoy/)).not.toBeInTheDocument();
+  });
+
+  it('con el tipo de cambio de hoy ya registrado, al abrir no recuerda nada', async () => {
+    tipoCambioDeHoy = true;
+    registraTipoCambio = true;
+    await abrirLaPantallaDeCaja();
+    expect(await screen.findByRole('heading', { name: 'Abrir la caja' })).toBeInTheDocument();
+    expect(await screen.findByText('C$ 36.6243')).toBeInTheDocument();
+    expect(screen.queryByText(/Falta registrar el tipo de cambio de hoy/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Registrarlo ahora' })).not.toBeInTheDocument();
   });
 
   it('cierre a ciegas: si no cuadra queda un solo reconteo con justificación, y nunca se ve lo esperado', async () => {
