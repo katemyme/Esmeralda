@@ -322,6 +322,149 @@ export interface VentaDetalle extends VentaResumen {
   cola: { id: number; estado: string } | null;
 }
 
+/** Una devolución o un cambio en las listas. Cada una trae su monto; la lista, ninguna suma. */
+export interface DevolucionResumen {
+  id: number;
+  /** Su número propio (DEV-LAM-000001): lo toma al ejecutarse; antes es null. */
+  numero: string | null;
+  /** DEVOLUCION o CAMBIO. */
+  tipo: string;
+  /** PENDIENTE, APROBADA, RECHAZADA, EJECUTADA o CANCELADA. */
+  estado: string;
+  /** La factura original (nunca se modifica). */
+  venta: { id: number; numero: string; fecha: string; sucursal: Sucursal };
+  motivo: string;
+  cliente_nombre: string;
+  cliente_telefono: string;
+  /** Lo que se pagó por lo devuelto, en córdobas. */
+  monto_total: string;
+  sucursal_solicitud: Sucursal;
+  solicitada_por: { id: number; nombre_completo: string };
+  solicitada_at: string;
+  /** Aprobada: último día para ejecutarla (AAAA-MM-DD); después se cancela sola. */
+  vence_el: string | null;
+  /** Dónde se ejecutó. */
+  sucursal: Sucursal | null;
+  ejecutada_at: string | null;
+  /** Ya se ejecutó y le falta la transferencia que hace el administrador. */
+  por_transferir: boolean;
+}
+
+export interface DevolucionDetalle extends DevolucionResumen {
+  lineas: {
+    id: number;
+    detalle_id: number;
+    variante: { id: number; sku: string; nombre: string };
+    cantidad: number;
+    /** BUENO (vuelve al stock) o DEFECTUOSO (sale como merma). */
+    estado_producto: string;
+    monto: string;
+  }[];
+  resolucion: {
+    fecha: string;
+    resuelta_por: { id: number; nombre_completo: string };
+    comentario: string | null;
+  } | null;
+  /** `cancelada_por` null: venció sola, sin ejecutarse en su plazo. */
+  cancelacion: {
+    fecha: string;
+    motivo: string;
+    cancelada_por: { id: number; nombre_completo: string } | null;
+  } | null;
+  /**
+   * Cómo recibe el cliente lo devuelto: `efectivo` de la caja y `transferencia` del administrador
+   * (`saldo`: lo aplicado a la venta de un cambio). `definitivo: false` es lo previsto antes de
+   * ejecutar; en un cambio sin ejecutar es null (depende de lo que se lleve).
+   */
+  reembolso: { saldo: string; efectivo: string; transferencia: string; definitivo: boolean } | null;
+  ejecucion: {
+    fecha: string;
+    ejecutada_por: { id: number; nombre_completo: string };
+    turno_id: number;
+    caja: { id: number; nombre: string };
+  } | null;
+  venta_cambio: { id: number; numero: string; total: string } | null;
+  transferencia: {
+    referencia: string;
+    fecha: string;
+    transferida_por: { id: number; nombre_completo: string };
+  } | null;
+  /**
+   * Pendiente y con el WhatsApp del administrador puesto: su número, solo con dígitos, para el
+   * botón «Avisar al administrador». null: el botón no sale.
+   */
+  aviso_whatsapp: string | null;
+}
+
+/** Una factura buscada por su número, con lo que se puede devolver de ella. */
+export interface VentaParaDevolver {
+  id: number;
+  numero: string;
+  fecha: string;
+  /** COMPLETADA o ANULADA. */
+  estado: string;
+  sucursal: Sucursal;
+  vendedor: string;
+  cliente_nombre: string | null;
+  cliente_telefono: string | null;
+  total: string;
+  /** null: se puede solicitar. Si no, por qué no (anulada, turno abierto o plazo vencido). */
+  motivo_no: string | null;
+  /** Último día para solicitar la devolución (AAAA-MM-DD). */
+  limite: string;
+  lineas: LineaDevoluble[];
+  /** Las solicitudes que ya tiene esta factura, de la más reciente a la más antigua. */
+  solicitudes: DevolucionResumen[];
+}
+
+export interface LineaDevoluble {
+  detalle_id: number;
+  variante: { id: number; sku: string; nombre: string };
+  categoria: string;
+  cantidad: number;
+  devuelta: number;
+  /** Pedida en solicitudes pendientes o aprobadas. */
+  apartada: number;
+  disponible: number;
+  /** Lo pagado por cada unidad, con la promoción descontada (aproximado al centavo). */
+  monto_unitario: string;
+  /** false: no se devuelve (pieza de piercing, perforación, paquete o categoría sin la casilla). */
+  admite: boolean;
+  motivo_no: string | null;
+}
+
+/** Una venta de los últimos días en «No tiene el ticket». */
+export interface VentaReciente {
+  id: number;
+  numero: string;
+  fecha: string;
+  sucursal: Sucursal;
+  vendedor: string;
+  cliente_nombre: string | null;
+  total: string;
+  articulos: number;
+  /** Los primeros productos de la factura, para reconocerla sin abrirla. */
+  productos: string[];
+  /** null: se puede solicitar. Si no, por qué no (su turno sigue abierto). */
+  motivo_no: string | null;
+}
+
+export interface VentasRecientes {
+  /** El plazo para devolver, en días, y el primer día que todavía entra (AAAA-MM-DD). */
+  dias: number;
+  desde: string;
+  ventas: VentaReciente[];
+}
+
+/** Un parámetro general, como lo ve quien administra (PARAMETROS_GESTIONAR). */
+export interface Parametro {
+  clave: string;
+  valor: string | null;
+  tipo_valor: string;
+  permite_vacio: boolean;
+  descripcion: string;
+}
+
 /** Un ticket que espera en la cola de impresión de este equipo. Sin montos. */
 export interface TicketEnCola {
   id: number;

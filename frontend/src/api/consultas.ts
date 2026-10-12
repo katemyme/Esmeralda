@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { api } from './cliente';
-import type { ListaAlertas, TipoCambio, TurnoActual } from './tipos';
+import type { DevolucionResumen, ListaAlertas, TipoCambio, TurnoActual } from './tipos';
 
 // Lo que varias pantallas de la base consultan. Se refresca solo cada minuto y al volver a la app.
 
@@ -40,6 +40,23 @@ export function useTurno(): TurnoActual | null {
     refetchInterval: CADA_MINUTO,
   });
   return data?.turno ?? null;
+}
+
+/**
+ * Cuántas devoluciones esperan la aprobación de quien las aprueba (el administrador); null para
+ * los demás, que no aprueban. Es un conteo: los montos están en cada solicitud.
+ */
+export function usePorAprobar(): number | null {
+  const sesion = useSesionActiva();
+  const aprueba = tienePermiso(sesion, ['DEVOLUCIONES_APROBAR']);
+  const { data } = useQuery({
+    queryKey: ['devoluciones', 'por-aprobar'],
+    queryFn: () =>
+      api<{ devoluciones: DevolucionResumen[] }>('GET', '/devoluciones?estado=PENDIENTE&limite=50'),
+    enabled: aprueba,
+    refetchInterval: CADA_MINUTO,
+  });
+  return aprueba ? (data?.devoluciones.length ?? 0) : null;
 }
 
 const tipoCambioVigente = {

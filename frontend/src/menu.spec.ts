@@ -36,12 +36,13 @@ describe('menú según los permisos de la sesión', () => {
     expect(delAdmin).toEqual(expect.arrayContaining(['Administración', 'Reportes', 'Etiquetas']));
   });
 
-  it('están hechas la base, la venta, la caja y la consulta de precios: lo demás sale marcado «Pronto»', () => {
+  it('están hechas la base, la venta, la caja, la consulta de precios y las devoluciones: lo demás sale marcado «Pronto»', () => {
     expect(MENU.filter(estaLista).map((o) => o.titulo)).toEqual([
       'Inicio',
       'Vender',
       'Caja',
       'Precios y existencias',
+      'Devoluciones',
       'Alertas',
       'Este equipo',
     ]);

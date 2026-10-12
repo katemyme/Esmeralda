@@ -11,6 +11,8 @@ import { Alertas } from './pantallas/Alertas';
 import { Caja } from './pantallas/Caja';
 import { CambiarPassword } from './pantallas/CambiarPassword';
 import { TicketsPorImprimir } from './pantallas/Cola';
+import { DevolucionVer } from './pantallas/Devolucion';
+import { Devoluciones } from './pantallas/Devoluciones';
 import { Inicio } from './pantallas/Inicio';
 import { MiPin } from './pantallas/MiPin';
 import { Turno, Turnos } from './pantallas/Turnos';
@@ -31,7 +33,18 @@ const Consulta = lazy(() =>
 // Y la venta: trae también el lector de códigos
 const Venta = lazy(() => import('./pantallas/Venta').then((modulo) => ({ default: modulo.Venta })));
 
+// Y buscar la factura de una devolución: se escanea el QR del ticket
+const DevolucionNueva = lazy(() =>
+  import('./pantallas/DevolucionNueva').then((modulo) => ({ default: modulo.DevolucionNueva })),
+);
+const FacturaParaDevolver = lazy(() =>
+  import('./pantallas/DevolucionNueva').then((modulo) => ({
+    default: modulo.FacturaParaDevolver,
+  })),
+);
+
 const VER_VENTAS = ['VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS'];
+const DEVOLUCIONES = ['DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR'];
 
 const FASES = {
   F1: 'la base',
@@ -175,6 +188,42 @@ function Contenido() {
           element={
             <ConPermiso permisos={['VENTAS_REGISTRAR']}>
               <TicketsPorImprimir />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="devoluciones"
+          element={
+            <ConPermiso permisos={DEVOLUCIONES}>
+              <Devoluciones />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="devoluciones/nueva"
+          element={
+            <ConPermiso permisos={['DEVOLUCIONES_REGISTRAR']}>
+              <Suspense fallback={<Cargando />}>
+                <DevolucionNueva />
+              </Suspense>
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="devoluciones/factura/:numero"
+          element={
+            <ConPermiso permisos={DEVOLUCIONES}>
+              <Suspense fallback={<Cargando />}>
+                <FacturaParaDevolver />
+              </Suspense>
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="devoluciones/:id"
+          element={
+            <ConPermiso permisos={DEVOLUCIONES}>
+              <DevolucionVer />
             </ConPermiso>
           }
         />

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleCheck } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { api, mensajeDeError } from '../api/cliente';
 import { useRutaAlertas } from '../api/consultas';
 import type { Alerta, ListaAlertas } from '../api/tipos';
@@ -27,6 +28,12 @@ const TIPOS: Record<string, { nombre: string; tono: 'aviso' | 'info' }> = {
   MERMA_PENDIENTE: { nombre: 'Merma por aprobar', tono: 'info' },
   CONTEO_PENDIENTE: { nombre: 'Conteo por aplicar', tono: 'info' },
 };
+
+/** La devolución de la que habla la alerta, si habla de alguna: de ahí se abre con un toque. */
+function devolucionDe(alerta: Alerta): number | null {
+  const id = alerta.detalle.devolucion_id;
+  return alerta.tipo.startsWith('DEVOLUCION_') && typeof id === 'number' ? id : null;
+}
 
 function tipoDe(alerta: Alerta) {
   return (
@@ -114,6 +121,14 @@ export function Alertas() {
                       ` · ${delPanel ? 'Atendida' : 'Vista'} por ${alerta.atendida_por.nombre_completo}`}
                   </p>
                 </div>
+                {devolucionDe(alerta) !== null && (
+                  <Link
+                    to={`/devoluciones/${devolucionDe(alerta)}`}
+                    className="inline-flex min-h-toque items-center justify-center rounded-xl px-5 font-semibold text-esmeralda hover:bg-esmeralda-claro"
+                  >
+                    Ver la solicitud
+                  </Link>
+                )}
                 {!alerta.atendida_at && (
                   <Boton
                     variante="secundario"

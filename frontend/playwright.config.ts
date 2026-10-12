@@ -50,6 +50,13 @@ export default defineConfig({
       dependencies: ['caja'],
       use: { browserName: 'chromium', hasTouch: true },
     },
+    {
+      // Devoluciones: solicitar en el equipo y en el celular, y aprobar desde el del administrador
+      name: 'devoluciones',
+      testMatch: 'devoluciones.spec.ts',
+      dependencies: ['venta'],
+      use: { browserName: 'chromium', hasTouch: true },
+    },
   ],
   webServer: [
     {

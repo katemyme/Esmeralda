@@ -77,6 +77,8 @@ function preparar({ recuperada = null, pantalla = SIN_EQUIPO, pendientes = 0 }: 
     http.get('*/api/cola-impresion', () =>
       HttpResponse.json({ atendida: false, automatica: false, tickets: [] }),
     ),
+    // el inicio del administrador pregunta cuántas devoluciones esperan su aprobación
+    http.get('*/api/devoluciones', () => HttpResponse.json({ devoluciones: [] })),
     http.get('*/api/caja/turno', () =>
       HttpResponse.json({
         turno: {
@@ -155,6 +157,9 @@ describe('entrar con usuario y contraseña', () => {
     // Lo que todavía no se construye sale en el menú, marcado
     expect(menu().getByRole('link', { name: /Administración.*Pronto/ })).toBeInTheDocument();
     expect(menu().getByRole('link', { name: 'Inicio' })).toHaveAttribute('aria-current', 'page');
+    // Las devoluciones ya están hechas: en el inicio, cuántas esperan su aprobación
+    expect(menu().getByRole('link', { name: 'Devoluciones' })).toBeInTheDocument();
+    expect(await screen.findByText('No hay ninguna por aprobar.')).toBeInTheDocument();
     // El administrador sin equipo no tiene pantalla que bloquear ni una caja propia que mostrar
     expect(screen.queryByRole('button', { name: 'Bloquear la pantalla' })).not.toBeInTheDocument();
     expect(pedidas).not.toContain('GET /api/caja/turno');

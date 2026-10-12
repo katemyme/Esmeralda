@@ -8,6 +8,8 @@ interface Props {
   titulo: string;
   children: ReactNode;
   textoConfirmar: string;
+  /** El botón para arrepentirse. Se cambia cuando «Cancelar» se confundiría con lo que se confirma. */
+  textoCancelar?: string;
   alConfirmar: () => void;
   ocupado?: boolean;
   peligro?: boolean;
@@ -20,6 +22,7 @@ export function Confirmacion({
   titulo,
   children,
   textoConfirmar,
+  textoCancelar = 'Cancelar',
   alConfirmar,
   ocupado = false,
   peligro = false,
@@ -38,7 +41,7 @@ export function Confirmacion({
           <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <AlertDialog.Cancel asChild>
               <Boton variante="secundario" disabled={ocupado}>
-                Cancelar
+                {textoCancelar}
               </Boton>
             </AlertDialog.Cancel>
             <Boton

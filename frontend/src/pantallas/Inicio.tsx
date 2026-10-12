@@ -1,7 +1,7 @@
-import { Bell, KeyRound, ShoppingCart, Smartphone, Wallet } from 'lucide-react';
+import { Bell, KeyRound, ShoppingCart, Smartphone, Undo2, Wallet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { usePendientes, useTurno } from '../api/consultas';
+import { usePendientes, usePorAprobar, useTurno } from '../api/consultas';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Tarjeta } from '../ui/basicos';
 import { formatoHora, primerNombre } from '../util/formato';
@@ -36,6 +36,7 @@ export function Inicio() {
   const sesion = useSesionActiva();
   const { usuario, equipo, acceso } = sesion;
   const pendientes = usePendientes();
+  const porAprobar = usePorAprobar();
   const turno = useTurno();
   const esAdmin = usuario.rol.codigo === 'ADMIN';
 
@@ -71,6 +72,21 @@ export function Inicio() {
             titulo="Vender"
           >
             Buscar o escanear, cobrar y entregar el ticket.
+          </Acceso>
+        )}
+        {tienePermiso(sesion, ['DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR']) && (
+          <Acceso
+            a="/devoluciones"
+            icono={<Undo2 className="size-6" aria-hidden />}
+            titulo="Devoluciones"
+          >
+            {porAprobar === null
+              ? 'Solicitar una devolución o un cambio y ver las de su sucursal.'
+              : porAprobar === 0
+                ? 'No hay ninguna por aprobar.'
+                : porAprobar === 1
+                  ? 'Hay 1 por aprobar.'
+                  : `Hay ${porAprobar} por aprobar.`}
           </Acceso>
         )}
         <Acceso a="/alertas" icono={<Bell className="size-6" aria-hidden />} titulo="Alertas">
