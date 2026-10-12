@@ -683,7 +683,7 @@ describe('POS y caja', () => {
       venta.b = mixta.id;
     });
 
-    it('el precio se puede subir (hasta el tope), nunca bajar', async () => {
+    it('el precio se puede subir (sin tope), nunca bajar', async () => {
       const { body } = await vender(vera.acceso, {
         items: [{ variante_id: pieza.aro, cantidad: 1, precio: 300 }],
         pagos: efectivo(300),
@@ -702,11 +702,13 @@ describe('POS y caja', () => {
         mensaje:
           'El precio de venta no puede ser menor al establecido: "Joya B6 — Aro" C$ 200.00 (establecido C$ 250.00)',
       });
-      const excesivo = await vender(vera.acceso, {
-        items: [{ variante_id: pieza.aro, cantidad: 1, precio: 400 }],
-        pagos: efectivo(400),
+      // Hacia arriba no hay tope: más del doble pasa la regla del precio y llega hasta el cobro
+      // (aquí el pago no alcanza, para no registrar otra venta en este turno)
+      const masDelDoble = await vender(vera.acceso, {
+        items: [{ variante_id: pieza.aro, cantidad: 1, precio: 600 }],
+        pagos: efectivo(100),
       }).expect(422);
-      expect(excesivo.body.mensaje).toMatch(/^El precio supera el aumento máximo permitido/);
+      expect(masDelDoble.body.mensaje).toBe('Pago insuficiente: total C$ 600.00, pagado C$ 100.00');
     });
 
     it('paquete: perforación con la pieza escaneada (titanio: servicio C$200 + pieza C$250)', async () => {

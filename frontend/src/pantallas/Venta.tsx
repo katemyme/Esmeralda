@@ -16,6 +16,7 @@ import type {
 import { EscanerCamara } from '../equipo/EscanerCamara';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Boton, Campo, Cargando, Etiqueta, Selector, Tarjeta } from '../ui/basicos';
+import { Confirmacion } from '../ui/Confirmacion';
 import { aCentavos, deCentavos, esMonto, nuevoUuid } from '../util/dinero';
 import { formatoMonto } from '../util/formato';
 import { useRetrasado } from '../util/retrasado';
@@ -326,12 +327,18 @@ function Renglon({
   const nombre = nombreDe(linea.variante);
   const [editando, setEditando] = useState(false);
   const [precio, setPrecio] = useState('');
+  const [porConfirmar, setPorConfirmar] = useState<number | null>(null);
   const esPaquete = linea.piezas.length > 0;
   const invalido = precio.trim() !== '' && !esMonto(precio);
   const menor = esMonto(precio) && aCentavos(precio) < linea.lista;
   const abrirPrecio = () => {
     setPrecio(deCentavos(linea.precio));
     setEditando(true);
+  };
+  const aplicar = (nuevo: number) => {
+    alCambiar({ precio: nuevo });
+    setPorConfirmar(null);
+    setEditando(false);
   };
 
   return (
@@ -405,8 +412,10 @@ function Renglon({
           onSubmit={(evento) => {
             evento.preventDefault();
             if (invalido || menor || !esMonto(precio)) return;
-            alCambiar({ precio: aCentavos(precio) });
-            setEditando(false);
+            const nuevo = aCentavos(precio);
+            // Hacia arriba no hay tope, pero más del doble puede ser un error de dedo: se pregunta
+            if (nuevo > 2 * linea.lista) setPorConfirmar(nuevo);
+            else aplicar(nuevo);
           }}
         >
           <div className="flex-1">
@@ -431,6 +440,16 @@ function Renglon({
           </Boton>
         </form>
       )}
+      <Confirmacion
+        abierta={porConfirmar !== null}
+        alCerrar={() => setPorConfirmar(null)}
+        titulo="¿Seguro?"
+        textoConfirmar="Sí, cobrar ese precio"
+        alConfirmar={() => porConfirmar !== null && aplicar(porConfirmar)}
+      >
+        El precio de {nombre} queda en {pesos(porConfirmar ?? 0)}, más del doble del establecido (
+        {pesos(linea.lista)}).
+      </Confirmacion>
     </li>
   );
 }

@@ -284,9 +284,10 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los registrados, un día por fila del más reciente al más antiguo, con quién dejó cada valor y, en `registros`, todo lo que se registró ese día (el primero y sus correcciones): `?desde=&hasta=&limite=` |
 | `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
 
-- **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, hasta
-  el tope del parámetro) y la única rebaja es una promoción (`VENTAS_PROMOCION`). Un paquete lleva cantidad 1 y las
-  `piezas` escaneadas. El vuelto lo calcula la base. Sin turno abierto → 409 `SIN_TURNO_ABIERTO`.
+- **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, sin
+  tope: la pantalla pide confirmar un precio de más del doble, por si es un error de dedo) y la única rebaja es una
+  promoción (`VENTAS_PROMOCION`). Un paquete lleva cantidad 1 y las `piezas` escaneadas. El vuelto lo calcula la
+  base. Sin turno abierto → 409 `SIN_TURNO_ABIERTO`.
 - **Sin duplicados.** `clave_idempotencia` es un UUID que el POS genera para cada venta. Si la solicitud llega dos
   veces (doble clic, reintento de red) responde 200 con la misma venta y `repetida: true`; la primera vez, 201. La
   clave de otra persona o de otro turno → 409 `CLAVE_REUTILIZADA`. El número de factura no deja saltos.

@@ -754,7 +754,10 @@ describe('Panel de administración', () => {
     });
 
     it('un parámetro que permite vacío se deja sin valor con null', async () => {
-      const { body } = await comoJefa('put', '/api/parametros/VENTA_SOBREPRECIO_MAX_PCT')
+      await comoJefa('put', '/api/parametros/TICKET_LEYENDA')
+        .send({ valor: 'Gracias por su compra' })
+        .expect(200);
+      const { body } = await comoJefa('put', '/api/parametros/TICKET_LEYENDA')
         .send({ valor: null })
         .expect(200);
       expect(body.parametro).toMatchObject({ valor: null, permite_vacio: true });

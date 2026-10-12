@@ -401,6 +401,47 @@ describe('vender en el equipo de la sucursal', () => {
     expect(ventasEnviadas[0].items).toEqual([{ variante_id: 7, cantidad: 1, precio: '300.00' }]);
   });
 
+  it('hacia arriba no hay tope, pero más del doble del establecido se confirma antes (error de dedo)', async () => {
+    preparar('tablet');
+    const usuario = await abrirVenta();
+    await agregar(usuario, 'aro', 'Aro acero — 8 mm');
+    await usuario.click(screen.getByRole('button', { name: 'Cambiar precio' }));
+    const precio = screen.getByLabelText('Precio por unidad de Aro acero — 8 mm (C$)');
+
+    // justo el doble (C$ 460) todavía no pregunta
+    await usuario.clear(precio);
+    await usuario.type(precio, '460');
+    await usuario.click(screen.getByRole('button', { name: 'Aplicar' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cobrar C$ 460.00' })).toBeInTheDocument();
+
+    // un cero de más: pregunta, y con «Cancelar» el precio no cambia
+    await usuario.click(screen.getByRole('button', { name: 'Cambiar precio' }));
+    const otraVez = screen.getByLabelText('Precio por unidad de Aro acero — 8 mm (C$)');
+    await usuario.clear(otraVez);
+    await usuario.type(otraVez, '3000');
+    await usuario.click(screen.getByRole('button', { name: 'Aplicar' }));
+    const pregunta = await screen.findByRole('alertdialog', { name: '¿Seguro?' });
+    expect(pregunta).toHaveTextContent(
+      'El precio de Aro acero — 8 mm queda en C$ 3,000.00, más del doble del establecido (C$ 230.00).',
+    );
+    await usuario.click(within(pregunta).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.getByRole('button', { name: 'Cobrar C$ 460.00' })).toBeInTheDocument();
+
+    // confirmándolo sí queda: la base no pone tope
+    await usuario.click(screen.getByRole('button', { name: 'Aplicar' }));
+    await usuario.click(
+      within(await screen.findByRole('alertdialog')).getByRole('button', {
+        name: 'Sí, cobrar ese precio',
+      }),
+    );
+    await usuario.click(screen.getByRole('button', { name: 'Cobrar C$ 3,000.00' }));
+    await usuario.click(screen.getByRole('button', { name: 'Exacto' }));
+    await usuario.click(screen.getByRole('button', { name: 'Registrar la venta' }));
+    await screen.findByText('Venta registrada');
+    expect(ventasEnviadas[0].items).toEqual([{ variante_id: 7, cantidad: 1, precio: '3000.00' }]);
+  });
+
   it('no deja pasar de las existencias: la última pieza no se agrega dos veces', async () => {
     preparar('tablet');
     const usuario = await abrirVenta();

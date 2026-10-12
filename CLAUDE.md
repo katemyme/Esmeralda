@@ -192,8 +192,11 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
 - Mermas y conteos: la sucursal reporta/cuenta, el admin aprueba.
 - Se vende pieza, servicio (solo perforación) o **paquete** (perforación + pieza escaneada, cantidad 1).
   Precio del paquete: precio especial → tabla perforación × gama (acero clásica/lujo) → servicio + pieza (titanio).
-- El precio cobrado puede subir (máx. +50 %, parámetro), nunca bajar. La única rebaja es una
-  **promoción** activa y vigente (una por venta, sobre toda la venta), creada por el admin.
+- El precio cobrado puede subir **sin tope** (decisión del dueño del 2026-10-12; antes había un máximo de
+  +50 % con su parámetro, que ya no existe), nunca bajar del de catálogo, y el precio de catálogo no cambia.
+  Contra el error de dedo, la pantalla pide confirmar un precio de **más del doble** del de catálogo: eso es
+  solo de la pantalla, la base no pregunta. El reporte de sobreprecios sigue diciendo cuánto se subió. La única
+  rebaja es una **promoción** activa y vigente (una por venta, sobre toda la venta), creada por el admin.
 - Venta con `clave_idempotencia` (UUID del POS) para evitar duplicados.
 - Número de factura: correlativo por sucursal (`sucursal.ultimo_numero_venta`, `LAM-00000001`) que
   `fn_registrar_venta` toma dentro de la misma transacción de la venta. No deja saltos si la venta falla o se

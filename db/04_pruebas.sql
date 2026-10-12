@@ -214,7 +214,7 @@ SELECT pg_temp.afirma((SELECT sum(venta_neta) FROM fn_reporte_ventas(current_dat
                       'reporte = V1 + V3 + V4 (la anulada no cuenta) = C$2300');
 
 \echo '\n=== 10. PRECIO DE VENTA MODIFICABLE (solo hacia arriba)'
--- Aro acero: precio establecido C$250, tope +50 % = C$375. Carlos (vendedor) en Las Brisas.
+-- Aro acero: precio establecido C$250. Hacia arriba no hay tope. Carlos (vendedor) en Las Brisas.
 SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":2,"precio":300}]', :aro)::jsonb,
   '[{"metodo":"EFECTIVO","monto":600}]') AS v5 \gset
 SELECT pg_temp.afirma((SELECT precio_lista = 250 AND precio_unitario = 300 FROM venta_detalle WHERE venta_id = :v5), 'se cobra C$300 y queda registrado el establecido C$250');
@@ -228,14 +228,15 @@ SELECT pg_temp.afirma((SELECT precio_unitario FROM venta_detalle WHERE venta_id 
 
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"precio":200}]', '[{"metodo":"EFECTIVO","monto":200}]')$q$, :carlos, :turno_lbr, :aro), 'no puede ser menor al establecido');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"precio":249.99}]', '[{"metodo":"EFECTIVO","monto":250}]')$q$, :carlos, :turno_lbr, :aro), 'no puede ser menor al establecido');
-SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"precio":400}]', '[{"metodo":"EFECTIVO","monto":400}]')$q$, :carlos, :turno_lbr, :aro), 'aumento máximo');
 
--- Sin tope configurado
-UPDATE parametro SET valor = NULL WHERE clave = 'VENTA_SOBREPRECIO_MAX_PCT';
+-- Sin tope (decisión del dueño, 2026-10-12): se puede cobrar cuatro veces el establecido. El aviso de
+-- «más del doble» es solo de la pantalla; la base no pregunta ni rechaza.
 SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"cantidad":1,"precio":1000}]', :aro)::jsonb,
   '[{"metodo":"EFECTIVO","monto":1000}]') AS v7 \gset
-SELECT pg_temp.afirma((SELECT precio_unitario FROM venta_detalle WHERE venta_id = :v7) = 1000, 'parámetro vacío = sin límite de aumento');
-UPDATE parametro SET valor = '50' WHERE clave = 'VENTA_SOBREPRECIO_MAX_PCT';
+SELECT pg_temp.afirma((SELECT precio_lista = 250 AND precio_unitario = 1000 FROM venta_detalle WHERE venta_id = :v7), 'sin tope: un aro de C$250 se cobra a C$1000 y queda registrado el establecido');
+SELECT pg_temp.afirma((SELECT aumento_pct = 300 AND sobreprecio = 750 FROM v_ventas_sobreprecio WHERE venta_id = :v7), 'el reporte de sobreprecios dice cuánto se subió: +300 %, C$750');
+SELECT pg_temp.afirma((SELECT precio_venta FROM variante WHERE id = :aro) = 250, 'cobrar más no cambia el precio del catálogo');
+SELECT pg_temp.afirma(NOT EXISTS (SELECT 1 FROM parametro WHERE clave = 'VENTA_SOBREPRECIO_MAX_PCT'), 'ya no existe el parámetro del tope de aumento');
 
 -- Si el admin le quita el permiso al rol VENDEDOR
 DELETE FROM rol_permiso WHERE rol_id = (SELECT id FROM rol WHERE codigo = 'VENDEDOR')
@@ -245,7 +246,9 @@ INSERT INTO rol_permiso SELECT r.id, p.id FROM rol r, permiso p WHERE r.codigo =
 
 -- Aunque se inserte directo (sin la función), la BD rechaza cobrar menos
 SELECT pg_temp.espera_error(format('INSERT INTO venta_detalle (venta_id, variante_id, cantidad, precio_lista, precio_unitario, costo_unitario) VALUES (%s, %s, 1, 250, 100, 60)', :v6, :aro), 'ck_detalle_precio_no_menor');
-SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'parametro' AND registro_id = 'VENTA_SOBREPRECIO_MAX_PCT') >= 2, 'cambios del parámetro quedan auditados');
+UPDATE parametro SET valor = '45' WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT';
+UPDATE parametro SET valor = '40' WHERE clave = 'MARGEN_MINIMO_ALERTA_PCT';
+SELECT pg_temp.afirma((SELECT count(*) FROM auditoria WHERE tabla = 'parametro' AND registro_id = 'MARGEN_MINIMO_ALERTA_PCT') >= 2, 'cambios de un parámetro quedan auditados');
 
 \echo 'Ventas con sobreprecio:'
 SELECT numero, vendedor, producto, cantidad, precio_lista, precio_unitario, aumento_pct, sobreprecio FROM v_ventas_sobreprecio;
@@ -520,7 +523,7 @@ SELECT fn_registrar_venta(:carlos, :turno_lbr, format('[{"variante_id":%s,"canti
   '[{"metodo":"TARJETA","monto":1100,"referencia":"55123"}]') AS vp2 \gset
 SELECT pg_temp.afirma((SELECT precio_lista = 1000 AND precio_unitario = 1100 FROM venta_detalle WHERE venta_id = :vp2), 'hélix + titanio: lista 350 + 650 = 1000, cobrado 1100');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":900}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :lab6), 'no puede ser menor al establecido');
-SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":1600}]', '[{"metodo":"EFECTIVO","monto":1600}]')$q$, :carlos, :turno_lbr, :paq_hlx, :lab6), 'aumento máximo');
+SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s],"precio":1600}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :lab6), 'Pago insuficiente: total C$ 1600');   -- sin tope también en un paquete: C$1600 (+60 %) pasa la regla del precio y llega al cobro
 -- Errores de paquete
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":2,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :paq_hlx, :aro), 'cantidad 1');
 SELECT pg_temp.espera_error(format($q$SELECT fn_registrar_venta(%s, %s, '[{"variante_id":%s,"cantidad":1,"piezas":[%s]}]', '[{"metodo":"EFECTIVO","monto":900}]')$q$, :carlos, :turno_lbr, :aro, :aro), 'Solo los paquetes llevan piezas');
@@ -766,9 +769,9 @@ SELECT pg_temp.afirma((SELECT usuario_id = :admin AND despues->>'valor' = '35' F
                         WHERE tabla = 'parametro' AND registro_id = 'MARGEN_MINIMO_ALERTA_PCT' ORDER BY id DESC LIMIT 1),
                       'el cambio del parámetro queda auditado con quién lo hizo');
 SELECT fn_set_parametro(:admin, 'MARGEN_MINIMO_ALERTA_PCT', '40');
-SELECT fn_set_parametro(:admin, 'VENTA_SOBREPRECIO_MAX_PCT', '');
-SELECT pg_temp.afirma(fn_parametro_num('VENTA_SOBREPRECIO_MAX_PCT') IS NULL, 'un parámetro que permite vacío puede quedar sin valor');
-SELECT fn_set_parametro(:admin, 'VENTA_SOBREPRECIO_MAX_PCT', '50');
+SELECT fn_set_parametro(:admin, 'TICKET_LEYENDA', 'Gracias por su compra');
+SELECT fn_set_parametro(:admin, 'TICKET_LEYENDA', '');
+SELECT pg_temp.afirma(fn_parametro_txt('TICKET_LEYENDA') IS NULL, 'un parámetro que permite vacío puede quedar sin valor');
 
 -- Permisos de los roles
 SELECT permisos AS perm_enc FROM v_roles_admin WHERE codigo = 'ENCARGADO' \gset

@@ -2314,7 +2314,8 @@ END $$;
 --                 se devuelve la misma venta en lugar de crear otra.
 -- Reglas:
 -- · El precio de lista lo pone la BD: precio_venta de la variante, o fn_precio_paquete para un paquete.
---   "precio" es opcional: igual o mayor a la lista, nunca menor, y como máximo +VENTA_SOBREPRECIO_MAX_PCT.
+--   "precio" es opcional: igual o mayor a la lista, nunca menor. Hacia arriba no hay tope (decisión del
+--   dueño, 2026-10-12): la pantalla pide confirmar un precio de más del doble, por si es un error de dedo.
 -- · Un paquete va con cantidad 1 y descuenta del inventario cada pieza escaneada.
 -- · El costo sale de la BD (paquete = costo del servicio + costo de las piezas).
 -- · Si lo pagado supera el total y hay efectivo, el exceso se registra como vuelto en C$.
@@ -2351,7 +2352,6 @@ DECLARE
   v_exceso      numeric;
   v_efectivo_id smallint;
   v_lista       text;
-  v_max_pct     numeric;
   v_precio_paq  numeric;
   v_costo_paq   numeric;
   v_promo       record;
@@ -2454,7 +2454,7 @@ BEGIN
 
   UPDATE tmp_linea SET precio_cobrado = coalesce(precio_enviado, precio_lista);
 
-  -- 3. El precio solo sube: nunca menor que la lista; mayor requiere permiso y respeta el tope
+  -- 3. El precio solo sube: nunca menor que la lista; mayor requiere permiso y no tiene tope
   SELECT string_agg(format('"%s" C$ %s (establecido C$ %s)', nombre, precio_cobrado, precio_lista), '; ' ORDER BY n)
     INTO v_lista FROM tmp_linea WHERE precio_cobrado < precio_lista;
   IF v_lista IS NOT NULL THEN
@@ -2463,16 +2463,6 @@ BEGIN
   END IF;
   IF EXISTS (SELECT 1 FROM tmp_linea WHERE precio_cobrado > precio_lista) THEN
     PERFORM fn_exigir_permiso(p_usuario, 'VENTAS_MODIFICAR_PRECIO');
-    v_max_pct := fn_parametro_num('VENTA_SOBREPRECIO_MAX_PCT');
-    IF v_max_pct IS NOT NULL THEN
-      SELECT string_agg(format('"%s" C$ %s (máximo C$ %s)', nombre, precio_cobrado,
-                               round(precio_lista * (1 + v_max_pct / 100), 2)), '; ' ORDER BY n)
-        INTO v_lista FROM tmp_linea
-       WHERE precio_cobrado > round(precio_lista * (1 + v_max_pct / 100), 2);
-      IF v_lista IS NOT NULL THEN
-        RAISE EXCEPTION 'El precio supera el aumento máximo permitido (+% %%): %', v_max_pct, v_lista;
-      END IF;
-    END IF;
   END IF;
 
   SELECT sum(cantidad * precio_cobrado) INTO v_subtotal FROM tmp_linea;
