@@ -15,7 +15,7 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-12._
+_Actualizado el 2026-10-15._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
   `guardado-b2`), **B3**, **B4**, **B5**, **B6** y **B7** del backend. Con B5 se hizo también todo lo que había quedado fuera de
@@ -89,6 +89,17 @@ _Actualizado el 2026-10-12._
   no cambia nada. La tarjeta «Tipo de cambio» de la pantalla Caja se ve siempre (también antes de elegir caja).
   En la base local ya regía 36.5 (lo registró María López el 15/10 a las 7:30): no se tocó ninguna fila; se le
   aplicó la función nueva y se le quitó el permiso a la encargada (ver abajo).
+- **Terminada, pendiente de su revisión: F2b parte 2 (ejecutar en caja)**, hecha el 2026-10-15: ejecutar la
+  devolución o el cambio aprobado en el equipo de la sucursal donde está el cliente (con su turno abierto), con
+  el estado en que llega cada producto; lo que se entrega en efectivo y lo que queda por transferir; el cambio
+  armado como una venta (buscador y escáner, sin promoción), cobrando la diferencia o diciendo antes qué se le
+  devuelve y cómo; el ticket que firma el cliente (sale solo, también por USB, con la gaveta), «Copia para el
+  cliente» y la factura nueva del cambio; y las transferencias pendientes del administrador (también desde su
+  iPhone). Incluyó backend nuevo: el ticket de devolución en renglones para la impresora USB, la gaveta
+  (`fn_abre_gaveta_devolucion`), el reparto antes de ejecutar (`GET /api/devoluciones/:id/reparto`,
+  `fn_reparto_ejecucion`), `monto_transferencia` en la lista y el estado en que se recibe cada línea
+  (`devolucion_detalle.estado_recibido`, `lineas` al ejecutar). Las decisiones tomadas al programarla están en
+  «Devoluciones en pantalla» y esperan su confirmación. **No empezar F3 hasta su OK.**
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -102,11 +113,22 @@ _Actualizado el 2026-10-12._
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 766 de base de datos, 605 del backend y, en el frontend, 102 de Vitest y 27 recorridos de
+- Pruebas en verde: 785 de base de datos, 618 del backend y, en el frontend, 113 de Vitest y 34 recorridos de
   Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
-  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope, la parte 1 de F2b ni el tipo de cambio fijo. Las etiquetas se
+  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope, la parte 1 de F2b, el tipo de cambio fijo
+  ni la parte 2 de F2b. Las etiquetas se
   quedan en este equipo (en GitHub solo está la rama). La etiqueta `backend-completo` y el respaldo se movieron
-  el 2026-10-12 dos veces: al quitar el tope del precio y al terminar el backend de la parte 1 de F2b.
+  el 2026-10-12 dos veces (al quitar el tope del precio y al terminar el backend de la parte 1 de F2b) y el
+  2026-10-15, al terminar la parte 2 de F2b (con el tipo de cambio fijo).
+- Fuera de F2b parte 2 (decidir si entran más adelante; los tres primeros, por decisión del dueño): ejecutar
+  desde el iPhone del administrador eligiendo la caja (la ruta lo admite con `caja_id`; la pantalla no lo
+  ofrece), el ticket digital de una devolución y la casilla «admite devolución» de las categorías (F4). Además:
+  marcar defectuosa solo una parte de una línea al recibirla (se elige por línea de la solicitud; para partirla,
+  se cancela y se pide otra), que el buscador del cambio cuente como disponible lo que el cliente devuelve en
+  buen estado (si se lleva lo mismo que devolvió y no hay más en la sucursal, la pantalla no lo deja; la base sí),
+  el botón de copia de la factura nueva del cambio (se reimprime desde la venta) y un reporte de transferencias
+  hechas. Sin probar con equipo real: la gaveta de verdad (los recorridos leen el pulso ESC p en la impresora
+  simulada) y la impresión de dos tickets seguidos por USB en la Xprinter.
 - Fuera de F2b parte 1 (decidir si entran más adelante): avisar solo al administrador (notificaciones: las
   alertas siguen en el panel y el WhatsApp lo manda la persona); buscar una venta sin ticket desde el celular
   personal (decisión del dueño: solo en el equipo); corregir una solicitud (se cancela y se hace otra); los
@@ -158,7 +180,11 @@ _Actualizado el 2026-10-12._
   (`esmeralda-local-2026-10-12-antes-de-quitar-el-tope.dump`), con el parámetro del WhatsApp
   (`esmeralda-local-2026-10-12-antes-del-aviso-por-whatsapp.dump`) y con el tipo de cambio fijo
   (`esmeralda-local-2026-10-15-antes-del-tipo-de-cambio-fijo.dump`; ahí se comparó también la tabla `permiso` y
-  los permisos de los roles del sistema); los respaldos están en `C:\Respaldos\`.
+  los permisos de los roles del sistema) y con la parte 2 de F2b
+  (`esmeralda-local-2026-10-15-antes-de-ejecutar-en-caja.dump`: la columna `estado_recibido`, sus dos
+  restricciones y las funciones nuevas; la función
+  `fn_ejecutar_devolucion` cambió de argumentos, así que la vieja se borró con `DROP FUNCTION`); los respaldos
+  están en `C:\Respaldos\`.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -198,7 +224,7 @@ Las tres usan bases propias que se borran y recrean en cada corrida (`esmeralda_
 db/01_esquema.sql      Tablas, reglas, funciones fn_* y vistas v_* (fuente de verdad del negocio)
 db/02_seed.sql         Datos iniciales: ubicaciones, roles, permisos, parámetros, gamas, denominaciones, admin
 db/03_datos_demo.sql   Datos de demostración (solo desarrollo)
-db/04_pruebas.sql      759 pruebas de reglas de negocio
+db/04_pruebas.sql      785 pruebas de reglas de negocio
 db/scripts/probar.sh   Recrea la BD esmeralda_test y corre todas las pruebas (Linux)
 db/scripts/probar.ps1  Lo mismo en Windows (atajo: db\scripts\probar.cmd)
 docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
@@ -337,7 +363,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     sobra se reembolsa como en una devolución, según cómo se pagó la factura original (confirmado por el dueño). Lo que se lleva se elige al ejecutar, no al solicitar. Esa venta
     no se anula; lo comprado en ella se puede devolver después.
   - **Inventario:** lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo
-    con que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex.
+    con que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex. Desde F2b
+    parte 2, quien lo recibe dice en qué estado llega cada línea (`estado_recibido`): eso decide la merma.
   - **Número propio sin saltos:** `DEV-<sucursal>-000001` (`sucursal.ultimo_numero_devolucion`), tomado al
     ejecutarse; rechazadas, canceladas y fallidas no toman número. Ticket de 80 mm con la firma del cliente.
   - **Reportes:** las ventas van netas (ventas menos devoluciones) por la fecha de la devolución, y se le restan
@@ -441,7 +468,29 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     - La lista: para la sucursal «Aprobadas», «Esperando aprobación» y «Todas»; para el administrador «Por
       aprobar», «Aprobadas» y «Todas». El inicio del administrador dice cuántas esperan su aprobación (un
       conteo, sin montos). La alerta de una devolución lleva a ella con «Ver la solicitud».
-    - Una aprobada dice que ejecutarla en caja llega con la parte 2 (todavía no hay botón).
+    - Una aprobada decía que ejecutarla en caja llegaba con la parte 2 (ya está: «Ejecutar en caja»).
+  - Decisiones tomadas al programar la parte 2 (el 2026-10-15, **pendientes de la revisión del dueño**):
+    - **El estado al recibir** se elige por cada línea de la solicitud (como se pidió, de entrada) y se puede
+      cambiar en los dos sentidos. Lo que se pidió bueno y llega defectuoso sale igual como merma **ya
+      aprobada**, a nombre del administrador que aprobó la devolución, con un comentario que lo dice. Se guarda
+      cómo se pidió (`estado_producto`) y cómo llegó (`estado_recibido`); el ticket, los reportes y el detalle
+      usan cómo llegó.
+    - **Lo que se entrega** sale de la base con la misma cuenta que hace la ejecución (`fn_reparto_ejecucion`):
+      en una devolución, el previsto de la solicitud; en un cambio, se pregunta para el total de lo que se lleva
+      el cliente cada vez que cambia. La ejecución verifica que el saldo aplicado cuadre.
+    - **Tickets:** el original sale solo al ejecutar (el que firma el cliente); en un cambio, la factura nueva
+      sale **después** del ticket del cambio, no a la vez (a la impresora por USB no se le mandan dos juntos).
+      «Copia para el cliente» es solo del ticket de la devolución. En el detalle de una ejecutada, en el equipo,
+      «Imprimir el ticket» (si el original no llegó a salir, ese es el original).
+    - **Gaveta en un cambio:** se abre con el ticket del cambio solo si sale efectivo de la caja; si el cliente
+      paga la diferencia en efectivo, la abre el ticket de la factura nueva (la regla de siempre de la venta).
+    - **El cambio** no lleva promoción ni pide el nombre del cliente (viene de la solicitud); quien tiene
+      `VENTAS_MODIFICAR_PRECIO` puede subir el precio como en una venta.
+    - **Transferencias pendientes:** pantalla propia (`/devoluciones/transferencias`), con un acceso en el inicio
+      del administrador (cuántas hay, sin montos) y en «Devoluciones»; el teléfono se toca para llamar. También se
+      anota desde el detalle de la devolución.
+    - Si la respuesta de ejecutar se pierde (sin internet), la pantalla vuelve a preguntar la devolución: si ya
+      se ejecutó, muestra el resultado; el cambio se reintenta con la misma clave sin duplicar.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
@@ -458,7 +507,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
 | F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio vigente, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
-| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes |
+| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes: hecha y pendiente de revisión |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
 | F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
@@ -594,6 +643,22 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   ejemplo para las pruebas en `pruebas/devoluciones.ts`. `Confirmacion` acepta `textoCancelar` para cuando
   «Cancelar» se confundiría con lo que se confirma. El recorrido `e2e/devoluciones.spec.ts` va después de
   `venta.spec.ts` (usa sus facturas), cierra la caja de Las Américas y la deja cerrada.
+- Devoluciones (F2b parte 2): `pantallas/DevolucionEjecutar.tsx` (`/devoluciones/:id/ejecutar`, se carga aparte:
+  trae el escáner) y `pantallas/Transferencias.tsx` (`/devoluciones/transferencias`, `DEVOLUCIONES_APROBAR`). Lo
+  que se arma en la venta vive ahora en `venta/ArmarVenta.tsx` (`useArmado()` y `<ArmarVenta>`: buscador,
+  escáner, perforación con pieza y renglones) y `venta/Cobro.tsx` (`<Cobro>` con `titulo`, `etiquetaTotal`,
+  `textoRegistrar`, `sinConexion`, `conCliente` y `arriba`): los usan la venta y el cambio. La lógica sin React en
+  `devoluciones/ejecucion.ts` (`estadosIniciales()`, `estadosCambiados()` —solo se envían las líneas que llegan
+  distinto— y `cuentaDelCambio()`). La anotación de la referencia, en `devoluciones/AnotarTransferencia.tsx`.
+  Se ejecuta solo en un equipo registrado (`sesion.equipo !== null`) y con el turno de su caja
+  (`useDestinoDeVenta`); desde el celular, el detalle dice dónde se hace. Lo que se entrega lo da la API
+  (`reembolso` previsto o `/reparto`): no repartir en pantalla. `BotonImprimir` acepta `alTerminar` (para mandar
+  la factura nueva después del ticket del cambio) y `conDialogo={false}` (con varios botones, el del diálogo del
+  sistema sale una vez). `usePorTransferir()` y `porTransferir` (`api/consultas.ts`) comparten la consulta
+  `?por_transferir=true`: las pruebas de Vitest que montan la app con `DEVOLUCIONES_APROBAR` deben responder a
+  ese filtro. El recorrido `e2e/devoluciones-caja.spec.ts` (proyecto `ejecutar`) va después de
+  `devoluciones.spec.ts`: abre la caja de Las Américas, vende cuatro facturas, la cierra, el administrador
+  solicita y aprueba por la API, la vuelve a abrir y la deja abierta; enciende la gaveta y la apaga al final.
 - Pantalla encendida: `equipo/despierta.tsx` (`PantallaDespierta` envuelve la app; `useDespierta()` da el
   estado). Activa con sesión en un equipo registrado o en su pantalla de PIN con el equipo abierto.
 - Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
@@ -877,6 +942,21 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
     de los reportes; para probar el plazo mueve la fecha de una venta apartando `tg_venta_proteger` y la
     devuelve a su sitio; deja el parámetro vacío en un `finally`). En `test/celular.e2e-spec.ts` la ruta
     nueva está entre las que piden el equipo.
+- Devoluciones en pantalla (backend de F2b parte 2), en el mismo módulo `devoluciones/`:
+  - `POST /api/devoluciones/:id/imprimir?formato=renglones`: como los otros tickets (`armarTicket` /
+    `entregarTicket`), con `abrir_gaveta` de `fn_abre_gaveta_devolucion` (parámetro en `SI`, original y
+    `monto_efectivo > 0`).
+  - `GET /api/devoluciones/:id/reparto?total=` (`@SoloEnEquipo()`): `fn_reparto_ejecucion(devolucion, total)`
+    → `{ saldo, por_cobrar, efectivo, transferencia }`. `fn_ejecutar_devolucion` usa esa misma función para el
+    dinero que sale, así que lo que la pantalla muestra antes es lo que queda.
+  - `fn_ejecutar_devolucion` tiene un argumento más al final, `p_estados jsonb` (`[{ linea_id, estado }]`); el
+    esquema de la API lo recibe como `lineas: [{ id, estado }]`. `devolucion_detalle.estado_recibido` se llena
+    al ejecutar, junto con `movimiento_id` (`ck_devolucion_recibida`); `ck_devolucion_merma` ata la merma a lo que
+    llegó defectuoso. `v_devoluciones_linea.estado_producto` y el reporte de devoluciones usan cómo llegó.
+  - La lista y el detalle traen `monto_transferencia` (null hasta ejecutarla) y cada línea, `estado_recibido`.
+  - Pruebas: `test/devoluciones-caja.e2e-spec.ts` trabaja en la sucursal `DEC` y deja `IMPRESION_ABRIR_GAVETA` en
+    `NO` en `afterAll`. Como deja devoluciones por transferir, las consultas del administrador de
+    `test/devoluciones.e2e-spec.ts` van filtradas por sus sucursales (el orden de los archivos no está fijo).
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

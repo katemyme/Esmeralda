@@ -10,7 +10,7 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
 | Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios) |
-| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base), F2a (caja, consulta de precios, venta, tickets y cola de impresión) y la primera parte de F2b (solicitar y aprobar devoluciones). Siguen ejecutar las devoluciones en caja, inventario, administración y reportes |
+| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base), F2a (caja, consulta de precios, venta, tickets y cola de impresión) y F2b (devoluciones y cambios: solicitar, aprobar, ejecutar en caja y transferencias). Siguen inventario, administración y reportes |
 
 ## Estructura
 
@@ -368,12 +368,13 @@ donde está el cliente, que puede ser otra que la de la venta. La factura origin
 | `GET /api/devoluciones/venta?numero=` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | Busca la factura por su número (el QR del ticket; `lam-12` también vale), de la sucursal que sea: qué líneas se pueden devolver, cuántas quedan, lo pagado por unidad y las solicitudes que ya tiene |
 | `GET /api/devoluciones/ventas-recientes` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | «No tiene el ticket»: `?fecha=&buscar=&limite=&antes_de=` → `{ dias, desde, ventas }`, las ventas completadas del plazo de devolución (`DEVOLUCION_DIAS_MAX`) con su monto, sus primeros productos y `motivo_no`. **Solo en el equipo de la sucursal** (o el administrador): desde el celular, 403 `EQUIPO_REQUERIDO`. Con `VENTAS_VER_TODAS`, las de sus sucursales; si no, las propias. Sin sumas |
 | `POST /api/devoluciones` | `DEVOLUCIONES_REGISTRAR` | 1) La solicitud: `{ venta_id, tipo: DEVOLUCION/CAMBIO, motivo, cliente_nombre, cliente_telefono, lineas: [{ detalle_id, cantidad, estado: BUENO/DEFECTUOSO }] }`. Queda pendiente, aparta lo pedido y deja una alerta al administrador |
-| `GET /api/devoluciones` · `GET /api/devoluciones/:id` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `?estado=&tipo=&sucursal_id=&desde=&hasta=&por_transferir=&buscar=&limite=&antes_de=` |
+| `GET /api/devoluciones` · `GET /api/devoluciones/:id` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `?estado=&tipo=&sucursal_id=&desde=&hasta=&por_transferir=&buscar=&limite=&antes_de=`. Cada una trae `monto_transferencia` (ejecutada: lo que le toca transferir al administrador; antes, null) y cada línea, `estado_recibido` |
+| `GET /api/devoluciones/:id/reparto` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | Antes de ejecutarla: `?total=` (en un cambio, lo que suma lo que se lleva el cliente) → `{ reparto: { saldo, por_cobrar, efectivo, transferencia } }`, con la misma cuenta que hace la ejecución. **Solo en el equipo de la sucursal** (o el administrador) |
 | `POST /api/devoluciones/:id/resolver` | `DEVOLUCIONES_APROBAR` | 2) `{ aprobar, comentario }`: solo el administrador. Para rechazar, el comentario es obligatorio |
 | `POST /api/devoluciones/:id/cancelar` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | `{ motivo }`: mientras no se haya ejecutado; quien la solicitó o el administrador |
-| `POST /api/devoluciones/:id/ejecutar` | `DEVOLUCIONES_REGISTRAR` | 3) En el turno abierto de la caja de la sesión. Devolución: `{}`. Cambio: `{ clave_idempotencia, items, pagos, notas }`, como una venta |
+| `POST /api/devoluciones/:id/ejecutar` | `DEVOLUCIONES_REGISTRAR` | 3) En el turno abierto de la caja de la sesión. Devolución: `{}`. Cambio: `{ clave_idempotencia, items, pagos, notas }`, como una venta. Las dos: `lineas: [{ id, estado }]` si una línea se recibe en otro estado que el que se pidió |
 | `POST /api/devoluciones/:id/transferencia` | `DEVOLUCIONES_APROBAR` | `{ referencia }`: el administrador anota la transferencia de lo que no salió de la caja |
-| `POST /api/devoluciones/:id/imprimir` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | El ticket de la devolución en PDF para el rollo de 80 mm, con la firma del cliente (la reimpresión lleva COPIA) |
+| `POST /api/devoluciones/:id/imprimir` | `DEVOLUCIONES_REGISTRAR` o `DEVOLUCIONES_APROBAR` | El ticket de la devolución para el rollo de 80 mm, con la firma del cliente (la reimpresión lleva COPIA): en PDF o, con `?formato=renglones`, para la impresora por USB (`abrir_gaveta`: en el original, si sale efectivo de la caja) |
 
 - **Qué se devuelve.** Solo artículos con stock de una categoría con la casilla «admite devolución»: nunca piezas de
   piercing, perforaciones ni paquetes. Por línea y cantidad, sin pasar de lo vendido menos lo ya devuelto y lo
@@ -392,7 +393,15 @@ donde está el cliente, que puede ser otra que la de la venta. La factura origin
   en una devolución. Esa venta no se anula; lo comprado en ella se puede devolver después. Reintentar con la misma
   `clave_idempotencia` responde lo mismo con `repetida: true`.
 - **Inventario.** Lo devuelto entra al stock de la sucursal donde se ejecuta (movimiento `DEVOLUCION`, al costo con
-  que se vendió); lo defectuoso sale enseguida como merma ya aprobada.
+  que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Al ejecutarla, quien recibe el producto dice
+  en qué estado llega cada línea (`estado_recibido`), por si no es el que se pidió: eso decide la merma, el ticket
+  y los reportes.
+- **Antes de ejecutar** (`/reparto`): cuánto sale en efectivo de la caja y cuánto queda por transferir; en un
+  cambio, para el total de lo que se lleva el cliente, cuánto se aplica de lo devuelto, cuánto se cobra y cuánto
+  se le devuelve. Es la misma cuenta de la ejecución (`fn_reparto_ejecucion`): la pantalla no reparte nada.
+- **Gaveta.** Con `IMPRESION_ABRIR_GAVETA` en `SI`, el ticket original de una devolución que entrega efectivo trae
+  `abrir_gaveta: true` (`fn_abre_gaveta_devolucion`). Nunca la copia ni la que se transfiere toda; si en un cambio
+  el cliente paga la diferencia en efectivo, la abre el ticket de la venta nueva.
 - **Aviso por WhatsApp.** `GET /api/devoluciones/:id` trae `aviso_whatsapp`: el número del administrador (el
   parámetro `WHATSAPP_ADMINISTRADOR`, solo con dígitos; lo limpia `fn_whatsapp_administrador`) mientras la
   solicitud está pendiente, y null si el parámetro está vacío, no es un número de 8 a 15 dígitos o la solicitud ya
@@ -500,8 +509,12 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
 - **F2b, primera parte (solicitar y aprobar devoluciones):** buscar la factura por su número o escaneando el QR
   del ticket, «No tiene el ticket» (las ventas de los últimos días, solo en el equipo de la sucursal), solicitar
   una devolución o un cambio desde el equipo o desde el celular, la lista de devoluciones, aprobar o rechazar
-  (el administrador, también desde su celular), cancelar y el aviso por WhatsApp al administrador. Ejecutarlas en
-  caja, su ticket y las transferencias van en la segunda parte.
+  (el administrador, también desde su celular), cancelar y el aviso por WhatsApp al administrador.
+- **F2b, segunda parte (ejecutar en caja):** ejecutar la devolución o el cambio aprobado en el equipo de la
+  sucursal donde está el cliente, con el estado en que llega cada producto; lo que se entrega en efectivo y lo
+  que queda por transferir; el cambio armado como una venta (sin promoción) con la diferencia que se cobra o lo
+  que se le devuelve; el ticket que firma el cliente (también por USB, con la gaveta), la copia para el cliente y
+  la factura nueva; y las transferencias pendientes del administrador.
 
 Lo demás del menú aparece marcado «Pronto».
 
@@ -577,7 +590,7 @@ gaveta conectada a la impresora. En una PC de caja eso lo decide el driver (ver 
 Los dos parámetros vienen en `NO`. Mientras no esté la pantalla de administración (F4) se cambian con
 `PUT /api/parametros/IMPRESION_AUTOMATICA_COLA` y `{ "valor": "SI" }`, como administrador.
 
-### Devoluciones y cambios (parte 1: solicitar y aprobar)
+### Devoluciones y cambios
 
 En el menú, «Devoluciones». Son para ventas de un turno ya cerrado (con la caja abierta, la venta se anula).
 
@@ -599,6 +612,21 @@ En el menú, «Devoluciones». Son para ventas de un turno ya cerrado (con la ca
    lleva a la solicitud con un toque, y el inicio dice cuántas esperan. Rechazar pide un comentario. A quien la
    solicitó le cambia en pantalla sin tocar nada.
 6. **Cancelar.** Quien la solicitó, mientras no se ejecute; el administrador, la que ya aprobó.
+7. **Ejecutar en caja.** En el equipo de la sucursal donde está el cliente (puede ser otra que la de la venta), con
+   la caja abierta: la aprobada trae el botón «Ejecutar en caja». Por cada producto se dice si llega en buen
+   estado (vuelve a las existencias) o defectuoso (sale como merma ya aprobada); de entrada, como se pidió.
+   - **Devolución:** la pantalla dice cuánto entregar en efectivo de la caja y cuánto queda por transferir (lo que
+     se pagó con tarjeta o transferencia, que hace la administración).
+   - **Cambio:** lo que se lleva el cliente se busca o se escanea como en la venta, sin promoción. Si cuesta más,
+     se cobra la diferencia con el cobro de siempre; si cuesta menos, antes de confirmar dice cuánto se le devuelve
+     y cómo (según la forma de pago de la factura original).
+   Al confirmar toma su número `DEV-…` y sale solo el ticket que firma el cliente y se queda en la tienda; en un
+   cambio, después, la factura nueva. «Copia para el cliente» saca otro, con la palabra COPIA. Por USB, el
+   original abre la gaveta si sale efectivo de la caja (`IMPRESION_ABRIR_GAVETA` en `SI`). Desde el celular no se
+   ejecuta.
+8. **Transferencias pendientes.** El administrador (también desde su iPhone) tiene en el inicio y en
+   «Devoluciones» la lista de lo que le falta transferir: cliente, teléfono (se toca para llamar), factura y
+   monto; anota la referencia y sale de la lista. También se anota desde la devolución.
 
 La lista tiene tres pestañas (para la sucursal: «Aprobadas», «Esperando aprobación» y «Todas»; para el
 administrador: «Por aprobar», «Aprobadas» y «Todas») y un buscador por factura, número de devolución o cliente.
