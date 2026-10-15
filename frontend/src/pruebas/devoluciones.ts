@@ -80,6 +80,7 @@ export function solicitud(parcial: Partial<DevolucionDetalle> = {}): DevolucionD
     vence_el: null,
     sucursal: null,
     ejecutada_at: null,
+    monto_transferencia: null,
     por_transferir: false,
     lineas: [
       {
@@ -88,6 +89,7 @@ export function solicitud(parcial: Partial<DevolucionDetalle> = {}): DevolucionD
         variante: FACTURA.lineas[0].variante,
         cantidad: 1,
         estado_producto: 'DEFECTUOSO',
+        estado_recibido: null,
         monto: '600.00',
       },
       {
@@ -96,6 +98,7 @@ export function solicitud(parcial: Partial<DevolucionDetalle> = {}): DevolucionD
         variante: FACTURA.lineas[1].variante,
         cantidad: 2,
         estado_producto: 'BUENO',
+        estado_recibido: null,
         monto: '600.00',
       },
     ],

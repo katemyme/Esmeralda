@@ -1,18 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, MessageCircle } from 'lucide-react';
+import { ArrowLeft, MessageCircle, Undo2 } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link, useLocation, useParams } from 'react-router';
 import { api, detalleDeError } from '../api/cliente';
 import type { DevolucionDetalle } from '../api/tipos';
+import { AnotarTransferencia } from '../devoluciones/AnotarTransferencia';
 import { enlaceDeAviso } from '../devoluciones/aviso';
 import { EtiquetaDeEstado, enlaceVolver, nombreDeTipo } from '../devoluciones/presentacion';
+import { BotonImprimir } from '../equipo/BotonImprimir';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Boton, Campo, Cargando, Etiqueta, Tarjeta } from '../ui/basicos';
 import { Confirmacion } from '../ui/Confirmacion';
 import { formatoDia, formatoFecha, formatoFechaHora, formatoMonto } from '../util/formato';
 
 // Una solicitud de devolución o de cambio, de principio a fin: qué se devuelve, cuánto vale y en
-// qué va. El administrador la aprueba o la rechaza aquí; quien la solicitó la puede cancelar.
+// qué va. El administrador la aprueba o la rechaza aquí; quien la solicitó la puede cancelar. La
+// aprobada se ejecuta en el equipo de la sucursal donde esté el cliente; ya ejecutada, el
+// administrador anota aquí la transferencia de lo que no salió de la caja.
 
 function Fila({ etiqueta, children }: { etiqueta: ReactNode; children: ReactNode }) {
   return (
@@ -24,7 +28,16 @@ function Fila({ etiqueta, children }: { etiqueta: ReactNode; children: ReactNode
 }
 
 /** En qué va la solicitud, con el color de cada cosa: ámbar lo pendiente, rojo solo el rechazo. */
-function Estado({ devolucion, aprueba }: { devolucion: DevolucionDetalle; aprueba: boolean }) {
+function Estado({
+  devolucion,
+  aprueba,
+  ejecutaAqui,
+}: {
+  devolucion: DevolucionDetalle;
+  aprueba: boolean;
+  /** Es el equipo de una sucursal y quien está puede ejecutarla. */
+  ejecutaAqui: boolean;
+}) {
   const { resolucion, cancelacion, ejecucion } = devolucion;
   const aviso = enlaceDeAviso(devolucion);
   switch (devolucion.estado) {
@@ -69,10 +82,19 @@ function Estado({ devolucion, aprueba }: { devolucion: DevolucionDetalle; aprueb
               <p className="font-normal">Comentario: {resolucion.comentario}</p>
             )}
           </Aviso>
-          <Aviso tipo="info">
-            Ejecutarla (recibir el producto y entregar el dinero o el cambio) se hace en el equipo
-            de la sucursal con la caja abierta. Esa pantalla llega con la siguiente parte.
-          </Aviso>
+          {ejecutaAqui ? (
+            <Link
+              to={`/devoluciones/${devolucion.id}/ejecutar`}
+              className="inline-flex min-h-toque items-center justify-center gap-2 rounded-xl bg-esmeralda px-5 font-semibold text-white hover:bg-esmeralda-oscuro"
+            >
+              <Undo2 className="size-5" aria-hidden /> Ejecutar en caja
+            </Link>
+          ) : (
+            <Aviso tipo="info">
+              Se ejecuta (recibir el producto y entregar el dinero o el cambio) en el equipo de la
+              sucursal donde esté el cliente, con la caja abierta.
+            </Aviso>
+          )}
         </>
       );
     case 'RECHAZADA':
@@ -295,6 +317,8 @@ export function DevolucionVer() {
   });
   const devolucion = consulta.data?.devolucion;
   const sinEjecutar = devolucion?.estado === 'PENDIENTE' || devolucion?.estado === 'APROBADA';
+  const enEquipo = sesion.equipo !== null;
+  const ejecutaAqui = enEquipo && tienePermiso(sesion, ['DEVOLUCIONES_REGISTRAR']);
   // La cancela quien la solicitó; el administrador, la que ya aprobó (la pendiente la rechaza)
   const puedeCancelar =
     sinEjecutar &&
@@ -337,7 +361,7 @@ export function DevolucionVer() {
           {recienEnviada && devolucion.estado === 'PENDIENTE' && (
             <Aviso tipo="exito">Solicitud enviada.</Aviso>
           )}
-          <Estado devolucion={devolucion} aprueba={aprueba} />
+          <Estado devolucion={devolucion} aprueba={aprueba} ejecutaAqui={ejecutaAqui} />
 
           <Tarjeta className="flex flex-col gap-3">
             <div>
@@ -349,8 +373,19 @@ export function DevolucionVer() {
                       <span className="block font-medium">
                         {linea.cantidad} × {linea.variante.nombre}
                       </span>
-                      {linea.estado_producto === 'DEFECTUOSO' && (
+                      {(linea.estado_recibido ?? linea.estado_producto) === 'DEFECTUOSO' && (
                         <Etiqueta tono="aviso">Defectuoso</Etiqueta>
+                      )}
+                      {linea.estado_recibido && linea.estado_recibido !== linea.estado_producto && (
+                        <span className="block text-sm text-texto-secundario">
+                          Se pidió{' '}
+                          {linea.estado_producto === 'DEFECTUOSO'
+                            ? 'como defectuoso'
+                            : 'en buen estado'}{' '}
+                          y se recibió{' '}
+                          {linea.estado_recibido === 'DEFECTUOSO' ? 'defectuoso' : 'en buen estado'}
+                          .
+                        </span>
                       )}
                     </span>
                     <span className="font-semibold whitespace-nowrap">
@@ -376,6 +411,22 @@ export function DevolucionVer() {
             </p>
           </Tarjeta>
 
+          {aprueba && devolucion.por_transferir && (
+            <Tarjeta className="flex flex-col gap-3">
+              <h2 className="text-lg font-semibold">Falta la transferencia</h2>
+              <p className="text-texto-secundario">
+                Transfiérale al cliente {formatoMonto(devolucion.monto_transferencia ?? '0')} (lo
+                que pagó con tarjeta o transferencia) y anote la referencia.
+              </p>
+              <AnotarTransferencia devolucion={devolucion} />
+            </Tarjeta>
+          )}
+          {devolucion.estado === 'EJECUTADA' && enEquipo && (
+            <BotonImprimir
+              ruta={`/devoluciones/${devolucion.id}/imprimir`}
+              texto="Imprimir el ticket"
+            />
+          )}
           {aprueba && devolucion.estado === 'PENDIENTE' && <Resolver devolucion={devolucion} />}
           {puedeCancelar && <Cancelar devolucion={devolucion} />}
         </>

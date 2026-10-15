@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Plus } from 'lucide-react';
+import { Banknote, ChevronRight, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { api, detalleDeError } from '../api/cliente';
+import { usePorTransferir } from '../api/consultas';
 import type { DevolucionResumen, Parametro } from '../api/tipos';
 import { numeroDeWhatsapp } from '../devoluciones/aviso';
 import { EtiquetaDeEstado, nombreDeTipo } from '../devoluciones/presentacion';
@@ -156,6 +157,7 @@ function NumeroDeAviso() {
 export function Devoluciones() {
   const sesion = useSesionActiva();
   const aprueba = tienePermiso(sesion, ['DEVOLUCIONES_APROBAR']);
+  const transferencias = usePorTransferir();
   const pestanas = aprueba ? [POR_APROBAR, APROBADAS, TODAS] : [APROBADAS, ESPERANDO, TODAS];
   const [elegida, setElegida] = useState(0);
   const [texto, setTexto] = useState('');
@@ -187,6 +189,22 @@ export function Devoluciones() {
           </Link>
         )}
       </header>
+
+      {transferencias !== null && (
+        <Link
+          to="/devoluciones/transferencias"
+          className="flex min-h-toque items-center justify-between gap-3 rounded-2xl border border-borde bg-superficie px-4 font-semibold active:bg-esmeralda-claro"
+        >
+          <span className="flex items-center gap-2">
+            <Banknote className="size-5 text-esmeralda" aria-hidden /> Transferencias pendientes
+          </span>
+          {transferencias > 0 ? (
+            <Etiqueta tono="aviso">{transferencias} por hacer</Etiqueta>
+          ) : (
+            <span className="text-sm font-normal text-texto-secundario">Ninguna</span>
+          )}
+        </Link>
+      )}
 
       <div role="tablist" className="flex gap-1 rounded-2xl border border-borde bg-superficie p-1">
         {pestanas.map((p, i) => (

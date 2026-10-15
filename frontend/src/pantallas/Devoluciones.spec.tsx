@@ -115,10 +115,15 @@ function preparar(sesion: DatosSesion) {
       return HttpResponse.json({ parametro: { clave: 'WHATSAPP_ADMINISTRADOR', valor: whatsapp } });
     }),
     http.get('*/api/devoluciones', ({ request }) => {
-      const estado = new URL(request.url).searchParams.get('estado');
+      const consulta = new URL(request.url).searchParams;
+      const estado = consulta.get('estado');
       const todas = guardada ? [guardada] : [];
       return HttpResponse.json({
-        devoluciones: todas.filter((d) => estado === null || d.estado === estado),
+        devoluciones: todas.filter(
+          (d) =>
+            (estado === null || d.estado === estado) &&
+            (consulta.get('por_transferir') !== 'true' || d.por_transferir),
+        ),
       });
     }),
     http.get('*/api/devoluciones/venta', ({ request }) =>

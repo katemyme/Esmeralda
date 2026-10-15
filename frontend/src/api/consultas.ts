@@ -59,6 +59,24 @@ export function usePorAprobar(): number | null {
   return aprueba ? (data?.devoluciones.length ?? 0) : null;
 }
 
+/** Las ejecutadas a las que les falta la transferencia del administrador (cada una con su monto). */
+export const porTransferir = {
+  queryKey: ['devoluciones', 'por-transferir'],
+  queryFn: () =>
+    api<{ devoluciones: DevolucionResumen[] }>(
+      'GET',
+      '/devoluciones?por_transferir=true&limite=200',
+    ),
+};
+
+/** Cuántas transferencias de devoluciones esperan al administrador; null para los demás. */
+export function usePorTransferir(): number | null {
+  const sesion = useSesionActiva();
+  const aprueba = tienePermiso(sesion, ['DEVOLUCIONES_APROBAR']);
+  const { data } = useQuery({ ...porTransferir, enabled: aprueba, refetchInterval: CADA_MINUTO });
+  return aprueba ? (data?.devoluciones.length ?? 0) : null;
+}
+
 const tipoCambioVigente = {
   queryKey: ['tipo-cambio'],
   queryFn: () => api<{ tipo_cambio: TipoCambio | null }>('GET', '/tipo-cambio'),

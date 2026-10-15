@@ -349,6 +349,11 @@ export interface DevolucionResumen {
   /** Dónde se ejecutó. */
   sucursal: Sucursal | null;
   ejecutada_at: string | null;
+  /**
+   * Ejecutada: lo que le toca transferir al administrador (lo pagado con tarjeta o transferencia;
+   * 0.00 si todo salió de la caja). Antes de ejecutarla, null.
+   */
+  monto_transferencia: string | null;
   /** Ya se ejecutó y le falta la transferencia que hace el administrador. */
   por_transferir: boolean;
 }
@@ -359,8 +364,10 @@ export interface DevolucionDetalle extends DevolucionResumen {
     detalle_id: number;
     variante: { id: number; sku: string; nombre: string };
     cantidad: number;
-    /** BUENO (vuelve al stock) o DEFECTUOSO (sale como merma). */
+    /** Como se pidió: BUENO (vuelve al stock) o DEFECTUOSO (sale como merma). */
     estado_producto: string;
+    /** Como se recibió al ejecutarla (puede no ser el que se pidió); antes, null. */
+    estado_recibido: string | null;
     monto: string;
   }[];
   resolucion: {
@@ -397,6 +404,19 @@ export interface DevolucionDetalle extends DevolucionResumen {
    * botón «Avisar al administrador». null: el botón no sale.
    */
   aviso_whatsapp: string | null;
+}
+
+/**
+ * `GET /api/devoluciones/:id/reparto?total=`: cómo queda el dinero al ejecutarla, con la misma
+ * cuenta que hace la base al ejecutar. En un cambio, lo devuelto paga primero lo nuevo (`saldo`);
+ * `por_cobrar` es lo que falta si lo nuevo cuesta más; lo que sobra se entrega en `efectivo` de la
+ * caja y por `transferencia` del administrador, según cómo se pagó la factura.
+ */
+export interface RepartoEjecucion {
+  saldo: string;
+  por_cobrar: string;
+  efectivo: string;
+  transferencia: string;
 }
 
 /** Una factura buscada por su número, con lo que se puede devolver de ella. */

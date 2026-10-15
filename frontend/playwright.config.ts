@@ -57,6 +57,13 @@ export default defineConfig({
       dependencies: ['venta'],
       use: { browserName: 'chromium', hasTouch: true },
     },
+    {
+      // Y ejecutarlas en caja: devoluciones, cambios, tickets, gaveta y transferencias
+      name: 'ejecutar',
+      testMatch: 'devoluciones-caja.spec.ts',
+      dependencies: ['devoluciones'],
+      use: { browserName: 'chromium', hasTouch: true },
+    },
   ],
   webServer: [
     {

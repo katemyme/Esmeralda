@@ -12,6 +12,13 @@ interface Props {
   texto?: string;
   /** Lo manda a imprimir al aparecer, sin esperar el toque (el ticket de una venta recién hecha). */
   automatico?: boolean;
+  /**
+   * Al terminar el primer intento, salga o falle: para mandar otro ticket después de este y no a
+   * la vez (a la impresora por USB no se le mandan dos juntos).
+   */
+  alTerminar?: () => void;
+  /** Ofrecer también el diálogo del sistema en Android (con varios botones, basta uno). */
+  conDialogo?: boolean;
 }
 
 /**
@@ -23,7 +30,13 @@ interface Props {
  * vuelve a enviar el mismo, sin que la API lo cuente como otra impresión (saldría como COPIA).
  * Por USB, el ticket trae si hay que abrir la gaveta (una venta cobrada en efectivo).
  */
-export function BotonImprimir({ ruta, texto = 'Imprimir ticket', automatico = false }: Props) {
+export function BotonImprimir({
+  ruta,
+  texto = 'Imprimir ticket',
+  automatico = false,
+  alTerminar,
+  conDialogo = true,
+}: Props) {
   const [ocupado, setOcupado] = useState(false);
   const [resultado, setResultado] = useState<{ tipo: 'exito' | 'error'; texto: string } | null>(
     null,
@@ -33,6 +46,12 @@ export function BotonImprimir({ ruta, texto = 'Imprimir ticket', automatico = fa
   const porUsb = useRef<Uint8Array | null>(null);
   const enPdf = useRef<Blob | null>(null);
   const modo = modoDeImpresion();
+  // Se avisa una sola vez: después del primer intento, haya salido o no
+  const terminado = useRef(false);
+  const avisar = useRef(alTerminar);
+  useEffect(() => {
+    avisar.current = alTerminar;
+  });
 
   const imprimir = async (forma: 'usb' | 'dialogo') => {
     setOcupado(true);
@@ -60,9 +79,12 @@ export function BotonImprimir({ ruta, texto = 'Imprimir ticket', automatico = fa
       });
     } finally {
       setOcupado(false);
+      if (!terminado.current) {
+        terminado.current = true;
+        avisar.current?.();
+      }
     }
   };
-
   // Una sola vez, aunque la pantalla se vuelva a dibujar
   const yaSalio = useRef(false);
   const alAparecer = useRef(imprimir);
@@ -83,7 +105,7 @@ export function BotonImprimir({ ruta, texto = 'Imprimir ticket', automatico = fa
         <Printer className="size-5" aria-hidden />
         {fallo ? 'Reintentar la impresión' : pedido ? '¿No salió? Reimprimir' : texto}
       </Boton>
-      {modo === 'usb' && (
+      {modo === 'usb' && conDialogo && (
         <Boton variante="texto" disabled={ocupado} onClick={() => void imprimir('dialogo')}>
           Imprimir con el diálogo del sistema
         </Boton>

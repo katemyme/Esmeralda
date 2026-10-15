@@ -1,7 +1,7 @@
-import { Bell, KeyRound, ShoppingCart, Smartphone, Undo2, Wallet } from 'lucide-react';
+import { Banknote, Bell, KeyRound, ShoppingCart, Smartphone, Undo2, Wallet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { usePendientes, usePorAprobar, useTurno } from '../api/consultas';
+import { usePendientes, usePorAprobar, usePorTransferir, useTurno } from '../api/consultas';
 import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Tarjeta } from '../ui/basicos';
 import { formatoHora, primerNombre } from '../util/formato';
@@ -37,6 +37,7 @@ export function Inicio() {
   const { usuario, equipo, acceso } = sesion;
   const pendientes = usePendientes();
   const porAprobar = usePorAprobar();
+  const transferencias = usePorTransferir();
   const turno = useTurno();
   const esAdmin = usuario.rol.codigo === 'ADMIN';
 
@@ -87,6 +88,19 @@ export function Inicio() {
                 : porAprobar === 1
                   ? 'Hay 1 por aprobar.'
                   : `Hay ${porAprobar} por aprobar.`}
+          </Acceso>
+        )}
+        {transferencias !== null && (
+          <Acceso
+            a="/devoluciones/transferencias"
+            icono={<Banknote className="size-6" aria-hidden />}
+            titulo="Transferencias pendientes"
+          >
+            {transferencias === 0
+              ? 'No hay ninguna transferencia de devoluciones por hacer.'
+              : transferencias === 1
+                ? 'Hay 1 por hacer.'
+                : `Hay ${transferencias} por hacer.`}
           </Acceso>
         )}
         <Acceso a="/alertas" icono={<Bell className="size-6" aria-hidden />} titulo="Alertas">

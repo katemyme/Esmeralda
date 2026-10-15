@@ -13,6 +13,7 @@ import { CambiarPassword } from './pantallas/CambiarPassword';
 import { TicketsPorImprimir } from './pantallas/Cola';
 import { DevolucionVer } from './pantallas/Devolucion';
 import { Devoluciones } from './pantallas/Devoluciones';
+import { Transferencias } from './pantallas/Transferencias';
 import { Inicio } from './pantallas/Inicio';
 import { MiPin } from './pantallas/MiPin';
 import { Turno, Turnos } from './pantallas/Turnos';
@@ -40,6 +41,12 @@ const DevolucionNueva = lazy(() =>
 const FacturaParaDevolver = lazy(() =>
   import('./pantallas/DevolucionNueva').then((modulo) => ({
     default: modulo.FacturaParaDevolver,
+  })),
+);
+// Y ejecutarla en caja: en un cambio se arma lo que se lleva el cliente, como en la venta
+const DevolucionEjecutar = lazy(() =>
+  import('./pantallas/DevolucionEjecutar').then((modulo) => ({
+    default: modulo.DevolucionEjecutar,
   })),
 );
 
@@ -220,10 +227,28 @@ function Contenido() {
           }
         />
         <Route
+          path="devoluciones/transferencias"
+          element={
+            <ConPermiso permisos={['DEVOLUCIONES_APROBAR']}>
+              <Transferencias />
+            </ConPermiso>
+          }
+        />
+        <Route
           path="devoluciones/:id"
           element={
             <ConPermiso permisos={DEVOLUCIONES}>
               <DevolucionVer />
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="devoluciones/:id/ejecutar"
+          element={
+            <ConPermiso permisos={['DEVOLUCIONES_REGISTRAR']}>
+              <Suspense fallback={<Cargando />}>
+                <DevolucionEjecutar />
+              </Suspense>
             </ConPermiso>
           }
         />
