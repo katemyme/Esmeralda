@@ -20,7 +20,7 @@ import { EspacioLogo, Etiqueta, Marca } from '../ui/basicos';
 import { Confirmacion } from '../ui/Confirmacion';
 import { primerNombre } from '../util/formato';
 
-/** Con un turno abierto: siempre a la vista la sucursal, la caja y el tipo de cambio del día. */
+/** Con un turno abierto: siempre a la vista la sucursal, la caja y el tipo de cambio vigente. */
 function FranjaDeCaja() {
   const turno = useTurno();
   const tipoCambio = useTipoCambio();
@@ -30,11 +30,11 @@ function FranjaDeCaja() {
       <span className="font-semibold">{turno.sucursal.nombre}</span>
       <span aria-hidden>·</span>
       <span>{turno.caja.nombre}</span>
-      <span aria-hidden>·</span>
-      {tipoCambio?.es_de_hoy ? (
-        <span>US$ 1 = C$ {Number(tipoCambio.usd_a_nio).toFixed(2)}</span>
-      ) : (
-        <Etiqueta tono="aviso">Falta el tipo de cambio de hoy</Etiqueta>
+      {tipoCambio && (
+        <>
+          <span aria-hidden>·</span>
+          <span>US$ 1 = C$ {Number(tipoCambio.usd_a_nio).toFixed(2)}</span>
+        </>
       )}
     </div>
   );

@@ -90,7 +90,7 @@ function preparar(sesion: DatosSesion) {
     ),
     http.get('*/api/tipo-cambio', () =>
       HttpResponse.json({
-        tipo_cambio: { fecha: '2026-10-12', usd_a_nio: '36.6243', es_de_hoy: true },
+        tipo_cambio: { fecha: '2026-10-12', usd_a_nio: '36.6243', registrado_por: null },
       }),
     ),
     http.get('*/api/cola-impresion', () =>

@@ -138,7 +138,7 @@ solo valen los permisos marcados `sin_equipo` en la tabla `permiso`; con cualqui
 | Desde el celular | Qué |
 |---|---|
 | Sí | Productos, precios, existencias y kardex; ver y recibir envíos; conteos; buscar una factura y solicitar su devolución (ver y cancelar las suyas); **vender**, compartir el ticket digital de sus ventas y quitar su ticket de la cola de impresión; los avisos de su sucursal; cambiar su contraseña |
-| No | Abrir o cerrar la caja, movimientos de efectivo, anular, buscar una venta sin su ticket («No tiene el ticket»), ejecutar devoluciones, imprimir en papel, registrar el tipo de cambio, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
+| No | Abrir o cerrar la caja, movimientos de efectivo, anular, buscar una venta sin su ticket («No tiene el ticket»), ejecutar devoluciones, imprimir en papel, mermas, reportes, turnos y diferencias, ver las ventas de otras personas |
 
 - **Vender.** La venta entra al turno abierto de su sucursal, con las reglas de siempre, y queda a su nombre.
   `GET /api/caja/abiertas` (`VENTAS_REGISTRAR`) dice dónde puede vender: las cajas con turno abierto de sus
@@ -280,9 +280,9 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 | `POST /api/ventas/:id/anular` | `VENTAS_ANULAR` | `{ motivo }`: solo con el turno abierto; devuelve las piezas al inventario |
 | `POST /api/ventas/:id/imprimir` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El ticket de la venta en PDF para el rollo de 80 mm |
 | `GET /api/ventas/:id/ticket-digital` | `VENTAS_VER_PROPIAS` o `VENTAS_VER_TODAS` | El mismo ticket en PDF para compartirlo; no cuenta como impresión. También desde el celular |
-| `GET /api/tipo-cambio` | (cualquier usuario) | Córdobas por dólar vigentes |
-| `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` | `{ usd_a_nio, confirmar }`: registra o corrige el de hoy (los días anteriores no se editan) |
-| `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los registrados, un día por fila del más reciente al más antiguo, con quién dejó cada valor y, en `registros`, todo lo que se registró ese día (el primero y sus correcciones): `?desde=&hasta=&limite=` |
+| `GET /api/tipo-cambio` | (cualquier usuario) | El vigente: `{ fecha, usd_a_nio, registrado_por }` (desde qué día rige y quién lo puso; `null` en el valor inicial) |
+| `PUT /api/tipo-cambio` | `TIPO_CAMBIO_GESTIONAR` (solo el administrador) | `{ usd_a_nio, confirmar }`: cambia el vigente, que rige desde ya para las ventas siguientes. El mismo valor que ya rige no cambia nada |
+| `GET /api/tipo-cambio/historial` | `TIPO_CAMBIO_GESTIONAR` | Los cambios, del más reciente al más antiguo: `{ usd_a_nio, anterior, registrado_por, registrado_at }` (de cuánto a cuánto, quién y cuándo; el primero es el valor inicial, sin anterior ni usuario): `?desde=&hasta=&limite=` |
 | `GET /api/metodos-pago` · `GET /api/denominaciones` | (cualquier usuario) | Para armar las pantallas de cobro y de conteo |
 
 - **Venta.** El precio de lista lo pone la base; `precio` solo sirve para cobrar más (`VENTAS_MODIFICAR_PRECIO`, sin
@@ -313,10 +313,13 @@ administrador, cuando su equipo no tiene caja (o entra sin equipo registrado), i
 - **Gaveta.** `abrir_gaveta` llega en `true` cuando la pantalla debe mandar el pulso que abre la gaveta junto con
   el ticket: con el parámetro `IMPRESION_ABRIR_GAVETA` en `SI` (viene en `NO`), en el original de una venta
   cobrada, al menos en parte, en efectivo. Nunca en una copia. En una PC de caja la abre el driver de la impresora.
-- **Tipo de cambio.** Si el valor se aleja del último registrado más que el parámetro `TIPO_CAMBIO_VARIACION_MAX`
-  (5 %) → 409 `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true`.
-  El primero que se registra (sin uno anterior) debe estar entre 20 y 60 córdobas por dólar; fuera de ese rango
-  responde 422 aunque venga confirmado.
+- **Tipo de cambio.** No se registra cada día (decisión del dueño del 2026-10-15): hay uno **vigente**, que arranca
+  en C$ 36.5 (datos iniciales) y se queda fijo todos los días hasta que el **administrador** lo cambie, desde
+  cualquier equipo o su celular (la encargada ya no tiene `TIPO_CAMBIO_GESTIONAR`). Cada venta guarda el suyo. Si
+  el nuevo se aleja del vigente más que el parámetro `TIPO_CAMBIO_VARIACION_MAX` (5 %) → 409
+  `CONFIRMACION_REQUERIDA`: la pantalla muestra el mensaje, pregunta y lo reenvía con `confirmar: true` (contra un
+  error al escribirlo). Si no hubiera ninguno, el primero debe estar entre 20 y 60 córdobas por dólar; fuera de
+  ese rango responde 422 aunque venga confirmado.
 
 ### Cola de impresión y ticket digital
 
@@ -485,8 +488,8 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
 - **F1, la base:** inicio de sesión, cambio de la contraseña temporal, pantalla de PIN y bloqueo por
   inactividad, registro del equipo, menú según los permisos de la sesión, centro de alertas y la pantalla
   «Este equipo» (cámara, impresora, pantalla encendida).
-- **F2a, primera parte (caja y consulta de precios):** abrir el turno contando a ciegas, tipo de cambio de hoy
-  (con confirmación si se aleja, y un recordatorio al abrir la caja si todavía falta), entradas y salidas de
+- **F2a, primera parte (caja y consulta de precios):** abrir el turno contando a ciegas, el tipo de cambio
+  vigente (lo cambia el administrador, con confirmación si se aleja), entradas y salidas de
   efectivo, cierre a ciegas por billetes y monedas con un solo reconteo, ticket de cierre impreso, historial de
   turnos con sus diferencias y cierre forzado (para quien puede verlos), y el buscador de precios y existencias
   con escáner.
@@ -545,8 +548,8 @@ una, la elige). Con la caja cerrada no se vende.
    servidor según la pieza. La pantalla no deja pasar de las existencias.
 2. **Precio y promoción.** Quien tiene el permiso puede cobrar más que el precio establecido, nunca menos. La
    única rebaja es una promoción vigente: se elige de la lista y el servidor dice cuánto rebaja.
-3. **Cobrar.** Una o varias formas de pago: efectivo en córdobas o en dólares (al tipo de cambio de hoy; sin él
-   no se cobra en dólares), tarjeta o transferencia con su referencia. «Exacto» pone lo que falta. Se ve lo
+3. **Cobrar.** Una o varias formas de pago: efectivo en córdobas o en dólares (al tipo de cambio vigente,
+   siempre), tarjeta o transferencia con su referencia. «Exacto» pone lo que falta. Se ve lo
    pagado, lo que falta y el **vuelto** antes de registrar.
 4. **Registrar.** Si no hay internet la venta no se da por hecha: la pantalla lo dice y «Reintentar» envía lo
    mismo con la misma clave, así que no se duplica.

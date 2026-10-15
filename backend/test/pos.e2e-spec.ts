@@ -16,7 +16,7 @@ import type {
 import type { Existencia } from '../src/inventario/inventario.service';
 import type { PerforacionCatalogo } from '../src/perforaciones/perforaciones.service';
 import type { ProductoCatalogo } from '../src/productos/productos.service';
-import type { TipoCambioDelDia } from '../src/tipo-cambio/tipo-cambio.service';
+import type { CambioTipoCambio } from '../src/tipo-cambio/tipo-cambio.service';
 import type { VentaDetalle, VentaResumen } from '../src/ventas/ventas.service';
 import {
   comoBytes,
@@ -277,85 +277,99 @@ describe('POS y caja', () => {
   });
 
   describe('tipo de cambio', () => {
-    it('GET /api/tipo-cambio: el vigente, aunque sea de un día anterior', async () => {
+    // Decisión del dueño del 2026-10-15: no hay «tipo de cambio de hoy». Hay uno vigente, que
+    // arranca en 36.5 y se queda fijo hasta que el administrador lo cambia.
+    it('GET /api/tipo-cambio: el vigente, desde el día en que se fijó', async () => {
       const { body } = await conSesion('get', '/api/tipo-cambio', vera.acceso).expect(200);
-      expect(body.tipo_cambio).toMatchObject({
+      expect(body.tipo_cambio).toEqual({
         usd_a_nio: propio.tipoCambioOriginal,
         fecha: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+        registrado_por: expect.anything(),
       });
+      expect(body.tipo_cambio).not.toHaveProperty('es_de_hoy');
     });
 
-    it('PUT /api/tipo-cambio registra el de hoy y lo deja corregir el mismo día', async () => {
-      const { body } = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+    it('PUT /api/tipo-cambio: solo el administrador lo cambia; la encargada ya no', async () => {
+      for (const quien of [enzo.acceso, vera.acceso]) {
+        await conSesion('put', '/api/tipo-cambio', quien)
+          .send({ usd_a_nio: 36.9 })
+          .expect(403)
+          .expect({
+            codigo: 'PERMISO_DENEGADO',
+            mensaje: 'Permiso denegado: se requiere TIPO_CAMBIO_GESTIONAR',
+          });
+      }
+      const { body } = await comoJefa('put', '/api/tipo-cambio')
         .send({ usd_a_nio: 36.9 })
         .expect(200);
       expect(body.tipo_cambio).toEqual({
         fecha: hoyEnManagua(),
         usd_a_nio: '36.9000',
-        es_de_hoy: true,
-        registrado_por: { id: ids.enzo, nombre_completo: 'Enzo Pos' },
+        registrado_por: { id: ids.jefa, nombre_completo: 'Jefa del POS' },
       });
-      const corregido = await comoJefa('put', '/api/tipo-cambio')
+      const otraVez = await comoJefa('put', '/api/tipo-cambio')
         .send({ usd_a_nio: '36.80' })
         .expect(200);
-      expect(corregido.body.tipo_cambio).toMatchObject({
+      expect(otraVez.body.tipo_cambio).toMatchObject({
         fecha: hoyEnManagua(),
         usd_a_nio: '36.8000',
-        registrado_por: { id: ids.jefa },
       });
+      // la tabla guarda una fila por día en que se cambió, con el último valor
       const filas = await bd.db
         .selectFrom('tipo_cambio')
         .select('usd_a_nio')
         .where('fecha', '=', hoyEnManagua())
         .execute();
       expect(filas).toEqual([{ usd_a_nio: '36.8000' }]);
+      // la vendedora lo ve enseguida, sin que nadie lo vuelva a «registrar»
+      const visto = await conSesion('get', '/api/tipo-cambio', vera.acceso).expect(200);
+      expect(visto.body.tipo_cambio.usd_a_nio).toBe('36.8000');
     });
 
-    it('GET /api/tipo-cambio/historial: un día por fila, con quién lo dejó y lo que se registró ese día', async () => {
-      const hoy = hoyEnManagua();
+    it('GET /api/tipo-cambio/historial: cada cambio con el anterior, quién y cuándo', async () => {
       const ruta = '/api/tipo-cambio/historial';
-      const { body } = await conSesion('get', ruta, enzo.acceso).expect(200);
-      const historial = body.historial as TipoCambioDelDia[];
-      const enzoPos = { id: ids.enzo, nombre_completo: 'Enzo Pos' };
-      const jefaPos = { id: ids.jefa, nombre_completo: 'Jefa del POS' };
-      // Del más reciente al más antiguo: el de hoy y, detrás, el de los datos demo
-      expect(historial).toHaveLength(2);
-      expect(historial[0]).toEqual({
-        fecha: hoy,
-        usd_a_nio: '36.8000',
-        registrado_por: jefaPos,
-        registrado_at: expect.any(String),
-        // la tabla guarda el último valor del día; la corrección se ve aquí
-        registros: [
-          { usd_a_nio: '36.9000', registrado_por: enzoPos, registrado_at: expect.any(String) },
-          { usd_a_nio: '36.8000', registrado_por: jefaPos, registrado_at: expect.any(String) },
-        ],
-      });
-      const [primero, ultimo] = historial[0].registros.map((r) => String(r.registrado_at));
-      expect(historial[0].registrado_at).toBe(ultimo);
-      expect(Date.parse(primero)).toBeLessThanOrEqual(Date.parse(ultimo));
-      // el de los datos demo lo registró el administrador, una sola vez
-      const admin = { id: expect.any(Number), nombre_completo: expect.any(String) };
-      expect(historial[1]).toMatchObject({
-        usd_a_nio: propio.tipoCambioOriginal,
-        registrado_por: admin,
-        registros: [{ usd_a_nio: propio.tipoCambioOriginal, registrado_por: admin }],
-      });
-      expect(historial[1].registros).toHaveLength(1);
-      expect(historial[1].fecha < hoy).toBe(true);
-
-      const fechas = async (consulta: string) => {
-        const respuesta = await comoJefa('get', `${ruta}?${consulta}`).expect(200);
-        return (respuesta.body.historial as TipoCambioDelDia[]).map((d) => d.fecha);
+      const cambios = async (consulta = 'limite=200') => {
+        const { body } = await comoJefa('get', `${ruta}?${consulta}`).expect(200);
+        return body.historial as CambioTipoCambio[];
       };
-      expect(await fechas(`desde=${hoy}`)).toEqual([hoy]);
-      expect(await fechas(`hasta=${historial[1].fecha}`)).toEqual([historial[1].fecha]);
-      expect(await fechas(`desde=${historial[1].fecha}&hasta=${hoy}`)).toEqual([
-        hoy,
-        historial[1].fecha,
+      const jefaPos = { id: ids.jefa, nombre_completo: 'Jefa del POS' };
+      const historial = await cambios();
+      // Del más reciente al más antiguo: los dos de la prueba anterior…
+      expect(historial.slice(0, 2)).toEqual([
+        {
+          usd_a_nio: '36.8000',
+          anterior: '36.9000',
+          registrado_por: jefaPos,
+          registrado_at: expect.any(String),
+        },
+        {
+          usd_a_nio: '36.9000',
+          anterior: propio.tipoCambioOriginal,
+          registrado_por: jefaPos,
+          registrado_at: expect.any(String),
+        },
       ]);
-      expect(await fechas('limite=1')).toEqual([hoy]);
-      expect(await fechas('desde=2001-01-01&hasta=2001-12-31')).toEqual([]);
+      expect(Date.parse(String(historial[1].registrado_at))).toBeLessThanOrEqual(
+        Date.parse(String(historial[0].registrado_at)),
+      );
+      // …y, al final, el de los datos iniciales: 36.5, sin anterior y sin usuario
+      expect(historial.at(-1)).toEqual({
+        usd_a_nio: '36.5000',
+        anterior: null,
+        registrado_por: null,
+        registrado_at: expect.any(String),
+      });
+      // cada fila es un cambio de verdad: ninguna se queda en el mismo valor
+      expect(historial.every((c) => c.usd_a_nio !== c.anterior)).toBe(true);
+
+      // poner el mismo valor que ya rige no es un cambio: no sale en el historial
+      await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: '36.8' }).expect(200);
+      expect(await cambios()).toHaveLength(historial.length);
+
+      const hoy = hoyEnManagua();
+      expect((await cambios(`desde=${hoy}`)).slice(0, 2)).toEqual(historial.slice(0, 2));
+      expect(await cambios('limite=1')).toEqual(historial.slice(0, 1));
+      expect(await cambios('desde=2001-01-01&hasta=2001-12-31')).toEqual([]);
 
       const invalidas: [string, string, string][] = [
         ['desde=ayer', 'desde', 'desde debe ser una fecha con el formato AAAA-MM-DD'],
@@ -366,9 +380,11 @@ describe('POS y caja', () => {
         const invalida = await comoJefa('get', `${ruta}?${consulta}`).expect(400);
         expect(invalida.body.errores).toEqual([{ campo, mensaje }]);
       }
+      // el historial es del administrador
+      await conSesion('get', ruta, enzo.acceso).expect(403);
     });
 
-    it('valores inválidos → 400; sin TIPO_CAMBIO_GESTIONAR → 403', async () => {
+    it('valores inválidos → 400', async () => {
       for (const usd_a_nio of [0, -1, 'treinta', 36.12345, null]) {
         const { body } = await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio }).expect(400);
         expect(body.errores).toEqual([
@@ -378,25 +394,15 @@ describe('POS y caja', () => {
           },
         ]);
       }
-      await conSesion('put', '/api/tipo-cambio', vera.acceso)
-        .send({ usd_a_nio: 40 })
-        .expect(403)
-        .expect({
-          codigo: 'PERMISO_DENEGADO',
-          mensaje: 'Permiso denegado: se requiere TIPO_CAMBIO_GESTIONAR',
-        });
     });
 
-    it('si se aleja más de 5 % del último registrado → 409, salvo con confirmación explícita', async () => {
+    it('si se aleja más de 5 % del vigente → 409, salvo con confirmación explícita', async () => {
       // un error de dedo: 368 en vez de 36.8
-      await conSesion('put', '/api/tipo-cambio', enzo.acceso)
-        .send({ usd_a_nio: 368 })
-        .expect(409)
-        .expect({
-          codigo: 'CONFIRMACION_REQUERIDA',
-          mensaje:
-            'El tipo de cambio 368.0000 se aleja más de 5 % del último registrado (36.8000). Si es correcto, confírmelo.',
-        });
+      await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: 368 }).expect(409).expect({
+        codigo: 'CONFIRMACION_REQUERIDA',
+        mensaje:
+          'El tipo de cambio 368.0000 se aleja más de 5 % del vigente (36.8000). Si es correcto, confírmelo.',
+      });
       const haciaAbajo = await comoJefa('put', '/api/tipo-cambio')
         .send({ usd_a_nio: 3.68, confirmar: false })
         .expect(409);
@@ -411,32 +417,32 @@ describe('POS y caja', () => {
       expect(malConfirmado.body.errores).toEqual([
         { campo: 'confirmar', mensaje: 'confirmar debe ser true o false' },
       ]);
-      const confirmado = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+      const confirmado = await comoJefa('put', '/api/tipo-cambio')
         .send({ usd_a_nio: 40, confirmar: true })
         .expect(200);
       expect(confirmado.body.tipo_cambio).toMatchObject({
         usd_a_nio: '40.0000',
-        registrado_por: { id: ids.enzo },
+        registrado_por: { id: ids.jefa },
       });
-      // quien confirma un valor fuera del límite deja una alerta para el administrador
+      // confirmar un valor fuera del límite deja una alerta para el administrador
       const alertas = await comoJefa(
         'get',
         '/api/alertas?tipo=TIPO_CAMBIO_FUERA_LIMITE&limite=1',
       ).expect(200);
       expect((alertas.body.alertas as AlertaAdmin[])[0]).toMatchObject({
         titulo:
-          'Tipo de cambio 40.0000 confirmado por Enzo Pos: se aleja más de 5 % del anterior (36.8000)',
+          'Tipo de cambio 40.0000 confirmado por Jefa del POS: se aleja más de 5 % del anterior (36.8000)',
         detalle: {
           usd_a_nio: 40,
           anterior: 36.8,
           variacion_pct: 8.7,
           maximo_pct: 5,
-          usuario_id: ids.enzo,
+          usuario_id: ids.jefa,
         },
         sucursal: null,
       });
 
-      // volver al valor correcto también se compara con el último (40 → 36.8 es −8 %)
+      // volver al valor correcto también se compara con el vigente (40 → 36.8 es −8 %)
       await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: '36.80' }).expect(409);
       const corregido = await comoJefa('put', '/api/tipo-cambio')
         .send({ usd_a_nio: '36.80', confirmar: true })
@@ -447,14 +453,14 @@ describe('POS y caja', () => {
     it('el límite es el parámetro TIPO_CAMBIO_VARIACION_MAX, que se cambia desde el panel', async () => {
       const fijarLimite = (valor: string) =>
         comoJefa('put', '/api/parametros/TIPO_CAMBIO_VARIACION_MAX').send({ valor }).expect(200);
-      await conSesion('put', '/api/tipo-cambio', enzo.acceso).send({ usd_a_nio: 39 }).expect(409);
+      await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: 39 }).expect(409);
       await fijarLimite('10');
       try {
-        const { body } = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+        const { body } = await comoJefa('put', '/api/tipo-cambio')
           .send({ usd_a_nio: 39 }) // +5.98 %
           .expect(200);
         expect(body.tipo_cambio.usd_a_nio).toBe('39.0000');
-        await conSesion('put', '/api/tipo-cambio', enzo.acceso).send({ usd_a_nio: 43 }).expect(409);
+        await comoJefa('put', '/api/tipo-cambio').send({ usd_a_nio: 43 }).expect(409);
       } finally {
         await fijarLimite('5');
         await comoJefa('put', '/api/tipo-cambio')
@@ -463,7 +469,7 @@ describe('POS y caja', () => {
       }
     });
 
-    it('sin un tipo de cambio anterior solo se aceptan valores entre 20 y 60', async () => {
+    it('sin ningún tipo de cambio (la tabla vacía) solo se aceptan valores entre 20 y 60', async () => {
       // Se quitan los registrados solo mientras dura esta prueba (los archivos corren uno tras otro)
       const registrados = await bd.db.selectFrom('tipo_cambio').selectAll().execute();
       await bd.db.deleteFrom('tipo_cambio').execute();
@@ -488,16 +494,16 @@ describe('POS y caja', () => {
         await conSesion('get', '/api/tipo-cambio', vera.acceso)
           .expect(200)
           .expect({ tipo_cambio: null });
-        const { body } = await conSesion('put', '/api/tipo-cambio', enzo.acceso)
+        const { body } = await comoJefa('put', '/api/tipo-cambio')
           .send({ usd_a_nio: 36.5 })
           .expect(200);
-        expect(body.tipo_cambio).toMatchObject({ usd_a_nio: '36.5000', es_de_hoy: true });
+        expect(body.tipo_cambio).toMatchObject({ usd_a_nio: '36.5000', fecha: hoyEnManagua() });
       } finally {
         await bd.db.deleteFrom('tipo_cambio').execute();
         await bd.db.insertInto('tipo_cambio').values(registrados).execute();
       }
       const repuesto = await conSesion('get', '/api/tipo-cambio', vera.acceso).expect(200);
-      expect(repuesto.body.tipo_cambio).toMatchObject({ usd_a_nio: '36.8000', es_de_hoy: true });
+      expect(repuesto.body.tipo_cambio).toMatchObject({ usd_a_nio: '36.8000' });
     });
   });
 

@@ -9,38 +9,39 @@ import {
   type DatosTipoCambio,
   type FiltroHistorialTipoCambio,
 } from './esquemas';
-import { TipoCambioService, type TipoCambio, type TipoCambioDelDia } from './tipo-cambio.service';
+import { TipoCambioService, type CambioTipoCambio, type TipoCambio } from './tipo-cambio.service';
 
 /**
- * /api/tipo-cambio — córdobas por dólar para cobrar en dólares. El vigente lo consulta cualquier
- * usuario; el historial, quien lo registra (TIPO_CAMBIO_GESTIONAR).
+ * /api/tipo-cambio — córdobas por dólar para cobrar en dólares. Hay uno vigente, fijo hasta que el
+ * administrador lo cambia (no se registra cada día). El vigente lo consulta cualquier usuario; el
+ * historial y el cambio, quien tiene TIPO_CAMBIO_GESTIONAR (solo el administrador).
  */
 @Controller('tipo-cambio')
 export class TipoCambioController {
   constructor(private readonly tipoCambio: TipoCambioService) {}
 
-  /** El vigente (`tipo_cambio: null` si nunca se ha registrado: no se puede cobrar en dólares). */
+  /** El vigente (`tipo_cambio: null` solo si no hay ninguno: los datos iniciales traen 36.5). */
   @Get()
   async vigente(): Promise<{ tipo_cambio: TipoCambio | null }> {
     return { tipo_cambio: await this.tipoCambio.vigente() };
   }
 
   /**
-   * Los registrados, un día por fila (del más reciente al más antiguo), con quién dejó cada valor
-   * y, en `registros`, todo lo que se registró ese día: `?desde=&hasta=&limite=`.
+   * Los cambios, del más reciente al más antiguo: cada uno con el valor nuevo, el `anterior`, quién
+   * y cuándo. `?desde=&hasta=` (el día del cambio, en Managua) y `?limite=`.
    */
   @Get('historial')
   @RequierePermiso('TIPO_CAMBIO_GESTIONAR')
   async historial(
     @Query(new ValidacionZod(esquemaHistorialTipoCambio)) filtro: FiltroHistorialTipoCambio,
-  ): Promise<{ historial: TipoCambioDelDia[] }> {
+  ): Promise<{ historial: CambioTipoCambio[] }> {
     return { historial: await this.tipoCambio.historial(filtro) };
   }
 
   /**
-   * `{ usd_a_nio, confirmar }`: registra o corrige el de hoy. Los días anteriores no se editan.
-   * Si se aleja del último más de lo permitido → 409 CONFIRMACION_REQUERIDA, salvo que venga
-   * `confirmar: true`. El primero que se registra debe estar entre 20 y 60 (422).
+   * `{ usd_a_nio, confirmar }`: cambia el vigente; rige desde ya para las ventas siguientes. Si se
+   * aleja del vigente más de lo permitido → 409 CONFIRMACION_REQUERIDA, salvo que venga
+   * `confirmar: true`. Si no hubiera ninguno, el primero debe estar entre 20 y 60 (422).
    */
   @Put()
   @RequierePermiso('TIPO_CAMBIO_GESTIONAR')

@@ -339,7 +339,7 @@ describe('Acceso desde el celular', () => {
       }
     });
 
-    it('lo de la caja, anular, las mermas, los reportes y el tipo de cambio piden el equipo', async () => {
+    it('lo de la caja, anular, las mermas y los reportes piden el equipo', async () => {
       const intentos: [Metodo, string, Record<string, unknown>?][] = [
         ['get', '/api/caja/turno'],
         ['post', '/api/caja/turno/abrir', { inicial_nio: 500 }],
@@ -351,7 +351,6 @@ describe('Acceso desde el celular', () => {
         ['get', '/api/devoluciones/ventas-recientes'],
         ['post', '/api/devoluciones/1/ejecutar', {}],
         ['post', '/api/devoluciones/1/imprimir'],
-        ['put', '/api/tipo-cambio', { usd_a_nio: 36.7 }],
         ['post', '/api/mermas', { sucursal_id: ids.a, variante_id: ids.cadena, cantidad: 1 }],
         ['get', '/api/mermas'],
         ['get', '/api/reportes/ventas'],
@@ -364,6 +363,13 @@ describe('Acceso desde el celular', () => {
       // En la tablet sí (aquí, sin turno abierto todavía)
       await con('get', '/api/caja/turno', nuria.enTablet).expect(200).expect({ turno: null });
       await con('get', '/api/reportes/ventas', nuria.enTablet).expect(200);
+      // El tipo de cambio lo cambia solo el administrador: la encargada, ni en la tablet
+      for (const acceso of [nuria.acceso, nuria.enTablet]) {
+        await con('put', '/api/tipo-cambio', acceso).send({ usd_a_nio: 36.7 }).expect(403).expect({
+          codigo: 'PERMISO_DENEGADO',
+          mensaje: 'Permiso denegado: se requiere TIPO_CAMBIO_GESTIONAR',
+        });
+      }
     });
 
     it('el permiso que su rol no tiene se le niega igual que siempre', async () => {

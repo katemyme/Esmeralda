@@ -208,10 +208,13 @@ export type Renglon =
   | { tipo: 'linea' }
   | { tipo: 'espacio' };
 
+/** El tipo de cambio vigente: se queda fijo, día tras día, hasta que el administrador lo cambia. */
 export interface TipoCambio {
+  /** Desde qué día rige. */
   fecha: string;
   usd_a_nio: string;
-  es_de_hoy: boolean;
+  /** null: el valor de los datos iniciales (no lo puso nadie). */
+  registrado_por: { id: number; nombre_completo: string } | null;
 }
 
 /** Lo que responde una ruta `.../imprimir?formato=renglones`: el ticket para la impresora por USB. */

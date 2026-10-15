@@ -142,7 +142,7 @@ describe('los dólares, al tipo de cambio del día', () => {
   it('un pago vale lo suyo en córdobas, o nada si no es un monto', () => {
     expect(enCordobas(nuevoPago('EFECTIVO', 'NIO', '1000'), TC)).toBe(100000);
     expect(enCordobas(nuevoPago('EFECTIVO', 'USD', '20'), TC)).toBe(73249);
-    expect(enCordobas(nuevoPago('EFECTIVO', 'USD', '20'), null)).toBeNull(); // sin tipo de cambio de hoy
+    expect(enCordobas(nuevoPago('EFECTIVO', 'USD', '20'), null)).toBeNull(); // sin ningún tipo de cambio
     for (const malo of ['', '0', 'mil', '10.999', '-5']) {
       expect(enCordobas(nuevoPago('EFECTIVO', 'NIO', malo), TC)).toBeNull();
     }
@@ -177,9 +177,9 @@ describe('la cuenta del cobro', () => {
     expect(cuenta(TOTAL, [nuevoPago('TARJETA', 'NIO', '999')], METODOS, TC).pendiente).toMatch(
       /referencia del pago con tarjeta/,
     );
-    // y los dólares, el tipo de cambio de hoy
+    // y los dólares, un tipo de cambio (siempre hay uno vigente; null solo si no hubiera ninguno)
     expect(cuenta(TOTAL, [nuevoPago('EFECTIVO', 'USD', '30')], METODOS, null).pendiente).toMatch(
-      /tipo de cambio de hoy/,
+      /No hay tipo de cambio/,
     );
   });
 

@@ -71,7 +71,7 @@ function preparar({ recuperada = null, pantalla = SIN_EQUIPO, pendientes = 0 }: 
     ),
     http.get('*/api/tipo-cambio', () =>
       HttpResponse.json({
-        tipo_cambio: { fecha: '2026-10-08', usd_a_nio: '36.6243', es_de_hoy: true },
+        tipo_cambio: { fecha: '2026-10-08', usd_a_nio: '36.6243', registrado_por: null },
       }),
     ),
     http.get('*/api/cola-impresion', () =>
@@ -185,7 +185,7 @@ describe('en una tablet registrada y abierta', () => {
     for (const digito of '2580') await usuario.click(screen.getByRole('button', { name: digito }));
     expect(await screen.findByRole('heading', { name: 'Hola, Ana' })).toBeInTheDocument();
 
-    // Con el turno abierto: sucursal, caja y tipo de cambio del día, siempre a la vista
+    // Con el turno abierto: sucursal, caja y tipo de cambio vigente, siempre a la vista
     const barra = within(screen.getAllByRole('banner')[0]); // la barra superior
     expect(await barra.findByText('Caja 1')).toBeInTheDocument();
     expect(barra.getByText('Multicentro Las Américas')).toBeInTheDocument();

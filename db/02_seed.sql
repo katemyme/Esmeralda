@@ -52,7 +52,7 @@ INSERT INTO permiso (codigo, modulo, descripcion) VALUES
   ('CAJA_MOVIMIENTOS',      'Caja',       'Registrar ingresos/egresos de efectivo'),
   ('CAJA_VER_DIFERENCIAS',  'Caja',       'Ver montos esperados y diferencias del arqueo'),
   ('CAJA_CIERRE_FORZADO',   'Caja',       'Cerrar un turno que nadie cerró (sin arqueo)'),
-  ('TIPO_CAMBIO_GESTIONAR', 'Caja',       'Registrar el tipo de cambio del día'),
+  ('TIPO_CAMBIO_GESTIONAR', 'Caja',       'Cambiar el tipo de cambio vigente (solo el administrador)'),
   ('REPORTES_VER',          'Reportes',   'Ver reportes de ventas'),
   ('REPORTES_COSTOS',       'Reportes',   'Ver costos, márgenes e inventario valorizado'),
   ('AUDITORIA_VER',         'Auditoría',  'Consultar bitácora de cambios y accesos');
@@ -81,9 +81,10 @@ SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
   'PRODUCTOS_VER','INVENTARIO_VER','INVENTARIO_RECIBIR','INVENTARIO_REPORTAR_MERMA','INVENTARIO_CONTAR',
   'VENTAS_REGISTRAR','VENTAS_VER_PROPIAS','VENTAS_VER_TODAS','VENTAS_PROMOCION','VENTAS_ANULAR',
   'VENTAS_MODIFICAR_PRECIO','DEVOLUCIONES_REGISTRAR',
-  'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS','TIPO_CAMBIO_GESTIONAR',
+  'CAJA_ABRIR','CAJA_CERRAR','CAJA_MOVIMIENTOS','CAJA_VER_DIFERENCIAS',
   'REPORTES_VER')
 WHERE r.codigo = 'ENCARGADO';
+-- El tipo de cambio lo cambia solo el administrador (decisión del dueño del 2026-10-15): la encargada ya no.
 
 INSERT INTO rol_permiso (rol_id, permiso_id)
 SELECT r.id, p.id FROM rol r JOIN permiso p ON p.codigo IN (
@@ -106,6 +107,14 @@ INSERT INTO metodo_pago (codigo, nombre, es_efectivo, requiere_referencia, inter
   ('SALDO_CAMBIO', 'Saldo por cambio', false, false, true);
 
 -- ---------------------------------------------------------------------
+-- Tipo de cambio inicial (decisión del dueño del 2026-10-15): C$ 36.5 por dólar desde el día en que
+-- se instala el sistema. Se queda fijo todos los días hasta que el administrador lo cambie; no hay
+-- que registrarlo a diario. Sin usuario: es el valor de partida, no lo puso nadie.
+-- ---------------------------------------------------------------------
+INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
+VALUES ((now() AT TIME ZONE 'America/Managua')::date, 36.5, NULL);
+
+-- ---------------------------------------------------------------------
 -- Billetes y monedas para el conteo del cierre de caja
 -- ---------------------------------------------------------------------
 INSERT INTO denominacion (moneda, valor, tipo)
@@ -126,7 +135,7 @@ INSERT INTO parametro (clave, valor, tipo_valor, opciones, permite_vacio, minimo
   ('CAJA_HORA_ALERTA_CIERRE', '21:30', 'HORA', NULL, false, NULL,
    'Hora (Managua) a la que se alerta si una caja sigue sin cerrar.'),
   ('TIPO_CAMBIO_VARIACION_MAX', '5', 'NUMERO', NULL, false, NULL,
-   'Variación máxima (%) entre el tipo de cambio que se registra y el último registrado. Si se pasa, se pide confirmarlo.'),
+   'Variación máxima (%) entre el tipo de cambio nuevo y el vigente. Si se pasa, se pide confirmarlo (contra un error al escribirlo).'),
   ('BODEGA_VISIBILIDAD', 'SI_NO', 'OPCION', ARRAY['SI_NO','CANTIDAD'], false, NULL,
    'Qué ven del stock de bodega los usuarios sin permiso INVENTARIO_VER_BODEGA: SI_NO = solo disponible sí/no; CANTIDAD = cantidad exacta.'),
   ('SESION_HORAS_EQUIPO', '12', 'NUMERO', NULL, false, 1,

@@ -20,8 +20,8 @@ const servidor = setupServer();
 const enviados: { ruta: string; cuerpo: unknown }[] = [];
 let turnoAbierto = false;
 let intentos = 0;
-let tipoCambioDeHoy = false;
-let registraTipoCambio = false; // como la encargada; la vendedora no lo registra
+let tipoCambio = '36.5000';
+let cambiaTipoCambio = false; // solo el administrador lo cambia; los demás lo ven
 
 const TURNO = {
   id: 9,
@@ -48,8 +48,8 @@ afterEach(() => {
   enviados.length = 0;
   turnoAbierto = false;
   intentos = 0;
-  tipoCambioDeHoy = false;
-  registraTipoCambio = false;
+  tipoCambio = '36.5000';
+  cambiaTipoCambio = false;
   ponerToken(null);
   window.history.pushState({}, '', '/');
 });
@@ -67,7 +67,7 @@ function preparar() {
       const sesion = sesionDeVendedora('tablet');
       const permisos = [
         ...sesion.usuario.permisos,
-        ...(registraTipoCambio ? ['TIPO_CAMBIO_GESTIONAR'] : []),
+        ...(cambiaTipoCambio ? ['TIPO_CAMBIO_GESTIONAR'] : []),
       ];
       return HttpResponse.json(
         respuestaDeSesion({ ...sesion, usuario: { ...sesion.usuario, permisos } }),
@@ -78,11 +78,27 @@ function preparar() {
     ),
     http.get('*/api/tipo-cambio', () =>
       HttpResponse.json({
-        tipo_cambio: tipoCambioDeHoy
-          ? { fecha: '2026-10-08', usd_a_nio: '36.6243', es_de_hoy: true }
-          : { fecha: '2026-10-07', usd_a_nio: '36.6243', es_de_hoy: false },
+        tipo_cambio: { fecha: '2026-09-30', usd_a_nio: tipoCambio, registrado_por: null },
       }),
     ),
+    http.put('*/api/tipo-cambio', async ({ request }) => {
+      const cuerpo = (await anotar(request)) as { usd_a_nio: string; confirmar: boolean };
+      // como la base: lo que se aleja más de 5 % del vigente pide confirmarlo
+      const variacion = Math.abs(Number(cuerpo.usd_a_nio) / Number(tipoCambio) - 1);
+      if (variacion > 0.05 && !cuerpo.confirmar) {
+        return HttpResponse.json(
+          {
+            codigo: 'CONFIRMACION_REQUERIDA',
+            mensaje: `El tipo de cambio ${cuerpo.usd_a_nio} se aleja más de 5 % del vigente (${tipoCambio}). Si es correcto, confírmelo.`,
+          },
+          { status: 409 },
+        );
+      }
+      tipoCambio = Number(cuerpo.usd_a_nio).toFixed(4);
+      return HttpResponse.json({
+        tipo_cambio: { fecha: '2026-10-08', usd_a_nio: tipoCambio, registrado_por: null },
+      });
+    }),
     http.get('*/api/cola-impresion', () =>
       HttpResponse.json({ atendida: false, automatica: false, tickets: [] }),
     ),
@@ -172,20 +188,19 @@ async function abrirLaPantallaDeCaja() {
 }
 
 describe('caja', () => {
-  it('se abre declarando lo contado, sin ver ningún fondo esperado, y avisa del tipo de cambio en ámbar', async () => {
+  it('se abre declarando lo contado, sin ver ningún fondo esperado ni pedir el tipo de cambio', async () => {
     const usuario = await abrirLaPantallaDeCaja();
     expect(await screen.findByRole('heading', { name: 'Abrir la caja' })).toBeInTheDocument();
-    // sin el tipo de cambio de hoy: aviso, y la vendedora no lo puede registrar
-    expect(screen.getByText(/Todavía no se registra el tipo de cambio de hoy/)).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: 'Guardar tipo de cambio' }),
-    ).not.toBeInTheDocument();
-    // al abrir también se le recuerda, sin acceso directo: le dice a quién pedírselo
-    const recordatorio = (
-      await screen.findByText(/Falta registrar el tipo de cambio de hoy/)
-    ).closest('[role="status"]');
-    expect(recordatorio).toHaveTextContent(/Pídale a la encargada o al administrador/);
+    // el tipo de cambio vigente se ve; no hay que registrarlo cada día ni hay aviso de que falte
+    const tarjeta = (await screen.findByRole('heading', { name: 'Tipo de cambio' })).parentElement!;
+    expect(await within(tarjeta).findByText('C$ 36.5000')).toBeInTheDocument();
+    expect(tarjeta).toHaveTextContent(/Vigente desde el 30\/09\/2026/);
+    expect(screen.queryByText(/[Ff]alta.*tipo de cambio/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Registrarlo ahora' })).not.toBeInTheDocument();
+    // la vendedora (y la encargada) no lo cambian: solo el administrador
+    expect(
+      screen.queryByRole('button', { name: 'Cambiar el tipo de cambio' }),
+    ).not.toBeInTheDocument();
 
     await usuario.type(screen.getByLabelText('Efectivo en córdobas (C$)'), '500');
     await usuario.click(screen.getByRole('button', { name: 'Abrir turno' }));
@@ -197,36 +212,26 @@ describe('caja', () => {
     expect(screen.queryByText('Entradas y salidas de efectivo')).not.toBeInTheDocument();
   });
 
-  it('al abrir recuerda en ámbar que falta el tipo de cambio de hoy, con un acceso directo para quien lo registra, y no obliga', async () => {
-    registraTipoCambio = true;
+  it('quien tiene el permiso (el administrador) lo cambia; lo que se aleja más de 5 % lo confirma', async () => {
+    cambiaTipoCambio = true;
     const usuario = await abrirLaPantallaDeCaja();
-    expect(await screen.findByRole('heading', { name: 'Abrir la caja' })).toBeInTheDocument();
-    const recordatorio = (
-      await screen.findByText(/Falta registrar el tipo de cambio de hoy/)
-    ).closest<HTMLElement>('[role="status"]')!;
-    expect(recordatorio).toHaveClass('bg-aviso-claro'); // ámbar, no rojo
-    expect(recordatorio).toHaveTextContent(/Puede abrir la caja igual/);
+    const campo = await screen.findByLabelText('Nuevo tipo de cambio (córdobas por dólar)');
+    await usuario.type(campo, '36.62');
+    await usuario.click(screen.getByRole('button', { name: 'Cambiar el tipo de cambio' }));
+    expect(await screen.findByText(/rige para las ventas que siguen/)).toBeInTheDocument();
+    expect(await screen.findByText('C$ 36.6200')).toBeInTheDocument();
 
-    // el acceso directo lleva al campo donde se registra, listo para escribir
-    await usuario.click(within(recordatorio).getByRole('button', { name: 'Registrarlo ahora' }));
-    expect(screen.getByLabelText('Córdobas por dólar')).toHaveFocus();
-
-    // no obliga: la caja se abre igual, sin haberlo registrado
-    await usuario.type(screen.getByLabelText('Efectivo en córdobas (C$)'), '500');
-    await usuario.click(screen.getByRole('button', { name: 'Abrir turno' }));
-    expect(await screen.findByText('Turno abierto')).toBeInTheDocument();
-    expect(enviados.map((e) => e.ruta)).toEqual(['/api/caja/turno/abrir']);
-    expect(screen.queryByText(/Falta registrar el tipo de cambio de hoy/)).not.toBeInTheDocument();
-  });
-
-  it('con el tipo de cambio de hoy ya registrado, al abrir no recuerda nada', async () => {
-    tipoCambioDeHoy = true;
-    registraTipoCambio = true;
-    await abrirLaPantallaDeCaja();
-    expect(await screen.findByRole('heading', { name: 'Abrir la caja' })).toBeInTheDocument();
-    expect(await screen.findByText('C$ 36.6243')).toBeInTheDocument();
-    expect(screen.queryByText(/Falta registrar el tipo de cambio de hoy/)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Registrarlo ahora' })).not.toBeInTheDocument();
+    // un error de dedo (366.2 en vez de 36.62): la base pide confirmarlo y la pantalla pregunta
+    await usuario.type(campo, '366.2');
+    await usuario.click(screen.getByRole('button', { name: 'Cambiar el tipo de cambio' }));
+    const pregunta = await screen.findByRole('alertdialog', { name: '¿Seguro que es ese valor?' });
+    expect(pregunta).toHaveTextContent(/se aleja más de 5 % del vigente \(36.6200\)/);
+    await usuario.click(within(pregunta).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.getByText('C$ 36.6200')).toBeInTheDocument();
+    expect(enviados.map((e) => e.cuerpo)).toEqual([
+      { usd_a_nio: '36.62', confirmar: false },
+      { usd_a_nio: '366.2', confirmar: false },
+    ]);
   });
 
   it('cierre a ciegas: si no cuadra queda un solo reconteo con justificación, y nunca se ve lo esperado', async () => {

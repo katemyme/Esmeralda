@@ -483,7 +483,7 @@ function Cobro({
   total: number;
   pagos: Pago[];
   metodos: MetodoPago[];
-  /** El tipo de cambio de hoy; null si no se ha registrado (no se cobra en dólares). */
+  /** El tipo de cambio vigente; null solo si no hay ninguno (entonces no se cobra en dólares). */
   usdANio: string | null;
   cliente: { nombre: string; telefono: string };
   alCambiarPagos: (pagos: Pago[]) => void;
@@ -532,7 +532,7 @@ function Cobro({
 
       {usdANio === null && (
         <Aviso tipo="aviso">
-          Falta el tipo de cambio de hoy: mientras no se registre, no se cobra en dólares.
+          No hay tipo de cambio: mientras el administrador no lo ponga, no se cobra en dólares.
         </Aviso>
       )}
 
@@ -765,7 +765,7 @@ function Mostrador({
         total={total}
         pagos={pagos}
         metodos={metodos.data?.metodos_pago ?? []}
-        usdANio={tipoCambio?.es_de_hoy ? tipoCambio.usd_a_nio : null}
+        usdANio={tipoCambio?.usd_a_nio ?? null}
         cliente={cliente}
         alCambiarPagos={(nuevos) => {
           registrar.reset();

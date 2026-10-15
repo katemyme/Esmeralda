@@ -65,13 +65,8 @@ const tipoCambioVigente = {
   refetchInterval: 5 * CADA_MINUTO,
 };
 
+/** El vigente. No hay que registrarlo cada día: rige hasta que el administrador lo cambie. */
 export function useTipoCambio(): TipoCambio | null {
   const { data } = useQuery(tipoCambioVigente);
   return data?.tipo_cambio ?? null;
-}
-
-/** Ya se sabe que hoy todavía no se registra el tipo de cambio (mientras se pregunta, no). */
-export function useFaltaTipoCambioDeHoy(): boolean {
-  const { data } = useQuery(tipoCambioVigente);
-  return data !== undefined && !data.tipo_cambio?.es_de_hoy;
 }

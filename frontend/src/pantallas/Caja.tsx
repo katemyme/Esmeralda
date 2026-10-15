@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Minus, Plus } from 'lucide-react';
-import { useRef, useState, type ReactNode, type RefObject } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { ErrorApi, api, detalleDeError } from '../api/cliente';
-import { useFaltaTipoCambioDeHoy, useTipoCambio } from '../api/consultas';
+import { useTipoCambio } from '../api/consultas';
 import type {
   Denominacion,
   MetodoPago,
@@ -17,7 +17,7 @@ import { tienePermiso, useSesionActiva } from '../sesion/sesion';
 import { Aviso, Boton, Campo, Cargando, Etiqueta, Selector, Tarjeta } from '../ui/basicos';
 import { Confirmacion } from '../ui/Confirmacion';
 import { aCentavos, deCentavos, esMonto, totalContado } from '../util/dinero';
-import { formatoFechaHora, formatoMonto, primerNombre } from '../util/formato';
+import { formatoDia, formatoFechaHora, formatoMonto, primerNombre } from '../util/formato';
 
 // La caja. Regla que manda en toda esta pantalla: el arqueo es a ciegas. Aquí nunca aparece lo que
 // el sistema espera que haya, ni la diferencia, ni cuánto se ha vendido: solo lo que la persona
@@ -51,10 +51,10 @@ function useRefrescarCaja() {
 // ---------------------------------------------------------------------------- Tipo de cambio
 
 /**
- * El tipo de cambio de hoy: sin él no se cobra en dólares. Lo registra quien tiene el permiso.
- * `campo` es donde se escribe: al abrir la caja hay un acceso directo que lleva hasta él.
+ * El tipo de cambio vigente. No se registra cada día: rige hasta que el administrador lo cambia
+ * (desde cualquier equipo o su celular). Los demás solo lo ven.
  */
-function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) {
+function TipoDeCambio() {
   const sesion = useSesionActiva();
   const consultas = useQueryClient();
   const vigente = useTipoCambio();
@@ -71,7 +71,7 @@ function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) 
       await consultas.invalidateQueries({ queryKey: ['tipo-cambio'] });
     },
     onError: (error) => {
-      // Se aleja mucho del último registrado: la base pide que alguien lo confirme a propósito
+      // Se aleja mucho del vigente: la base pide que lo confirme a propósito (¿un error de dedo?)
       if (error instanceof ErrorApi && error.codigo === 'CONFIRMACION_REQUERIDA') {
         setPorConfirmar(error.message);
       }
@@ -82,17 +82,20 @@ function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) 
     !(guardar.error instanceof ErrorApi && guardar.error.codigo === 'CONFIRMACION_REQUERIDA');
 
   return (
-    <Bloque titulo="Tipo de cambio de hoy">
-      {vigente?.es_de_hoy ? (
-        <p>
-          US$ 1 = <span className="font-semibold">C$ {Number(vigente.usd_a_nio).toFixed(4)}</span>
-        </p>
+    <Bloque titulo="Tipo de cambio">
+      {vigente ? (
+        <div>
+          <p>
+            US$ 1 = <span className="font-semibold">C$ {Number(vigente.usd_a_nio).toFixed(4)}</span>
+          </p>
+          <p className="text-sm text-texto-secundario">
+            Vigente desde el {formatoDia(vigente.fecha)}. Se queda igual todos los días hasta que el
+            administrador lo cambie.
+          </p>
+        </div>
       ) : (
         <Aviso tipo="aviso">
-          Todavía no se registra el tipo de cambio de hoy
-          {vigente && ` (el último es C$ ${Number(vigente.usd_a_nio).toFixed(4)})`}. Sin él no se
-          cobra en dólares.
-          {!puede && ' Pídale a la encargada o al administrador que lo registre.'}
+          No hay tipo de cambio: mientras el administrador no lo ponga, no se cobra en dólares.
         </Aviso>
       )}
       {puede && (
@@ -105,11 +108,10 @@ function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) 
         >
           <div className="flex-1">
             <Campo
-              ref={campo}
-              etiqueta={vigente?.es_de_hoy ? 'Corregir: córdobas por dólar' : 'Córdobas por dólar'}
+              etiqueta="Nuevo tipo de cambio (córdobas por dólar)"
               name="usd_a_nio"
               inputMode="decimal"
-              placeholder="36.6243"
+              placeholder="36.5000"
               value={valor}
               onChange={(evento) => setValor(evento.target.value)}
             />
@@ -120,12 +122,14 @@ function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) 
             ocupado={guardar.isPending}
             disabled={!valor.trim()}
           >
-            Guardar tipo de cambio
+            Cambiar el tipo de cambio
           </Boton>
         </form>
       )}
       {errorVisible && <Aviso tipo="error">{detalleDeError(guardar.error)}</Aviso>}
-      {guardar.isSuccess && <Aviso tipo="exito">Tipo de cambio guardado.</Aviso>}
+      {guardar.isSuccess && (
+        <Aviso tipo="exito">Tipo de cambio guardado: rige para las ventas que siguen.</Aviso>
+      )}
       <Confirmacion
         abierta={porConfirmar !== null}
         alCerrar={() => setPorConfirmar(null)}
@@ -142,20 +146,9 @@ function TipoDeCambio({ campo }: { campo: RefObject<HTMLInputElement | null> }) 
 
 // ---------------------------------------------------------------------------- Abrir
 
-/**
- * Se abre declarando lo contado, sin ver el fondo que dejó el cierre anterior. Si todavía no hay
- * tipo de cambio de hoy lo recuerda, pero no obliga: la caja se abre igual.
- */
-function AbrirTurno({
-  cajaId,
-  alRegistrarTipoCambio,
-}: {
-  cajaId: number | null;
-  alRegistrarTipoCambio: () => void;
-}) {
-  const sesion = useSesionActiva();
+/** Se abre declarando lo contado, sin ver el fondo que dejó el cierre anterior. */
+function AbrirTurno({ cajaId }: { cajaId: number | null }) {
   const refrescar = useRefrescarCaja();
-  const faltaTipoCambio = useFaltaTipoCambioDeHoy();
   const [nio, setNio] = useState('');
   const [usd, setUsd] = useState('');
   const valido = esMonto(nio || '0') && esMonto(usd || '0');
@@ -207,23 +200,6 @@ function AbrirTurno({
           </Aviso>
         )}
         {abrir.isError && <Aviso tipo="error">{detalleDeError(abrir.error)}</Aviso>}
-        {faltaTipoCambio && (
-          <Aviso tipo="aviso">
-            <p>
-              Falta registrar el tipo de cambio de hoy. Puede abrir la caja igual, pero sin él no se
-              cobra en dólares.
-            </p>
-            {tienePermiso(sesion, ['TIPO_CAMBIO_GESTIONAR']) ? (
-              <Boton variante="secundario" className="mt-3" onClick={alRegistrarTipoCambio}>
-                Registrarlo ahora
-              </Boton>
-            ) : (
-              <p className="mt-1 font-normal">
-                Pídale a la encargada o al administrador que lo registre.
-              </p>
-            )}
-          </Aviso>
-        )}
         <Boton type="submit" ocupado={abrir.isPending} disabled={!valido}>
           Abrir turno
         </Boton>
@@ -687,7 +663,6 @@ export function Caja() {
   const [cajaId, setCajaId] = useState<number | null>(null);
   const [vista, setVista] = useState<'resumen' | 'cerrar'>('resumen');
   const [ticket, setTicket] = useState<TicketCierre | null>(null);
-  const campoTipoCambio = useRef<HTMLInputElement>(null);
   const lista = !eligeCaja || cajaId !== null;
 
   const turno = useQuery({
@@ -752,18 +727,14 @@ export function Caja() {
               )}
             </Bloque>
           ) : tienePermiso(sesion, ['CAJA_ABRIR']) ? (
-            <AbrirTurno
-              cajaId={cajaId}
-              // enfocarlo lo trae a la vista y, en el celular, abre el teclado
-              alRegistrarTipoCambio={() => campoTipoCambio.current?.focus()}
-            />
+            <AbrirTurno cajaId={cajaId} />
           ) : (
             <Aviso tipo="info">La caja está cerrada.</Aviso>
           )}
-          <TipoDeCambio campo={campoTipoCambio} />
           {abierto && tienePermiso(sesion, ['CAJA_MOVIMIENTOS']) && <Movimientos cajaId={cajaId} />}
         </>
       )}
+      <TipoDeCambio />
     </div>
   );
 }

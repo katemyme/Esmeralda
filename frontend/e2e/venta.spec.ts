@@ -6,7 +6,7 @@ import { expect, request, test, type Browser, type Page } from '@playwright/test
 //   con un toque o solo, incluso con la pantalla bloqueada;
 // - el administrador, desde su computadora, anula una venta.
 // La impresora es de mentira: guarda lo que el navegador le manda por USB, para leer el ticket.
-// Viene después de caja.spec.ts, que dejó las dos cajas cerradas y el tipo de cambio de hoy.
+// Viene después de caja.spec.ts, que dejó las dos cajas cerradas y el tipo de cambio en 36.70.
 
 const ADMIN = { usuario: 'admin', clave: 'Duena#2026' };
 const ANA = { usuario: 'ana.martinez', clave: 'Ventas#2026' };

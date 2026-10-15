@@ -68,8 +68,10 @@ test.afterAll(async () => {
 test('cada celular del negocio abre la caja de su sucursal, las dos a la vez', async () => {
   await entrar(americas, ANA);
   await irA(americas, 'Caja');
-  // todavía nadie registró el tipo de cambio de hoy: lo recuerda, pero deja abrir
-  await expect(americas.getByText(/Falta registrar el tipo de cambio de hoy/)).toBeVisible();
+  // el tipo de cambio no se registra cada día: rige el vigente y la vendedora no lo cambia
+  await expect(americas.getByText('C$ 36.6243')).toBeVisible();
+  await expect(americas.getByText(/[Ff]alta.*tipo de cambio/)).toHaveCount(0);
+  await expect(americas.getByRole('button', { name: 'Cambiar el tipo de cambio' })).toHaveCount(0);
   await americas.getByLabel('Efectivo en córdobas (C$)').fill('500');
   await americas.getByRole('button', { name: 'Abrir turno' }).click();
   await expect(americas.getByText('Turno abierto')).toBeVisible();
@@ -88,7 +90,7 @@ test('cada celular del negocio abre la caja de su sucursal, las dos a la vez', a
   await expect(barra(brisas)).not.toContainText('Las Américas');
 });
 
-test('el administrador elige la caja desde su equipo y registra el tipo de cambio de hoy', async () => {
+test('el administrador elige la caja desde su equipo y cambia el tipo de cambio vigente', async () => {
   await dueno
     .getByRole('navigation', { name: 'Menú' })
     .first()
@@ -100,13 +102,19 @@ test('el administrador elige la caja desde su equipo y registra el tipo de cambi
   await expect(dueno.getByText(/Turno abierto/)).toBeVisible();
   await expect(dueno.getByText(/por Carlos Ruiz/)).toBeVisible();
 
-  await dueno.getByLabel(/[Cc]órdobas por dólar/).fill('36.70');
-  await dueno.getByRole('button', { name: 'Guardar tipo de cambio' }).click();
-  // si se aleja del último registrado, la base pide confirmarlo a propósito
-  const confirmar = dueno.getByRole('button', { name: 'Sí, guardarlo' });
-  await expect(dueno.getByText('Tipo de cambio guardado.').or(confirmar)).toBeVisible();
-  if (await confirmar.isVisible()) await confirmar.click();
-  await expect(dueno.getByText('Tipo de cambio guardado.')).toBeVisible();
+  // un error de dedo (367 en vez de 36.70): la base pide confirmarlo y aquí no se confirma
+  await dueno.getByLabel('Nuevo tipo de cambio (córdobas por dólar)').fill('367');
+  await dueno.getByRole('button', { name: 'Cambiar el tipo de cambio' }).click();
+  await expect(dueno.getByText(/se aleja más de 5 % del vigente \(36.6243\)/)).toBeVisible();
+  await dueno.getByRole('button', { name: 'Cancelar' }).click();
+  await expect(dueno.getByText('C$ 36.6243')).toBeVisible();
+
+  await dueno.getByLabel('Nuevo tipo de cambio (córdobas por dólar)').fill('36.70');
+  await dueno.getByRole('button', { name: 'Cambiar el tipo de cambio' }).click();
+  await expect(
+    dueno.getByText(/Tipo de cambio guardado: rige para las ventas que siguen/),
+  ).toBeVisible();
+  await expect(dueno.getByText('C$ 36.7000')).toBeVisible();
 
   await americas.reload();
   await expect(barra(americas)).toContainText('US$ 1 = C$ 36.70');

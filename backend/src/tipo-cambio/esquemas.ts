@@ -4,8 +4,9 @@ import { fechaDeConsulta, limiteDeConsulta, monto4 } from '../comun/esquemas';
 const MENSAJE = 'usd_a_nio debe ser un monto mayor que 0, con 4 decimales como máximo';
 
 /**
- * Córdobas por dólar de hoy, p. ej. 36.6243. `confirmar: true` es la confirmación explícita para
- * registrar un valor que se aleja del último más de lo que permite TIPO_CAMBIO_VARIACION_MAX.
+ * El nuevo tipo de cambio, en córdobas por dólar, p. ej. 36.5. `confirmar: true` es la confirmación
+ * explícita para poner un valor que se aleja del vigente más de lo que permite
+ * TIPO_CAMBIO_VARIACION_MAX.
  */
 export const esquemaTipoCambio = z.object({
   usd_a_nio: monto4(MENSAJE).pipe(z.string().refine((texto) => Number(texto) > 0, MENSAJE)),
@@ -13,7 +14,7 @@ export const esquemaTipoCambio = z.object({
 });
 export type DatosTipoCambio = z.output<typeof esquemaTipoCambio>;
 
-/** Historial: `?desde=&hasta=` (días de Managua) y `?limite=` (por defecto 50, hasta 200). */
+/** Historial de cambios: `?desde=&hasta=` (días de Managua) y `?limite=` (por defecto 50, hasta 200). */
 export const esquemaHistorialTipoCambio = z
   .object({
     desde: fechaDeConsulta('desde').optional(),

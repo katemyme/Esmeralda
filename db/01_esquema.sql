@@ -1721,7 +1721,7 @@ END $$;
 -- 9. FUNCIONES DE NEGOCIO
 -- =====================================================================
 
--- Tipo de cambio vigente (el último registrado hasta esa fecha)
+-- Tipo de cambio vigente a una fecha: el último que se fijó hasta ese día.
 CREATE OR REPLACE FUNCTION fn_tipo_cambio_vigente(p_fecha date DEFAULT (now() AT TIME ZONE 'America/Managua')::date)
 RETURNS numeric
 LANGUAGE plpgsql STABLE AS $$
@@ -1734,13 +1734,17 @@ BEGIN
   RETURN v;
 END $$;
 
--- Tipo de cambio de hoy (día de Managua). Se puede corregir durante el día: cada venta guarda el
--- tipo de cambio con que se cobró, así que el nuevo valor solo afecta a las ventas siguientes.
--- Los días anteriores no se editan.
--- Control contra errores de dedo (366 en vez de 36.6): si el valor se aleja del último registrado
--- más que el parámetro TIPO_CAMBIO_VARIACION_MAX (%), solo se guarda con p_confirmado; sin él falla
--- con SQLSTATE ESM02 (la API responde 409 CONFIRMACION_REQUERIDA). El primero que se registra no
--- tiene con qué compararse: debe estar entre 20 y 60, y ahí la confirmación no cuenta.
+-- Cambia el tipo de cambio vigente (decisión del dueño del 2026-10-15). No se registra cada día:
+-- arranca en el de los datos iniciales (36.5) y se queda fijo, día tras día, hasta que alguien con
+-- TIPO_CAMBIO_GESTIONAR (solo el administrador) lo cambie. Cada venta guarda el tipo de cambio con
+-- que se cobró, así que el cambio vale para las ventas siguientes. La tabla guarda una fila por día
+-- en que se cambió (con el último valor de ese día); cada cambio queda además en la bitácora, que
+-- es de donde sale el historial (quién, cuándo, de cuánto a cuánto). Poner el mismo valor que ya
+-- rige no cambia nada ni deja rastro.
+-- Control contra errores de dedo (366 en vez de 36.6): si el valor se aleja del vigente más que el
+-- parámetro TIPO_CAMBIO_VARIACION_MAX (%), solo se guarda con p_confirmado; sin él falla con SQLSTATE
+-- ESM02 (la API responde 409 CONFIRMACION_REQUERIDA). Si no hubiera ninguno (la tabla vacía) no hay
+-- con qué comparar: debe estar entre 20 y 60, y ahí la confirmación no cuenta.
 -- Un valor fuera del límite que se guarda porque alguien lo confirmó deja una alerta al administrador.
 CREATE OR REPLACE FUNCTION fn_set_tipo_cambio(p_usuario bigint, p_usd_a_nio numeric, p_confirmado boolean DEFAULT false)
 RETURNS date
@@ -1749,6 +1753,7 @@ DECLARE
   v_hoy     date    := (now() AT TIME ZONE 'America/Managua')::date;
   v_nuevo   numeric := round(p_usd_a_nio, 4);
   v_ultimo  numeric;
+  v_desde   date;
   v_max     numeric := coalesce(fn_parametro_num('TIPO_CAMBIO_VARIACION_MAX'), 0);
   v_fuera   boolean;
 BEGIN
@@ -1757,14 +1762,17 @@ BEGIN
     RAISE EXCEPTION 'El tipo de cambio debe ser mayor que cero';
   END IF;
 
-  SELECT usd_a_nio INTO v_ultimo FROM tipo_cambio WHERE fecha <= v_hoy ORDER BY fecha DESC LIMIT 1;
+  SELECT usd_a_nio, fecha INTO v_ultimo, v_desde FROM tipo_cambio WHERE fecha <= v_hoy ORDER BY fecha DESC LIMIT 1;
+  IF v_nuevo = v_ultimo THEN
+    RETURN v_desde;                                -- ya es el vigente: no hay nada que cambiar
+  END IF;
   v_fuera := v_ultimo IS NOT NULL AND abs(v_nuevo - v_ultimo) * 100 > v_ultimo * v_max;
   IF v_ultimo IS NULL THEN
     IF v_nuevo NOT BETWEEN 20 AND 60 THEN
       RAISE EXCEPTION 'Es el primer tipo de cambio que se registra: debe estar entre 20 y 60 córdobas por dólar (recibido: %)', v_nuevo;
     END IF;
   ELSIF v_fuera AND NOT coalesce(p_confirmado, false) THEN
-    RAISE EXCEPTION 'El tipo de cambio % se aleja más de % %% del último registrado (%). Si es correcto, confírmelo.',
+    RAISE EXCEPTION 'El tipo de cambio % se aleja más de % %% del vigente (%). Si es correcto, confírmelo.',
           v_nuevo, v_max, v_ultimo
           USING ERRCODE = 'ESM02';
   END IF;

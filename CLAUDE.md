@@ -62,10 +62,9 @@ _Actualizado el 2026-10-12._
 - **F2a parte 2 (venta, tickets y cola) aprobada el 2026-10-11:** el dueño la probó completa en su PC («todo
   salió bien») y aprobó las decisiones tomadas al programarla (están en «Decisiones de negocio clave», «Venta,
   tickets y cola»). Incluyó backend nuevo: la cola de impresión, el ticket digital y el parámetro de la gaveta.
-- **Ajuste pedido al aprobarla, ya hecho (2026-10-12):** al abrir el turno, si todavía no hay tipo de cambio de
-  hoy, la pantalla lo recuerda con un aviso ámbar. No obliga: la caja se abre igual. Quien puede registrarlo
-  (`TIPO_CAMBIO_GESTIONAR`: encargada y administrador) tiene ahí el acceso directo «Registrarlo ahora», que
-  lleva al campo; a los demás les dice a quién pedírselo. Solo cambió el frontend.
+- **Ajuste pedido al aprobarla (2026-10-12):** al abrir el turno, un aviso ámbar recordaba que faltaba el tipo de
+  cambio de hoy, con el acceso directo «Registrarlo ahora». **Se quitó el 2026-10-15** con el cambio de regla del
+  tipo de cambio (ya no hay «de hoy»).
 - **Cambio de regla del dueño (2026-10-12), ya hecho:** el precio de venta se sube **sin tope** (antes, máximo
   +50 %). Se quitó la regla de `fn_registrar_venta` y el parámetro `VENTA_SOBREPRECIO_MAX_PCT` ya no existe; la
   pantalla de venta pide confirmar un precio de más del doble del de catálogo. Lo demás sigue igual (ver
@@ -80,6 +79,16 @@ _Actualizado el 2026-10-12._
   el parámetro `WHATSAPP_ADMINISTRADOR` y `aviso_whatsapp` en la solicitud. La probó toda en su PC («salió
   bien») y aprobó, tal como quedaron, las decisiones tomadas al programarla (están en «Devoluciones en
   pantalla»). Pidió seguir con la parte 2.
+- **Cambio de regla del dueño (2026-10-15), ya hecho: el tipo de cambio es fijo.** Ya no hay «tipo de cambio de
+  hoy»: hay uno vigente, que arranca en 36.5 (seed) y se queda fijo todos los días hasta que el administrador lo
+  cambie (desde cualquier equipo o su iPhone); a la encargada se le quitó `TIPO_CAMBIO_GESTIONAR`. Se mantienen:
+  cada venta guarda el suyo, el historial de cambios (`GET /api/tipo-cambio/historial` es ahora una lista de
+  cambios con el anterior, quién y cuándo) y el control del 5 % con confirmación. Se quitaron el aviso ámbar y
+  «Registrarlo ahora» de «Abrir la caja», la regla de la pantalla de cobrar en dólares solo con el de hoy y
+  `es_de_hoy` de la API (no había alertas ni tareas que pidieran registrarlo). Poner el mismo valor que ya rige
+  no cambia nada. La tarjeta «Tipo de cambio» de la pantalla Caja se ve siempre (también antes de elegir caja).
+  En la base local ya regía 36.5 (lo registró María López el 15/10 a las 7:30): no se tocó ninguna fila; se le
+  aplicó la función nueva y se le quitó el permiso a la encargada (ver abajo).
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -93,9 +102,9 @@ _Actualizado el 2026-10-12._
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 759 de base de datos, 605 del backend y, en el frontend, 103 de Vitest y 27 recorridos de
+- Pruebas en verde: 766 de base de datos, 605 del backend y, en el frontend, 102 de Vitest y 27 recorridos de
   Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
-  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope ni la parte 1 de F2b. Las etiquetas se
+  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope, la parte 1 de F2b ni el tipo de cambio fijo. Las etiquetas se
   quedan en este equipo (en GitHub solo está la rama). La etiqueta `backend-completo` y el respaldo se movieron
   el 2026-10-12 dos veces: al quitar el tope del precio y al terminar el backend de la parte 1 de F2b.
 - Fuera de F2b parte 1 (decidir si entran más adelante): avisar solo al administrador (notificaciones: las
@@ -146,8 +155,10 @@ _Actualizado el 2026-10-12._
   `\unrestrict` de pg_dump 18 llevan una clave al azar: se quitan antes de comparar) y, si cambió el seed, los
   parámetros (todo menos su valor). Así se hizo con la cola de impresión
   (`esmeralda-local-2026-10-09-antes-de-la-cola.dump`), al quitar el tope del precio
-  (`esmeralda-local-2026-10-12-antes-de-quitar-el-tope.dump`) y con el parámetro del WhatsApp
-  (`esmeralda-local-2026-10-12-antes-del-aviso-por-whatsapp.dump`); los respaldos están en `C:\Respaldos\`.
+  (`esmeralda-local-2026-10-12-antes-de-quitar-el-tope.dump`), con el parámetro del WhatsApp
+  (`esmeralda-local-2026-10-12-antes-del-aviso-por-whatsapp.dump`) y con el tipo de cambio fijo
+  (`esmeralda-local-2026-10-15-antes-del-tipo-de-cambio-fijo.dump`; ahí se comparó también la tabla `permiso` y
+  los permisos de los roles del sistema); los respaldos están en `C:\Respaldos\`.
 
 **Levantar el servidor** (desde `backend/`):
 
@@ -264,12 +275,16 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     —cuadre o no— y se cierra con lo contado. Así no se puede adivinar lo esperado probando conteos.
   - **Ticket de cierre:** quien cierra recibe lo que contó, lo que retiró y el fondo; lo vendido y lo cobrado por
     método solo con `CAJA_VER_DIFERENCIAS`. En un cierre forzado (sin conteo) el ticket reducido no trae montos.
-  - **Tipo de cambio:** solo se registra el de hoy y se puede corregir durante el día (`fn_set_tipo_cambio`); cada
-    venta guarda el suyo, así que el cambio vale para las ventas siguientes. Los días anteriores no se editan.
-    Control contra errores de dedo (pedido del dueño, 2026-10-07): si el valor se aleja del **último registrado**
-    (el vigente, sea de hoy o de un día anterior) más que el parámetro `TIPO_CAMBIO_VARIACION_MAX` (5 %; justo
-    el 5 % pasa), se rechaza salvo confirmación explícita. Si no hay ninguno anterior, solo entra entre 20 y 60
-    (fijo en la función; ahí la confirmación no cuenta).
+  - **Tipo de cambio (regla del dueño del 2026-10-15; antes se registraba el de cada día):** ya no hay «tipo de
+    cambio de hoy». Hay uno **vigente**, que arranca en **36.5** (seed) y se queda fijo todos los días hasta que
+    el **administrador** lo cambie, desde cualquier equipo o su iPhone (`fn_set_tipo_cambio`). La encargada ya no
+    tiene `TIPO_CAMBIO_GESTIONAR`. Cada venta guarda el suyo, así que un cambio vale para las ventas siguientes.
+    La tabla `tipo_cambio` guarda una fila por día en que se cambió (con el último valor del día) y el historial
+    de cambios (quién, cuándo, de cuánto a cuánto) sale de la bitácora. Poner el mismo valor que ya rige no
+    cambia nada ni deja rastro. Control contra errores de dedo (pedido del dueño, 2026-10-07): si el nuevo se
+    aleja del **vigente** más que el parámetro `TIPO_CAMBIO_VARIACION_MAX` (5 %; justo el 5 % pasa), se rechaza
+    salvo confirmación explícita. Si no hubiera ninguno (tabla vacía), solo entra entre 20 y 60 (fijo en la
+    función; ahí la confirmación no cuenta). No hay aviso, alerta ni tarea que pida registrarlo.
   - **Ticket de venta:** la API entrega los datos y la pantalla lo imprime (el PDF va con B7). Encabezado y pie
     con los parámetros `NEGOCIO_NOMBRE`, `NEGOCIO_RUC` y `TICKET_LEYENDA` (el RUC y la leyenda están vacíos: el
     dueño los llena en el panel).
@@ -337,7 +352,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     permisos marcados `permiso.sin_equipo`: consultar productos, precios, existencias y kardex; ver y recibir
     envíos; conteos; buscar una factura y solicitar su devolución; **vender**. Todo lo demás responde
     «solo desde un equipo registrado»: abrir y cerrar turno, anular, movimientos de efectivo, ejecutar
-    devoluciones, registrar el tipo de cambio, mermas, reportes, imprimir en papel.
+    devoluciones, mermas, reportes, imprimir en papel. (El tipo de cambio lo cambia solo el administrador, que
+    no tiene esa restricción.)
   - **Vender desde el celular:** solo con un turno abierto en su sucursal; la venta entra a ese turno con las
     reglas de siempre y queda a su nombre. Con más de una caja abierta elige la caja; si trabaja en varias
     sucursales, elige la sucursal (`fn_turno_para_venta`, `fn_cajas_abiertas`).
@@ -388,8 +404,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
   - **Gaveta:** `IMPRESION_ABRIR_GAVETA` viene en `NO`. En `SI`, el ticket por USB lleva la orden de abrirla
     solo en el original de una venta cobrada, al menos en parte, en efectivo. En la PC de caja lo decide el
     driver.
-  - **Dólares:** la pantalla solo deja cobrar en dólares con el tipo de cambio **de hoy** registrado (la base
-    aceptaría el último que haya).
+  - **Dólares:** siempre se puede cobrar en dólares, al tipo de cambio vigente (hasta el 2026-10-15 la pantalla
+    pedía el de hoy registrado).
   - **Arqueo ciego en «Ventas del turno»:** cada venta con su monto, nunca una suma.
   - **Abajo, en el celular,** quedan Inicio, Vender y lo que siga del menú; las alertas, por la campana.
 
@@ -441,7 +457,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 | Fase | Contenido |
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
-| F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
+| F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio vigente, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
@@ -491,7 +507,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   anulaciones y rechazos.
 - Solo modo claro.
 - Barra superior: «Esmeralda Experience» en texto («Experience» en oro claro) y un espacio para el logo (lo agrega
-  el dueño después). Con un turno abierto muestra siempre la sucursal, la caja y el tipo de cambio del día.
+  el dueño después). Con un turno abierto muestra siempre la sucursal, la caja y el tipo de cambio vigente.
 - **El arqueo ciego también rige en pantalla:** la vendedora nunca ve el monto esperado, la diferencia ni los
   totales del turno.
 
@@ -526,14 +542,14 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   regla de forma del backend (contraseña, PIN) para avisar antes de enviar.
 - Diseño: primero tablet (menú a la izquierda desde 768 px); en celular el menú va abajo con «Más». Usar
   etiquetas `<label htmlFor>` (no envolver el control): las pruebas buscan por etiqueta.
-- Caja (F2a parte 1): `pantallas/Caja.tsx` (abrir, tipo de cambio de hoy con el 409 `CONFIRMACION_REQUERIDA`,
+- Caja (F2a parte 1): `pantallas/Caja.tsx` (abrir, el tipo de cambio vigente con el 409 `CONFIRMACION_REQUERIDA`,
   movimientos, cierre por denominaciones con el 422 `CONTEO_NO_CUADRA` y su único reconteo, ticket),
   `pantallas/Turnos.tsx` (historial con diferencias y cierre forzado: solo con `CAJA_VER_DIFERENCIAS`) y
   `pantallas/Consulta.tsx` (buscador + escáner). El administrador sin equipo elige la caja y todas sus
   llamadas llevan `caja_id`. Las cuentas de la pantalla van en centavos (`util/dinero.ts`) y solo suman lo
-  que la persona escribe: nada de esperados. Al abrir, si falta el tipo de cambio de hoy, `AbrirTurno` lo
-  recuerda en ámbar sin impedir abrir (`useFaltaTipoCambioDeHoy()` de `api/consultas.ts`, que no avisa
-  mientras todavía se pregunta); su acceso directo enfoca el campo de `TipoDeCambio`.
+  que la persona escribe: nada de esperados. La tarjeta `TipoDeCambio` (el vigente y desde cuándo) se ve
+  siempre, también antes de que el administrador elija la caja; el campo para cambiarlo, solo con
+  `TIPO_CAMBIO_GESTIONAR`. Ya no hay aviso de que falte («de hoy» dejó de existir el 2026-10-15).
 - Imprimir un ticket: `<BotonImprimir ruta="/turnos/9/imprimir" />`. Decide el modo con `modoDeImpresion()`
   (`usb` solo en Android con WebUSB; si no, `dialogo`): por USB pide `?formato=renglones` y los traduce con
   `comandosDeTicket()`; por diálogo pide el PDF (`apiArchivo`) y lo imprime desde un marco oculto. Guarda lo
@@ -719,9 +735,11 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   - `PUT /api/tipo-cambio` acepta `confirmar` (solo `true` cuenta). Cuando la base pide la confirmación lanza el
     SQLSTATE `ESM02`, que `FiltroErrores` traduce a 409 `CONFIRMACION_REQUERIDA` con el mensaje de la base: la
     pantalla pregunta y reenvía con `confirmar: true`. Sirve para cualquier otra función que pida confirmar.
-  - `GET /api/tipo-cambio/historial` (`TIPO_CAMBIO_GESTIONAR`): un día por fila. La tabla `tipo_cambio` guarda
-    solo el último valor de cada día; lo registrado antes de una corrección sale de la bitácora (`auditoria`,
-    que anota cada cambio de esa tabla con su hora) y va en `registros`.
+  - `GET /api/tipo-cambio/historial` (`TIPO_CAMBIO_GESTIONAR`): un cambio por fila (`usd_a_nio`, `anterior`,
+    `registrado_por`, `registrado_at`), del más reciente al más antiguo. Sale de la bitácora (`auditoria`, que
+    anota cada escritura de la tabla `tipo_cambio` con su hora): la tabla guarda solo el último valor de cada
+    día. Lo que repite el valor anterior no es un cambio y no sale. El primero es el del seed (36.5, sin
+    usuario). `GET /api/tipo-cambio` ya no trae `es_de_hoy`.
   - `test/pos.e2e-spec.ts` trabaja en una sucursal propia (`PVE`) con su caja, su PC de caja y su tablet; usa una
     pieza de gama Titanio (las otras pruebas cuentan las piezas y los precios de las gamas de acero) y al final
     deja el tipo de cambio como estaba (una prueba borra los registrados mientras dura y los repone: vale porque

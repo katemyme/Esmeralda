@@ -22,9 +22,8 @@ SELECT fn_crear_usuario(
   'Carlos Ruiz', 'carlos.ruiz', crypt('Demo#2026', gen_salt('bf', 10)), 'VENDEDOR',
   ARRAY[(SELECT id FROM sucursal WHERE codigo = 'LBR')]);
 
--- Tipo de cambio
-INSERT INTO tipo_cambio (fecha, usd_a_nio, usuario_id)
-VALUES ((now() AT TIME ZONE 'America/Managua')::date - 60, 36.6243, fn_usuario_actual());
+-- Tipo de cambio: el administrador cambia el inicial (36.5) por 36.6243, con el que cuentan las pruebas
+SELECT fn_set_tipo_cambio((SELECT id FROM usuario WHERE username = 'admin'), 36.6243);
 
 -- Proveedores
 SELECT fn_crear_proveedor((SELECT id FROM usuario WHERE username = 'admin'), 'Body Jewelry Supply', 'Estados Unidos', 'USD');

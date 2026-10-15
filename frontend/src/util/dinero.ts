@@ -23,7 +23,7 @@ export function totalContado(conteo: { valor: string; cantidad: number }[]): num
 }
 
 /**
- * Dólares a córdobas con el tipo de cambio del día, todo en centavos y con el mismo redondeo que
+ * Dólares a córdobas con el tipo de cambio vigente, todo en centavos y con el mismo redondeo que
  * la base (`round(monto * tipo_cambio, 2)`): con enteros, para que no baile ni un centavo.
  */
 export function dolaresACordobas(centavosUsd: number, usdANio: string | number): number {

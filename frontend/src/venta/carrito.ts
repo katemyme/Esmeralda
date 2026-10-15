@@ -111,7 +111,7 @@ export function nuevoPago(metodo: string, moneda: Moneda = 'NIO', monto = ''): P
   return { clave: nuevaClave(), metodo, moneda, monto, referencia: '' };
 }
 
-/** Lo que vale un pago en córdobas (los dólares, al tipo de cambio del día); null si no es un monto. */
+/** Lo que vale un pago en córdobas (los dólares, al tipo de cambio vigente); null si no es un monto. */
 export function enCordobas(pago: Pago, usdANio: string | null): number | null {
   if (!esMonto(pago.monto) || aCentavos(pago.monto) <= 0) return null;
   if (pago.moneda === 'NIO') return aCentavos(pago.monto);
@@ -148,7 +148,7 @@ export function cuenta(
     if (valor === null) {
       pendiente ??=
         pago.moneda === 'USD' && usdANio === null
-          ? 'Falta el tipo de cambio de hoy para cobrar en dólares.'
+          ? 'No hay tipo de cambio para cobrar en dólares.'
           : 'Escriba el monto de cada pago (solo números, por ejemplo 1500.50).';
       continue;
     }

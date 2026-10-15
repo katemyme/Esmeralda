@@ -35,7 +35,7 @@ describe('traducirError: errores de PostgreSQL', () => {
 
   it('la función pide una confirmación explícita (ESM02) → 409 con el mensaje de la base', () => {
     const mensaje =
-      'El tipo de cambio 366.0000 se aleja más de 5 % del último registrado (36.6243). Si es correcto, confírmelo.';
+      'El tipo de cambio 366.0000 se aleja más de 5 % del vigente (36.6243). Si es correcto, confírmelo.';
     expect(traducirError(errorBd('ESM02', mensaje))).toEqual({
       estado: 409,
       cuerpo: { codigo: 'CONFIRMACION_REQUERIDA', mensaje },
