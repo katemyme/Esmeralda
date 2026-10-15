@@ -74,11 +74,12 @@ _Actualizado el 2026-10-12._
   otra. Sus respuestas a las cinco decisiones están en «Decisiones de negocio clave», «Devoluciones en
   pantalla». La parte 2 es ejecutar en caja (devolución y cambio), el ticket (también por USB), la gaveta y
   las transferencias pendientes.
-- **Terminada, pendiente de su revisión: F2b parte 1 (solicitar y aprobar)**, hecha el 2026-10-12: buscar la
+- **F2b parte 1 (solicitar y aprobar) aprobada por el dueño el 2026-10-15**, hecha el 2026-10-12: buscar la
   factura por número o QR, «No tiene el ticket», solicitar desde el equipo y desde el celular, la lista,
   aprobar o rechazar, cancelar y el aviso por WhatsApp. Incluyó backend nuevo: la ruta de las ventas recientes,
-  el parámetro `WHATSAPP_ADMINISTRADOR` y `aviso_whatsapp` en la solicitud. Las decisiones tomadas al
-  programarla están en «Devoluciones en pantalla». **No empezar la parte 2 hasta su OK.**
+  el parámetro `WHATSAPP_ADMINISTRADOR` y `aviso_whatsapp` en la solicitud. La probó toda en su PC («salió
+  bien») y aprobó, tal como quedaron, las decisiones tomadas al programarla (están en «Devoluciones en
+  pantalla»). Pidió seguir con la parte 2.
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -406,7 +407,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     (número de solicitud, factura, monto y sucursal), **sin** el nombre ni el teléfono del cliente. El número
     del administrador va en el parámetro `WHATSAPP_ADMINISTRADOR`, vacío en el seed: vacío, el botón no sale.
     La app no envía nada por su cuenta (las alertas siguen solo en el panel).
-  - Decisiones tomadas al programar la parte 1 (el 2026-10-12, **pendientes de la revisión del dueño**):
+  - Decisiones tomadas al programar la parte 1 (el 2026-10-12; **aprobadas por el dueño** el 2026-10-15, tal como
+    quedaron):
     - «No tiene el ticket» le sale también al **administrador sin equipo** (entra desde cualquier lado con
       todo, como siempre); a encargadas y vendedoras, solo en un equipo registrado.
     - El número del WhatsApp lo pone el administrador en la propia pantalla «Devoluciones» (tarjeta «Aviso por
@@ -440,7 +442,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
 | F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio de hoy, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
-| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: hecha y pendiente de revisión; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes |
+| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
 | F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
