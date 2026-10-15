@@ -7,7 +7,8 @@ import type { DevolucionDetalle } from './devoluciones.service';
  * renglón: su número propio, la factura de la que viene, lo devuelto con lo que se pagó por ello y
  * cómo lo recibe el cliente (saldo aplicado a la venta nueva, efectivo y transferencia). Termina
  * con la firma del cliente. `impresion` es cuántas veces se ha impreso contando esta: desde la
- * segunda lleva COPIA. Nunca lleva costos.
+ * segunda lleva COPIA. Nunca lleva costos. De cada línea dice si se recibió defectuosa (el estado
+ * en que llegó al ejecutarla, que puede no ser el que se pidió).
  */
 export function renglonesTicketDevolucion(
   devolucion: DevolucionDetalle,
@@ -44,7 +45,7 @@ export function renglonesTicketDevolucion(
 
   for (const item of devolucion.lineas) {
     par(`${item.cantidad} x ${item.variante.nombre}`, monto(item.monto));
-    if (item.estado_producto === 'DEFECTUOSO') texto('    Defectuoso');
+    if ((item.estado_recibido ?? item.estado_producto) === 'DEFECTUOSO') texto('    Defectuoso');
   }
   linea();
   par('TOTAL DEVUELTO C$', monto(devolucion.monto_total), true);

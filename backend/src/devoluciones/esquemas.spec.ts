@@ -149,7 +149,7 @@ describe('esquemaResolverDevolucion', () => {
 
 describe('esquemaEjecutarDevolucion', () => {
   it('una devolución no lleva nada: ni cuerpo', () => {
-    const vacia = { items: [], pagos: [], notas: null };
+    const vacia = { items: [], pagos: [], notas: null, lineas: [] };
     expect(esquemaEjecutarDevolucion.parse({})).toEqual(vacia);
     expect(esquemaEjecutarDevolucion.parse(undefined)).toEqual(vacia);
     expect(esquemaEjecutarDevolucion.parse({ caja_id: 3 })).toEqual({ ...vacia, caja_id: 3 });
@@ -169,6 +169,20 @@ describe('esquemaEjecutarDevolucion', () => {
       items: [{ variante_id: 12, cantidad: 2 }],
       pagos: [{ metodo: 'EFECTIVO', moneda: 'NIO', monto: '300', referencia: null }],
       notas: 'Cambio de cadena',
+      lineas: [],
+    });
+  });
+
+  it('el estado en que se recibe cada línea, si no es el que se pidió: BUENO o DEFECTUOSO', () => {
+    expect(
+      esquemaEjecutarDevolucion.parse({ lineas: [{ id: 31, estado: ' defectuoso ' }] }).lineas,
+    ).toEqual([{ id: 31, estado: 'DEFECTUOSO' }]);
+    expect(mensajes(esquemaEjecutarDevolucion, { lineas: [{ id: 0, estado: 'ROTO' }] })).toEqual({
+      'lineas.0.id': 'Indique la línea de la devolución (id)',
+      'lineas.0.estado': 'Indique el estado del producto: BUENO o DEFECTUOSO',
+    });
+    expect(mensajes(esquemaEjecutarDevolucion, { lineas: 'todas' })).toEqual({
+      lineas: 'Envíe el estado en que se recibe cada línea en "lineas": [{ id, estado }]',
     });
   });
 

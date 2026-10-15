@@ -208,6 +208,7 @@ export interface DevolucionDetalle {
   cantidad: number;
   devolucion_id: number;
   estado_producto: string;
+  estado_recibido: string | null;
   id: Generated<number>;
   merma_id: number | null;
   monto: Numeric;

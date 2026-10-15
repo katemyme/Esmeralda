@@ -349,6 +349,7 @@ describe('Acceso desde el celular', () => {
         ['post', '/api/ventas/1/anular', { motivo: 'Desde el celular no' }],
         ['post', '/api/ventas/1/imprimir'],
         ['get', '/api/devoluciones/ventas-recientes'],
+        ['get', '/api/devoluciones/1/reparto'],
         ['post', '/api/devoluciones/1/ejecutar', {}],
         ['post', '/api/devoluciones/1/imprimir'],
         ['post', '/api/mermas', { sucursal_id: ids.a, variante_id: ids.cadena, cantidad: 1 }],

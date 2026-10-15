@@ -585,7 +585,8 @@ export class ReportesService {
       sql<Fila & { cantidad: number }>`
         select d.ejecutada_at as fecha, d.numero, v.numero as factura, va.sku,
                pr.nombre || ' — ' || va.nombre as producto, cg.nombre as categoria, dd.cantidad,
-               case dd.estado_producto when 'DEFECTUOSO' then 'Defectuoso' else 'Bueno' end as estado,
+               case coalesce(dd.estado_recibido, dd.estado_producto)
+                    when 'DEFECTUOSO' then 'Defectuoso' else 'Bueno' end as estado,
                dd.monto, d.motivo
           from devolucion_detalle dd
           join devolucion d on d.id = dd.devolucion_id

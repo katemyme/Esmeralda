@@ -16,6 +16,12 @@ const MENSAJE_ESTADO = 'estado debe ser PENDIENTE, APROBADA, RECHAZADA, EJECUTAD
 const MENSAJE_ESTADO_PRODUCTO = 'Indique el estado del producto: BUENO o DEFECTUOSO';
 const MENSAJE_LINEAS = 'Envíe lo que se devuelve en "lineas": [{ detalle_id, cantidad, estado }]';
 
+const estadoProducto = z
+  .string({ error: MENSAJE_ESTADO_PRODUCTO })
+  .trim()
+  .toUpperCase()
+  .pipe(z.enum(['BUENO', 'DEFECTUOSO'], { error: MENSAJE_ESTADO_PRODUCTO }));
+
 const tipo = z
   .string({ error: 'Indique si es una devolución o un cambio (tipo)' })
   .trim()
@@ -87,11 +93,7 @@ export const esquemaSolicitarDevolucion = z.object({
       z.object({
         detalle_id: idDeCuerpo('Indique la línea de la factura (detalle_id)'),
         cantidad: cantidad('La cantidad debe ser un entero de 1 en adelante'),
-        estado: z
-          .string({ error: MENSAJE_ESTADO_PRODUCTO })
-          .trim()
-          .toUpperCase()
-          .pipe(z.enum(['BUENO', 'DEFECTUOSO'], { error: MENSAJE_ESTADO_PRODUCTO })),
+        estado: estadoProducto,
       }),
       { error: MENSAJE_LINEAS },
     )
@@ -117,6 +119,8 @@ export type DatosResolverDevolucion = z.output<typeof esquemaResolverDevolucion>
  * 3) La ejecución en caja. Una devolución no lleva nada (`{}`): el turno sale del equipo de la
  * sesión. Un cambio lleva lo que se lleva el cliente, como una venta (sin promoción): `items`,
  * los `pagos` de la diferencia si lo nuevo cuesta más, y la `clave_idempotencia` de esa venta.
+ * `lineas` (las dos): el estado en que se recibe cada línea de la devolución, si no es el que se
+ * pidió (`id` es la línea de la devolución); lo que no viene se recibe como se pidió.
  */
 export const esquemaEjecutarDevolucion = z.preprocess(
   (cuerpo) => cuerpo ?? {},
@@ -133,10 +137,33 @@ export const esquemaEjecutarDevolucion = z.preprocess(
       .max(10, 'Demasiados pagos en una sola venta')
       .default([]),
     notas: textoOpcional(500, 'Las notas son demasiado largas'),
+    lineas: z
+      .array(
+        z.object({
+          id: idDeCuerpo('Indique la línea de la devolución (id)'),
+          estado: estadoProducto,
+        }),
+        { error: 'Envíe el estado en que se recibe cada línea en "lineas": [{ id, estado }]' },
+      )
+      .max(100, 'Demasiadas líneas en una sola devolución')
+      .default([]),
     caja_id: cajaElegida,
   }),
 );
 export type DatosEjecutarDevolucion = z.output<typeof esquemaEjecutarDevolucion>;
+
+const MENSAJE_TOTAL =
+  'total debe ser un monto de 0 en adelante (lo que suma lo que se lleva el cliente)';
+
+/** `?total=850.50`: en un cambio, lo que suma lo que se lleva el cliente (sin él, 0). */
+export const esquemaReparto = z.object({
+  total: z
+    .string(MENSAJE_TOTAL)
+    .trim()
+    .regex(/^\d{1,10}(\.\d{1,2})?$/, MENSAJE_TOTAL)
+    .default('0'),
+});
+export type DatosReparto = z.output<typeof esquemaReparto>;
 
 /** La transferencia con que el administrador devolvió lo que no salió de la caja. */
 export const esquemaTransferencia = z.object({

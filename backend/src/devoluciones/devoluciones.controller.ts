@@ -8,7 +8,7 @@ import {
   Post,
   Query,
   Res,
-  StreamableFile,
+  type StreamableFile,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { UsuarioActual } from '../autenticacion/decoradores';
@@ -17,9 +17,16 @@ import type { UsuarioAutenticado } from '../autenticacion/usuario-autenticado';
 import { esquemaMotivo, idEntero, type DatosMotivo } from '../comun/esquemas';
 import { ValidacionZod } from '../comun/validacion-zod.pipe';
 import {
+  entregarTicket,
+  esquemaFormatoTicket,
+  type FormatoTicket,
+  type TicketEnRenglones,
+} from '../exportacion/ticket-formato';
+import {
   DevolucionesService,
   type DevolucionDetalle,
   type DevolucionResumen,
+  type RepartoEjecucion,
   type VentaParaDevolver,
   type VentasRecientes,
 } from './devoluciones.service';
@@ -27,12 +34,14 @@ import {
   esquemaBuscarVenta,
   esquemaEjecutarDevolucion,
   esquemaFiltroDevoluciones,
+  esquemaReparto,
   esquemaResolverDevolucion,
   esquemaSolicitarDevolucion,
   esquemaTransferencia,
   esquemaVentasRecientes,
   type DatosBuscarVenta,
   type DatosEjecutarDevolucion,
+  type DatosReparto,
   type DatosResolverDevolucion,
   type DatosSolicitarDevolucion,
   type DatosTransferencia,
@@ -90,6 +99,22 @@ export class DevolucionesController {
     return { devoluciones: await this.devoluciones.listar(usuario.id, filtro) };
   }
 
+  /**
+   * `?total=`: antes de ejecutarla, cuánto se entrega en efectivo y cuánto queda por transferir y,
+   * en un cambio, cuánto se cobra si lo que se lleva el cliente suma `total`. Es para la pantalla
+   * de ejecutar, que es del equipo de la sucursal.
+   */
+  @Get(':id/reparto')
+  @RequierePermiso('DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR')
+  @SoloEnEquipo()
+  async reparto(
+    @UsuarioActual() usuario: UsuarioAutenticado,
+    @Param('id', idEntero()) id: number,
+    @Query(new ValidacionZod(esquemaReparto)) consulta: DatosReparto,
+  ): Promise<{ reparto: RepartoEjecucion }> {
+    return { reparto: await this.devoluciones.reparto(usuario.id, id, consulta.total) };
+  }
+
   /** La devolución completa, con lo que va en su ticket. */
   @Get(':id')
   @RequierePermiso('DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR')
@@ -141,7 +166,8 @@ export class DevolucionesController {
   /**
    * Ejecuta una aprobada en el turno abierto de la caja de la sesión. Devolución: `{}`. Cambio:
    * `{ clave_idempotencia, items, pagos, notas }`, como una venta (sin promoción); si esa clave ya
-   * se usó en este mismo cambio responde lo mismo con `repetida: true`.
+   * se usó en este mismo cambio responde lo mismo con `repetida: true`. Las dos: `lineas: [{ id,
+   * estado }]` si alguna se recibe en otro estado que el que se pidió.
    */
   @Post(':id/ejecutar')
   @RequierePermiso('DEVOLUCIONES_REGISTRAR')
@@ -170,8 +196,10 @@ export class DevolucionesController {
   }
 
   /**
-   * El ticket de la devolución en PDF para la impresora de 80 mm. La primera vez es el original;
-   * las siguientes salen con la palabra COPIA (`X-Ticket-Impresion` dice cuál es: 1, 2, 3…).
+   * El ticket de la devolución para la impresora de 80 mm: en PDF o, con `?formato=renglones`,
+   * como renglones para la impresora por USB (con `abrir_gaveta`). La primera vez es el original
+   * —el que firma el cliente y se queda en la tienda—; las siguientes salen con la palabra COPIA
+   * (`X-Ticket-Impresion` dice cuál es: 1, 2, 3…).
    */
   @Post(':id/imprimir')
   @RequierePermiso('DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR')
@@ -180,14 +208,10 @@ export class DevolucionesController {
   async imprimir(
     @UsuarioActual() usuario: UsuarioAutenticado,
     @Param('id', idEntero()) id: number,
+    @Query(new ValidacionZod(esquemaFormatoTicket)) consulta: { formato: FormatoTicket },
     @Res({ passthrough: true }) respuesta: Response,
-  ): Promise<StreamableFile> {
-    const { pdf, numero, impresion } = await this.devoluciones.imprimir(usuario.id, id);
-    respuesta.setHeader('X-Ticket-Impresion', String(impresion));
-    return new StreamableFile(pdf, {
-      type: 'application/pdf',
-      disposition: `inline; filename="devolucion-${numero}.pdf"`,
-      length: pdf.length,
-    });
+  ): Promise<StreamableFile | TicketEnRenglones> {
+    const ticket = await this.devoluciones.imprimir(usuario.id, id, consulta.formato);
+    return entregarTicket(respuesta, ticket, `devolucion-${ticket.numero}`);
   }
 }

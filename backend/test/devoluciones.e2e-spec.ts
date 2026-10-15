@@ -556,6 +556,7 @@ describe('Devoluciones y cambios', () => {
         vence_el: null,
         sucursal: null,
         ejecutada_at: null,
+        monto_transferencia: null,
         por_transferir: false,
         lineas: [
           {
@@ -564,6 +565,7 @@ describe('Devoluciones y cambios', () => {
             variante: { id: pieza.perfume, sku: 'DVE-PERF', nombre: 'Regalo DVE — Perfume' },
             cantidad: 1,
             estado_producto: 'BUENO',
+            estado_recibido: null, // se dice al ejecutarla
             monto: '360.00',
           },
         ],
@@ -845,9 +847,11 @@ describe('Devoluciones y cambios', () => {
           detalle: expect.objectContaining({ devolucion_id: dev.s2, monto: 533.33 }),
         }),
       ]);
-      const porTransferir = await comoJefa('get', '/api/devoluciones?por_transferir=true').expect(
-        200,
-      );
+      // de sus sucursales: otros archivos de prueba dejan las suyas en la misma base
+      const porTransferir = await comoJefa(
+        'get',
+        `/api/devoluciones?por_transferir=true&sucursal_id=${ids.a}`,
+      ).expect(200);
       expect((porTransferir.body.devoluciones as DevolucionResumen[]).map((d) => d.id)).toEqual([
         dev.s2,
       ]);
@@ -1279,7 +1283,8 @@ describe('Devoluciones y cambios', () => {
       expect(await idsDe(dora.acceso, `desde=${sumarDias(hoy, 1)}`)).toEqual([]);
       expect(await idsDe(dora.acceso, `hasta=${hoy}&limite=2`)).toEqual(todas.slice(0, 2));
       expect(await idsDe(dora.acceso, `antes_de=${dev.s2}&sucursal_id=${ids.a}`)).toEqual([dev.s1]);
-      expect(await idsDe(jefa.acceso, 'por_transferir=true')).toEqual([]);
+      expect(await idsDe(jefa.acceso, `por_transferir=true&sucursal_id=${ids.a}`)).toEqual([]);
+      expect(await idsDe(jefa.acceso, `por_transferir=true&sucursal_id=${ids.b}`)).toEqual([]);
       const invalida = await con('get', '/api/devoluciones?estado=LISTA', dora.acceso).expect(400);
       expect(invalida.body.errores[0].campo).toBe('estado');
     });

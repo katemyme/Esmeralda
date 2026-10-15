@@ -1135,7 +1135,9 @@ CREATE INDEX ix_devolucion_turno ON devolucion (turno_id) WHERE turno_id IS NOT 
 CREATE INDEX ix_devolucion_ejecutada ON devolucion (ejecutada_at DESC) WHERE ejecutada_at IS NOT NULL;
 
 -- Lo que se devuelve de cada línea de la factura. Una línea puede ir dos veces en la misma
--- solicitud: una parte en buen estado y otra defectuosa.
+-- solicitud: una parte en buen estado y otra defectuosa. estado_producto es como se pidió; al
+-- ejecutarla, quien recibe el producto dice en qué estado vuelve cada línea (estado_recibido):
+-- bueno, al stock; defectuoso, sale como merma ya aprobada.
 CREATE TABLE devolucion_detalle (
   id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   devolucion_id     bigint        NOT NULL REFERENCES devolucion(id),
@@ -1145,8 +1147,10 @@ CREATE TABLE devolucion_detalle (
   monto             numeric(12,2) NOT NULL CHECK (monto >= 0),               -- lo pagado por esas unidades
   movimiento_id     bigint        REFERENCES movimiento_inventario(id),      -- al ejecutar: su entrada al inventario
   merma_id          bigint        REFERENCES merma(id),                      -- defectuoso: la merma con que sale
+  estado_recibido   varchar(10)   CHECK (estado_recibido IN ('BUENO','DEFECTUOSO')),  -- al ejecutar (F2b parte 2)
   CONSTRAINT ux_devolucion_linea UNIQUE (devolucion_id, venta_detalle_id, estado_producto),
-  CONSTRAINT ck_devolucion_merma CHECK (merma_id IS NULL OR estado_producto = 'DEFECTUOSO')
+  CONSTRAINT ck_devolucion_merma CHECK ((merma_id IS NOT NULL) = coalesce(estado_recibido = 'DEFECTUOSO', false)),
+  CONSTRAINT ck_devolucion_recibida CHECK ((estado_recibido IS NULL) = (movimiento_id IS NULL))
 );
 CREATE INDEX ix_devolucion_detalle_linea ON devolucion_detalle (venta_detalle_id);
 
@@ -1187,7 +1191,8 @@ END $$;
 CREATE TRIGGER tg_devolucion_proteger BEFORE UPDATE OR DELETE ON devolucion
   FOR EACH ROW EXECUTE FUNCTION fn_proteger_devolucion();
 
--- Las líneas se escriben al crear la solicitud; después solo se les anota el movimiento (al ejecutar)
+-- Las líneas se escriben al crear la solicitud; después solo se les anota, una vez y al ejecutar, el
+-- movimiento, la merma y el estado en que se recibió (ck_devolucion_recibida los ata)
 CREATE OR REPLACE FUNCTION fn_proteger_devolucion_detalle() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -4830,6 +4835,18 @@ LANGUAGE sql STABLE AS $$
                   WHERE p.venta_id = p_venta AND m.es_efectivo AND NOT p.es_vuelto)
 $$;
 
+-- Lo mismo con el ticket de una devolución (F2b parte 2): solo con el parámetro en SI, en el original
+-- y si de la caja sale efectivo para el cliente. Una devolución que se transfiere toda, o un cambio
+-- que no deja sobrante, no la abre (si el cliente paga una diferencia en efectivo, la abre el
+-- ticket de la venta nueva).
+CREATE OR REPLACE FUNCTION fn_abre_gaveta_devolucion(p_devolucion bigint, p_impresion integer) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(fn_parametro_txt('IMPRESION_ABRIR_GAVETA'), 'NO') = 'SI'
+     AND p_impresion = 1
+     AND EXISTS (SELECT 1 FROM devolucion d
+                  WHERE d.id = p_devolucion AND d.estado = 'EJECUTADA' AND d.monto_efectivo > 0)
+$$;
+
 -- ---------------------------------------------------------------------
 -- 11.1 Cola de impresión (frontend F2a)
 --   · Desde un celular no se imprime en papel: el ticket de una venta hecha ahí queda en la cola
@@ -5389,20 +5406,43 @@ BEGIN
   RETURN n;
 END $$;
 
+-- Cómo queda el dinero al ejecutar, antes de ejecutarla: la misma cuenta de fn_ejecutar_devolucion,
+-- para que la pantalla diga cuánto entregar. p_total_nuevo: en un cambio, el total de lo que se lleva
+-- el cliente (en una devolución no cuenta). Lo devuelto paga primero lo nuevo (saldo); si lo nuevo
+-- cuesta más, la diferencia se cobra (por_cobrar); si cuesta menos, lo que sobra se le entrega según
+-- cómo se pagó la factura: efectivo de la caja y transferencia del administrador.
+CREATE OR REPLACE FUNCTION fn_reparto_ejecucion(p_devolucion bigint, p_total_nuevo numeric DEFAULT 0)
+RETURNS TABLE (saldo numeric, por_cobrar numeric, efectivo numeric, transferencia numeric)
+LANGUAGE sql STABLE AS $$
+  SELECT s.saldo, s.por_cobrar, r.efectivo, r.transferencia
+    FROM devolucion d
+    CROSS JOIN LATERAL (
+      SELECT CASE WHEN d.tipo = 'CAMBIO' THEN least(d.monto_total, greatest(coalesce(p_total_nuevo, 0), 0)) ELSE 0 END AS saldo,
+             CASE WHEN d.tipo = 'CAMBIO' THEN greatest(coalesce(p_total_nuevo, 0) - d.monto_total, 0) ELSE 0 END AS por_cobrar
+    ) s
+    CROSS JOIN LATERAL fn_reparto_devolucion(d.venta_id, d.monto_total - s.saldo) r
+   WHERE d.id = p_devolucion
+$$;
+
 -- 3) Se ejecuta una devolución aprobada en un turno abierto (p_turno: el de la caja de la sesión),
 --    en la sucursal donde está el cliente, que puede ser otra que la de la venta.
 --   · Toma su número propio, sin saltos: DEV-<sucursal>-000001.
 --   · Inventario: lo devuelto entra al stock de esa sucursal (movimiento DEVOLUCION, al costo con
 --     que se vendió); lo defectuoso sale enseguida como merma ya aprobada. Todo queda en el kardex.
+--     p_estados (F2b parte 2): quien recibe el producto dice en qué estado vuelve cada línea, por si
+--     no es el que se pidió: [{"linea_id": 31, "estado": "DEFECTUOSO"}] (linea_id: devolucion_detalle).
+--     Lo que no viene se recibe como se pidió.
 --   · DEVOLUCION: se reembolsa según cómo se pagó la venta: la parte pagada en efectivo sale en
 --     córdobas de la caja del turno (cuenta en el arqueo) y la parte pagada con tarjeta o
 --     transferencia queda para que el administrador la transfiera (fn_registrar_transferencia_devolucion).
 --   · CAMBIO: p_items y p_pagos son los de una venta normal (sin promoción). Lo devuelto entra a esa
 --     venta como "saldo por cambio"; si lo nuevo cuesta más, la diferencia se cobra con p_pagos, y
 --     si cuesta menos, lo que sobra se reembolsa igual que en una devolución.
+--   El dinero sale con la misma cuenta que fn_reparto_ejecucion (lo que la pantalla mostró antes).
 CREATE OR REPLACE FUNCTION fn_ejecutar_devolucion(
   p_usuario bigint, p_devolucion bigint, p_turno bigint,
-  p_items jsonb DEFAULT NULL, p_pagos jsonb DEFAULT NULL, p_idempotencia uuid DEFAULT NULL, p_notas text DEFAULT NULL
+  p_items jsonb DEFAULT NULL, p_pagos jsonb DEFAULT NULL, p_idempotencia uuid DEFAULT NULL, p_notas text DEFAULT NULL,
+  p_estados jsonb DEFAULT NULL
 ) RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -5414,9 +5454,11 @@ DECLARE
   v_hoy        date := (now() AT TIME ZONE 'America/Managua')::date;
   v_con_items  boolean := p_items IS NOT NULL AND jsonb_typeof(p_items) = 'array' AND jsonb_array_length(p_items) > 0;
   v_venta      bigint;
-  v_saldo      numeric := 0;
-  v_resto      numeric;
+  v_total      numeric := 0;
+  v_saldo      numeric;
   v_efectivo   numeric;
+  v_transf     numeric;
+  v_recibido   text;
   v_mov        bigint;
   v_mov_merma  bigint;
   v_merma      bigint;
@@ -5442,6 +5484,28 @@ BEGIN
     RAISE EXCEPTION 'La solicitud % es una devolución, no un cambio: no lleva productos nuevos', p_devolucion;
   END IF;
 
+  -- El estado en que se recibe cada línea (si no viene, el que se pidió)
+  IF p_estados IS NOT NULL AND jsonb_typeof(p_estados) <> 'array' THEN
+    RAISE EXCEPTION 'El estado de las líneas va en una lista: [{"linea_id": …, "estado": "BUENO"}]';
+  END IF;
+  IF to_regclass('pg_temp.tmp_recibido') IS NULL THEN
+    CREATE TEMP TABLE tmp_recibido (linea_id bigint, estado text) ON COMMIT DROP;
+  END IF;
+  TRUNCATE tmp_recibido;
+  INSERT INTO tmp_recibido (linea_id, estado)
+  SELECT (x->>'linea_id')::bigint, upper(trim(x->>'estado'))
+    FROM jsonb_array_elements(coalesce(p_estados, '[]'::jsonb)) x;
+  IF EXISTS (SELECT 1 FROM tmp_recibido t
+              WHERE NOT EXISTS (SELECT 1 FROM devolucion_detalle dd WHERE dd.id = t.linea_id AND dd.devolucion_id = p_devolucion)) THEN
+    RAISE EXCEPTION 'Esa línea no es de la devolución %', p_devolucion;
+  END IF;
+  IF EXISTS (SELECT 1 FROM tmp_recibido WHERE estado IS NULL OR estado NOT IN ('BUENO','DEFECTUOSO')) THEN
+    RAISE EXCEPTION 'El estado en que se recibe cada línea es BUENO o DEFECTUOSO';
+  END IF;
+  IF EXISTS (SELECT 1 FROM tmp_recibido GROUP BY linea_id HAVING count(*) > 1) THEN
+    RAISE EXCEPTION 'Cada línea de la devolución va una sola vez';
+  END IF;
+
   SELECT t.estado, c.sucursal_id INTO v_estado, v_sucursal
     FROM turno_caja t JOIN caja c ON c.id = t.caja_id
    WHERE t.id = p_turno
@@ -5458,9 +5522,11 @@ BEGIN
   RETURNING 'DEV-' || codigo || '-' || lpad(ultimo_numero_devolucion::text, 6, '0') INTO v_numero;
 
   FOR r IN
-    SELECT dd.id, dd.cantidad, dd.estado_producto, vd.variante_id, vd.costo_unitario
+    SELECT dd.id, dd.cantidad, dd.estado_producto, coalesce(t.estado, dd.estado_producto) AS recibido,
+           vd.variante_id, vd.costo_unitario
       FROM devolucion_detalle dd
       JOIN venta_detalle vd ON vd.id = dd.venta_detalle_id
+      LEFT JOIN tmp_recibido t ON t.linea_id = dd.id
      WHERE dd.devolucion_id = p_devolucion
      ORDER BY vd.variante_id, dd.id
   LOOP
@@ -5471,7 +5537,8 @@ BEGIN
     RETURNING id INTO v_mov;
 
     v_merma := NULL;
-    IF r.estado_producto = 'DEFECTUOSO' THEN
+    v_recibido := r.recibido;
+    IF v_recibido = 'DEFECTUOSO' THEN
       INSERT INTO movimiento_inventario (sucursal_id, variante_id, tipo, cantidad, stock_resultante,
                                          costo_unitario, motivo, usuario_id)
       VALUES (v_sucursal, r.variante_id, 'MERMA', -r.cantidad, 0, r.costo_unitario,
@@ -5481,10 +5548,14 @@ BEGIN
                          resuelta_por, resuelta_at, comentario, movimiento_id)
       VALUES (v_sucursal, r.variante_id, r.cantidad,
               left(format('Devuelto defectuoso (%s): %s', v_numero, d.motivo), 200), 'APROBADA', p_usuario,
-              d.resuelta_por, now(), format('Aprobada con la devolución %s', v_numero), v_mov_merma)
+              d.resuelta_por, now(),
+              CASE WHEN r.estado_producto = 'DEFECTUOSO' THEN format('Aprobada con la devolución %s', v_numero)
+                   ELSE format('Aprobada con la devolución %s: se pidió en buen estado y se recibió defectuoso', v_numero) END,
+              v_mov_merma)
       RETURNING id INTO v_merma;
     END IF;
-    UPDATE devolucion_detalle SET movimiento_id = v_mov, merma_id = v_merma WHERE id = r.id;
+    UPDATE devolucion_detalle SET movimiento_id = v_mov, merma_id = v_merma, estado_recibido = v_recibido
+     WHERE id = r.id;
   END LOOP;
 
   IF d.tipo = 'CAMBIO' THEN
@@ -5502,28 +5573,32 @@ BEGIN
     IF EXISTS (SELECT 1 FROM devolucion WHERE venta_cambio_id = v_venta) THEN
       RAISE EXCEPTION 'Esa clave de idempotencia ya es de otra venta: el POS debe generar una nueva';
     END IF;
-    SELECT coalesce(sum(vp.monto_nio), 0) INTO v_saldo
-      FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id AND m.interno
-     WHERE vp.venta_id = v_venta;
+    SELECT total INTO v_total FROM venta WHERE id = v_venta;
   END IF;
 
   -- Lo que no se fue en la venta nueva se le entrega al cliente según cómo pagó la factura
-  v_resto := d.monto_total - v_saldo;
-  v_efectivo := round(v_resto * fn_proporcion_efectivo(d.venta_id), 2);
+  SELECT x.saldo, x.efectivo, x.transferencia INTO v_saldo, v_efectivo, v_transf
+    FROM fn_reparto_ejecucion(p_devolucion, v_total) x;
+  -- fn_registrar_venta aplicó el saldo con la misma cuenta (lo que haga falta, sin pasar del total)
+  IF d.tipo = 'CAMBIO' AND v_saldo <> (SELECT coalesce(sum(vp.monto_nio), 0)
+                                         FROM venta_pago vp JOIN metodo_pago m ON m.id = vp.metodo_pago_id AND m.interno
+                                        WHERE vp.venta_id = v_venta) THEN
+    RAISE EXCEPTION 'El saldo aplicado a la venta del cambio no cuadra con lo devuelto';
+  END IF;
 
   UPDATE devolucion
      SET estado = 'EJECUTADA', numero = v_numero, sucursal_id = v_sucursal, turno_id = p_turno,
          ejecutada_por = p_usuario, ejecutada_at = now(),
-         monto_saldo = v_saldo, monto_efectivo = v_efectivo, monto_transferencia = v_resto - v_efectivo,
+         monto_saldo = v_saldo, monto_efectivo = v_efectivo, monto_transferencia = v_transf,
          venta_cambio_id = v_venta
    WHERE id = p_devolucion;
 
-  IF v_resto - v_efectivo > 0 THEN
+  IF v_transf > 0 THEN
     INSERT INTO alerta (tipo, titulo, detalle, sucursal_id)
     VALUES ('DEVOLUCION_TRANSFERENCIA',
-            format('Devolución %s: falta transferirle al cliente C$ %s', v_numero, round(v_resto - v_efectivo, 2)),
+            format('Devolución %s: falta transferirle al cliente C$ %s', v_numero, round(v_transf, 2)),
             jsonb_build_object('devolucion_id', p_devolucion, 'numero', v_numero, 'factura', v_factura,
-                               'monto', v_resto - v_efectivo),
+                               'monto', v_transf),
             v_sucursal);
   END IF;
   RETURN p_devolucion;
@@ -5663,7 +5738,7 @@ SELECT
   -dd.monto + dd.cantidad * vd.costo_unitario       AS margen,
   dv.id                                             AS devolucion_id,
   dv.numero                                         AS devolucion_numero,
-  dd.estado_producto
+  coalesce(dd.estado_recibido, dd.estado_producto)::varchar(10) AS estado_producto
 FROM devolucion dv
 JOIN devolucion_detalle dd ON dd.devolucion_id = dv.id
 JOIN venta v          ON v.id = dv.venta_id

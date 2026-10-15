@@ -6,7 +6,7 @@ import { exigirTurno } from '../caja/sesion-caja';
 import { donde, patronContiene } from '../comun/consultas';
 import { finDelDia, inicioDelDia } from '../comun/fechas';
 import { NoEncontrado } from '../comun/no-encontrado';
-import { ticketPdf } from '../exportacion/ticket-pdf';
+import { armarTicket, type FormatoTicket, type TicketListo } from '../exportacion/ticket-formato';
 import type {
   DatosEjecutarDevolucion,
   DatosResolverDevolucion,
@@ -52,6 +52,11 @@ export interface DevolucionResumen {
   /** Dónde se ejecutó: puede ser otra sucursal que la de la venta. */
   sucursal: Ubicacion | null;
   ejecutada_at: Date | null;
+  /**
+   * Ejecutada: lo que le toca transferir al administrador (lo pagado con tarjeta o transferencia;
+   * 0.00 si todo salió de la caja). Antes de ejecutarla, null.
+   */
+  monto_transferencia: string | null;
   /** Ya se ejecutó y le falta la transferencia que hace el administrador. */
   por_transferir: boolean;
 }
@@ -64,8 +69,10 @@ export interface DevolucionDetalle extends DevolucionResumen {
     detalle_id: number;
     variante: { id: number; sku: string; nombre: string };
     cantidad: number;
-    /** BUENO (vuelve al stock) o DEFECTUOSO (entra y sale como merma aprobada). */
+    /** Como se pidió: BUENO (vuelve al stock) o DEFECTUOSO (entra y sale como merma aprobada). */
     estado_producto: string;
+    /** Como se recibió al ejecutarla (puede no ser el que se pidió); antes, null. */
+    estado_recibido: string | null;
     monto: string;
   }[];
   resolucion: { fecha: Date; resuelta_por: UsuarioReferido; comentario: string | null } | null;
@@ -124,6 +131,19 @@ export interface VentasRecientes {
   desde: string;
   /** Cada venta con su monto: la lista nunca trae sumas. */
   ventas: VentaReciente[];
+}
+
+/**
+ * Cómo queda el dinero al ejecutarla, antes de ejecutarla (fn_reparto_ejecucion, la misma cuenta
+ * que hace la ejecución): lo devuelto paga primero lo nuevo de un cambio (`saldo`); si lo nuevo
+ * cuesta más, `por_cobrar` es la diferencia; si cuesta menos (o es una devolución), lo que sobra
+ * sale `efectivo` de la caja y `transferencia` del administrador, según cómo se pagó la factura.
+ */
+export interface RepartoEjecucion {
+  saldo: string;
+  por_cobrar: string;
+  efectivo: string;
+  transferencia: string;
 }
 
 /** Una factura buscada por su número, con lo que se puede devolver de ella. */
@@ -263,6 +283,7 @@ function aResumen(f: FilaDevolucion): DevolucionResumen {
     vence_el: f.vence_el,
     sucursal: ubicacion(f.sucursal_id, f.sucursal_codigo, f.sucursal_nombre),
     ejecutada_at: f.ejecutada_at,
+    monto_transferencia: f.monto_transferencia,
     por_transferir:
       f.estado === 'EJECUTADA' && Number(f.monto_transferencia) > 0 && f.transferida_at === null,
   };
@@ -515,10 +536,12 @@ export class DevolucionesService {
       nombre: string;
       cantidad: number;
       estado_producto: string;
+      estado_recibido: string | null;
       monto: string;
     }>`
       select dd.id, dd.venta_detalle_id as detalle_id, va.id as variante_id, va.sku,
-             pr.nombre || ' — ' || va.nombre as nombre, dd.cantidad, dd.estado_producto, dd.monto
+             pr.nombre || ' — ' || va.nombre as nombre, dd.cantidad, dd.estado_producto,
+             dd.estado_recibido, dd.monto
         from devolucion_detalle dd
         join venta_detalle vd on vd.id = dd.venta_detalle_id
         join variante va on va.id = vd.variante_id
@@ -537,6 +560,7 @@ export class DevolucionesService {
         variante: { id: l.variante_id, sku: l.sku, nombre: l.nombre },
         cantidad: l.cantidad,
         estado_producto: l.estado_producto,
+        estado_recibido: l.estado_recibido,
         monto: l.monto,
       })),
       resolucion:
@@ -633,9 +657,25 @@ export class DevolucionesService {
   }
 
   /**
+   * Antes de ejecutarla: cuánto se entrega en efectivo y cuánto queda por transferir (y, en un
+   * cambio, cuánto se cobra) si lo nuevo suma `total`. Lo calcula la base con la misma cuenta que
+   * la ejecución: la pantalla no reparte nada por su cuenta.
+   */
+  async reparto(usuarioId: number, id: number, total: string): Promise<RepartoEjecucion> {
+    await this.buscar(usuarioId, id); // una que el usuario no puede ver responde 404
+    const { rows } = await sql<RepartoEjecucion>`
+      select r.saldo::numeric(12,2)::text as saldo, r.por_cobrar::numeric(12,2)::text as por_cobrar,
+             r.efectivo::numeric(12,2)::text as efectivo,
+             r.transferencia::numeric(12,2)::text as transferencia
+        from fn_reparto_ejecucion(${id}, ${total}::numeric) r`.execute(this.bd.db);
+    return rows[0];
+  }
+
+  /**
    * 3) Se ejecuta en el turno abierto de la caja de la sesión. En un cambio, `items` y `pagos` son
    * los de la venta nueva; si su clave de idempotencia ya se usó en este mismo cambio (reintento
-   * de red), se responde con lo que ya quedó (`repetida`) sin ejecutar nada otra vez.
+   * de red), se responde con lo que ya quedó (`repetida`) sin ejecutar nada otra vez. `lineas`
+   * dice en qué estado se recibe cada línea, si no es el que se pidió.
    */
   async ejecutar(
     usuario: UsuarioAutenticado,
@@ -662,11 +702,12 @@ export class DevolucionesService {
           );
         }
       }
+      const estados = datos.lineas.map((l) => ({ linea_id: l.id, estado: l.estado }));
       await sql`
         select fn_ejecutar_devolucion(${usuario.id}, ${id}, ${turno},
                ${datos.items.length > 0 ? JSON.stringify(datos.items) : null}::jsonb,
                ${JSON.stringify(datos.pagos)}::jsonb, ${datos.clave_idempotencia ?? null}::uuid,
-               ${datos.notas})`.execute(trx);
+               ${datos.notas}, ${JSON.stringify(estados)}::jsonb)`.execute(trx);
       return false;
     });
     return { devolucion: await this.buscar(usuario.id, id), repetida };
@@ -688,25 +729,32 @@ export class DevolucionesService {
   }
 
   /**
-   * El ticket de la devolución en PDF (rollo de 80 mm). Cada impresión queda anotada
-   * (fn_registrar_impresion_devolucion): la primera es el original y las siguientes, COPIA.
+   * El ticket de la devolución para la impresora de 80 mm: en PDF o, con `formato: 'renglones'`,
+   * para la impresora por USB. Cada impresión queda anotada (fn_registrar_impresion_devolucion):
+   * la primera es el original —el que firma el cliente— y las siguientes, COPIA. Por USB dice si
+   * se abre la gaveta (fn_abre_gaveta_devolucion: el original, si sale efectivo de la caja).
    */
   async imprimir(
     usuarioId: number,
     id: number,
-  ): Promise<{ pdf: Buffer; numero: string; impresion: number }> {
+    formato: FormatoTicket = 'pdf',
+  ): Promise<TicketListo & { numero: string }> {
     const devolucion = await this.buscar(usuarioId, id);
     return this.bd.transaccion(usuarioId, async (trx) => {
       const { rows } = await sql<{ impresion: number }>`
         select fn_registrar_impresion_devolucion(${usuarioId}, ${id}) as impresion`.execute(trx);
       const impresion = rows[0].impresion;
       const numero = devolucion.numero ?? String(id);
-      // Dentro de la transacción: si el PDF no se pudiera armar, la impresión no queda anotada
-      const pdf = await ticketPdf(
+      // Dentro de la transacción: si el ticket no se pudiera armar, la impresión no queda anotada
+      const ticket = await armarTicket(
         renglonesTicketDevolucion(devolucion, impresion),
+        impresion,
         `Devolución ${numero}`,
+        formato,
       );
-      return { pdf, numero, impresion };
+      const gaveta = await sql<{ abre: boolean }>`
+        select fn_abre_gaveta_devolucion(${id}, ${impresion}) as abre`.execute(trx);
+      return { ...ticket, numero, abrirGaveta: gaveta.rows[0].abre };
     });
   }
 

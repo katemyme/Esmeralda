@@ -25,6 +25,7 @@ const devolucion: DevolucionDetalle = {
   vence_el: '2026-10-10',
   sucursal: { id: 2, codigo: 'LBR', nombre: 'Multicentro Las Brisas' },
   ejecutada_at: new Date('2026-10-08T15:10:00Z'), // 09:10 en Managua
+  monto_transferencia: '533.33',
   por_transferir: true,
   lineas: [
     {
@@ -33,6 +34,7 @@ const devolucion: DevolucionDetalle = {
       variante: { id: 9, sku: 'PERF-50', nombre: 'Perfume Oud — 50 ml' },
       cantidad: 1,
       estado_producto: 'BUENO',
+      estado_recibido: 'BUENO',
       monto: '400.00',
     },
     {
@@ -41,6 +43,7 @@ const devolucion: DevolucionDetalle = {
       variante: { id: 9, sku: 'PERF-50', nombre: 'Perfume Oud — 50 ml' },
       cantidad: 1,
       estado_producto: 'DEFECTUOSO',
+      estado_recibido: 'DEFECTUOSO',
       monto: '400.00',
     },
   ],
@@ -135,6 +138,24 @@ describe('ticket de devolución', () => {
     expect(texto.slice(6, 9)).toEqual(['COPIA', 'DEVOLUCIÓN', 'DEV-LBR-000001 | 08/10/2026 09:10']);
     expect(texto).toContain('    Transferido, ref. BAC-778899');
     expect(texto.join('\n')).not.toMatch(/la hace la administración/);
+  });
+
+  it('dice «Defectuoso» según cómo se recibió al ejecutarla, no según cómo se pidió', () => {
+    const recibida: DevolucionDetalle = {
+      ...devolucion,
+      lineas: [
+        { ...devolucion.lineas[0], estado_recibido: 'DEFECTUOSO' },
+        { ...devolucion.lineas[1], estado_recibido: 'BUENO' },
+      ],
+    };
+    const texto = comoTexto(renglonesTicketDevolucion(recibida, 1));
+    const primera = texto.indexOf('1 x Perfume Oud — 50 ml | 400.00');
+    expect(texto.slice(primera, primera + 3)).toEqual([
+      '1 x Perfume Oud — 50 ml | 400.00',
+      '    Defectuoso',
+      '1 x Perfume Oud — 50 ml | 400.00',
+    ]);
+    expect(texto.filter((t) => t === '    Defectuoso')).toHaveLength(1);
   });
 
   it('un cambio dice a qué factura se aplicó lo devuelto y solo muestra lo que se entregó', () => {
