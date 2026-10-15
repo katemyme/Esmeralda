@@ -88,8 +88,9 @@ _Actualizado el 2026-10-15._
   `es_de_hoy` de la API (no había alertas ni tareas que pidieran registrarlo). Poner el mismo valor que ya rige
   no cambia nada. La tarjeta «Tipo de cambio» de la pantalla Caja se ve siempre (también antes de elegir caja).
   En la base local ya regía 36.5 (lo registró María López el 15/10 a las 7:30): no se tocó ninguna fila; se le
-  aplicó la función nueva y se le quitó el permiso a la encargada (ver abajo).
-- **Terminada, pendiente de su revisión: F2b parte 2 (ejecutar en caja)**, hecha el 2026-10-15: ejecutar la
+  aplicó la función nueva y se le quitó el permiso a la encargada (ver abajo). **Aprobado por el dueño el
+  2026-10-15** (lo probó en su PC), con las decisiones tomadas al programarlo, tal como quedaron.
+- **F2b parte 2 (ejecutar en caja) aprobada por el dueño el 2026-10-15**, hecha ese mismo día: ejecutar la
   devolución o el cambio aprobado en el equipo de la sucursal donde está el cliente (con su turno abierto), con
   el estado en que llega cada producto; lo que se entrega en efectivo y lo que queda por transferir; el cambio
   armado como una venta (buscador y escáner, sin promoción), cobrando la diferencia o diciendo antes qué se le
@@ -98,8 +99,14 @@ _Actualizado el 2026-10-15._
   iPhone). Incluyó backend nuevo: el ticket de devolución en renglones para la impresora USB, la gaveta
   (`fn_abre_gaveta_devolucion`), el reparto antes de ejecutar (`GET /api/devoluciones/:id/reparto`,
   `fn_reparto_ejecucion`), `monto_transferencia` en la lista y el estado en que se recibe cada línea
-  (`devolucion_detalle.estado_recibido`, `lineas` al ejecutar). Las decisiones tomadas al programarla están en
-  «Devoluciones en pantalla» y esperan su confirmación. **No empezar F3 hasta su OK.**
+  (`devolucion_detalle.estado_recibido`, `lineas` al ejecutar). La probó toda en su PC («salió bien») y aprobó,
+  tal como quedaron, las decisiones tomadas al programarla (están en «Devoluciones en pantalla»; él las contó
+  como seis más las cuatro del tipo de cambio fijo). **Con esto F2 queda terminada.**
+- **Siguiente: F3 (inventario).** El plan se le presentó el 2026-10-15, con la recomendación de hacer antes F3b
+  (códigos y etiquetas). **No programar F3 ni F3b hasta su OK al plan.**
+- **Pendientes para más adelante** (el dueño los dejó anotados el 2026-10-15, al aprobar F2b parte 2): marcar
+  defectuosa solo una parte de una línea al recibir una devolución; que en un cambio el buscador cuente como
+  disponible lo que el cliente devuelve en buen estado; y un botón de copia para la factura nueva de un cambio.
 - **Ajuste de impresión (2026-10-09), pedido por el dueño al probar el ticket de cierre en su PC:** con la
   Xprinter instalada en Windows como «XP-80C» se cortaba el lado derecho (los montos y la hora). Los PDF de los
   tres tickets pasaron a una página de **72 mm** (ver «Convenciones del backend», Tickets en PDF) y el README
@@ -122,12 +129,13 @@ _Actualizado el 2026-10-15._
   2026-10-15, al terminar la parte 2 de F2b (con el tipo de cambio fijo).
 - Fuera de F2b parte 2 (decidir si entran más adelante; los tres primeros, por decisión del dueño): ejecutar
   desde el iPhone del administrador eligiendo la caja (la ruta lo admite con `caja_id`; la pantalla no lo
-  ofrece), el ticket digital de una devolución y la casilla «admite devolución» de las categorías (F4). Además:
-  marcar defectuosa solo una parte de una línea al recibirla (se elige por línea de la solicitud; para partirla,
-  se cancela y se pide otra), que el buscador del cambio cuente como disponible lo que el cliente devuelve en
-  buen estado (si se lleva lo mismo que devolvió y no hay más en la sucursal, la pantalla no lo deja; la base sí),
-  el botón de copia de la factura nueva del cambio (se reimprime desde la venta) y un reporte de transferencias
-  hechas. Sin probar con equipo real: la gaveta de verdad (los recorridos leen el pulso ESC p en la impresora
+  ofrece), el ticket digital de una devolución y la casilla «admite devolución» de las categorías (F4). Además,
+  los tres que el dueño dejó como pendientes (arriba): marcar defectuosa solo una parte de una línea al
+  recibirla (hoy se elige por línea de la solicitud; para partirla, se cancela y se pide otra), que el buscador
+  del cambio cuente como disponible lo que el cliente devuelve en buen estado (hoy, si se lleva lo mismo que
+  devolvió y no hay más en la sucursal, la pantalla no lo deja; la base sí) y el botón de copia de la factura
+  nueva del cambio (hoy se reimprime desde la venta). Y un reporte de transferencias hechas. Sin probar con
+  equipo real: la gaveta de verdad (los recorridos leen el pulso ESC p en la impresora
   simulada) y la impresión de dos tickets seguidos por USB en la Xprinter.
 - Fuera de F2b parte 1 (decidir si entran más adelante): avisar solo al administrador (notificaciones: las
   alertas siguen en el panel y el WhatsApp lo manda la persona); buscar una venta sin ticket desde el celular
@@ -469,7 +477,8 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
       aprobar», «Aprobadas» y «Todas». El inicio del administrador dice cuántas esperan su aprobación (un
       conteo, sin montos). La alerta de una devolución lleva a ella con «Ver la solicitud».
     - Una aprobada decía que ejecutarla en caja llegaba con la parte 2 (ya está: «Ejecutar en caja»).
-  - Decisiones tomadas al programar la parte 2 (el 2026-10-15, **pendientes de la revisión del dueño**):
+  - Decisiones tomadas al programar la parte 2 (el 2026-10-15; **aprobadas por el dueño** ese mismo día, tal
+    como quedaron):
     - **El estado al recibir** se elige por cada línea de la solicitud (como se pidió, de entrada) y se puede
       cambiar en los dos sentidos. Lo que se pidió bueno y llega defectuoso sale igual como merma **ya
       aprobada**, a nombre del administrador que aprobó la devolución, con un comentario que lo dice. Se guarda
@@ -507,7 +516,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 |---|---|
 | F1 | Base: sesión con refresco de token, pantalla de PIN y bloqueo por inactividad, registrar el equipo, menú según rol y permisos (y según si es la tablet o el celular), cliente de la API, archivo de tema, centro de alertas, prueba de cámara y de impresora. Primero el backend que hace falta (celular y PIN, ya hecho) |
 | F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio vigente, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
-| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes: hecha y pendiente de revisión |
+| F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes: aprobada. **F2 terminada** (2026-10-15) |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
 | F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
 | F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
