@@ -243,13 +243,13 @@ CREATE TABLE categoria (
   -- Lo vendido de esta categoría se puede devolver o cambiar. Nace en falso: lo decide el administrador.
   -- Las piezas de piercing y las perforaciones nunca se devuelven.
   admite_devolucion boolean NOT NULL DEFAULT false,
+  created_at   timestamptz  NOT NULL DEFAULT now(),
   -- Código de las piezas (F3b): prefijo + correlativo de 5 dígitos de la categoría (PTI-00001), que
   -- el sistema pone al crear la pieza si no se escribe uno (fn_nuevo_codigo). Toda categoría nueva
   -- lleva prefijo; la de perforaciones no lo usa (sus códigos son SRV-… y PAQ-…). El correlativo
   -- solo sube: un código no se reutiliza.
   prefijo      varchar(5)   UNIQUE CHECK (prefijo ~ '^[A-Z]{2,5}$'),
-  ultimo_codigo integer     NOT NULL DEFAULT 0 CHECK (ultimo_codigo BETWEEN 0 AND 99999),
-  created_at   timestamptz  NOT NULL DEFAULT now()
+  ultimo_codigo integer     NOT NULL DEFAULT 0 CHECK (ultimo_codigo BETWEEN 0 AND 99999)
 );
 
 CREATE TABLE producto (

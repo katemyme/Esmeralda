@@ -64,6 +64,13 @@ export default defineConfig({
       dependencies: ['devoluciones'],
       use: { browserName: 'chromium', hasTouch: true },
     },
+    {
+      // Etiquetas con QR, y leerlas con una cámara de mentira en la consulta y en la venta
+      name: 'etiquetas',
+      testMatch: 'etiquetas.spec.ts',
+      dependencies: ['ejecutar'],
+      use: { browserName: 'chromium' },
+    },
   ],
   webServer: [
     {

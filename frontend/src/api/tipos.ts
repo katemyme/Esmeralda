@@ -506,3 +506,27 @@ export interface ColaDeEquipo {
   automatica: boolean;
   tickets: TicketEnCola[];
 }
+
+/** Una pieza para imprimirle etiquetas (`/api/etiquetas/...`). */
+export interface PiezaEtiqueta {
+  variante_id: number;
+  /** El código de la pieza: lo único que lleva el QR. */
+  codigo: string;
+  producto: string;
+  variante: string;
+  categoria: string;
+  /** El nombre corto que lleva la etiqueta. */
+  nombre: string;
+  /** Lo que hay en la bodega, o lo que entró con la compra; null si no se puede ver. */
+  cantidad: number | null;
+}
+
+/** Una compra para sacar las etiquetas de lo que entró con ella. */
+export interface CompraParaEtiquetas {
+  id: number;
+  proveedor: string;
+  factura_numero: string;
+  fecha_factura: string;
+  estado: 'BORRADOR' | 'CONFIRMADA';
+  piezas: number;
+}

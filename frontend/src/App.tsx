@@ -50,6 +50,11 @@ const DevolucionEjecutar = lazy(() =>
   })),
 );
 
+// Y las etiquetas: se escanea el código de la pieza
+const Etiquetas = lazy(() =>
+  import('./pantallas/Etiquetas').then((modulo) => ({ default: modulo.Etiquetas })),
+);
+
 const VER_VENTAS = ['VENTAS_VER_PROPIAS', 'VENTAS_VER_TODAS'];
 const DEVOLUCIONES = ['DEVOLUCIONES_REGISTRAR', 'DEVOLUCIONES_APROBAR'];
 
@@ -248,6 +253,16 @@ function Contenido() {
             <ConPermiso permisos={['DEVOLUCIONES_REGISTRAR']}>
               <Suspense fallback={<Cargando />}>
                 <DevolucionEjecutar />
+              </Suspense>
+            </ConPermiso>
+          }
+        />
+        <Route
+          path="etiquetas"
+          element={
+            <ConPermiso permisos={['PRODUCTOS_GESTIONAR']}>
+              <Suspense fallback={<Cargando />}>
+                <Etiquetas />
               </Suspense>
             </ConPermiso>
           }

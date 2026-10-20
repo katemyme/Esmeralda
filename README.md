@@ -9,8 +9,8 @@ dos sucursales (Multicentro Las Américas y Multicentro Las Brisas) y una bodega
 |---|---|
 | Diseño funcional | Completo |
 | Base de datos (PostgreSQL 16) | v1.1 completa y probada |
-| Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios) |
-| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base), F2a (caja, consulta de precios, venta, tickets y cola de impresión) y F2b (devoluciones y cambios: solicitar, aprobar, ejecutar en caja y transferencias). Siguen inventario, administración y reportes |
+| Backend (Node + TypeScript, NestJS) | Completo: B1 (base), B2 (login, sesiones, equipos), B3 (panel de administración), B4 (catálogo), B5 (inventario y carga inicial), B6 (POS y caja), B7 (reportes, exportación y tareas programadas) y B8 (devoluciones y cambios); después, lo que pidió cada fase de las pantallas (la última, F3b: códigos automáticos y etiquetas) |
+| Frontend (React + Vite, PWA) | En marcha, por fases: hechas F1 (la base), F2a (caja, consulta de precios, venta, tickets y cola de impresión), F2b (devoluciones y cambios: solicitar, aprobar, ejecutar en caja y transferencias) y F3b (códigos y etiquetas con QR). Siguen inventario, administración y reportes |
 
 ## Estructura
 
@@ -535,6 +535,9 @@ Las pantallas: React + Vite, instalables como aplicación (PWA) en el celular, l
   que queda por transferir; el cambio armado como una venta (sin promoción) con la diferencia que se cobra o lo
   que se le devuelve; el ticket que firma el cliente (también por USB, con la gaveta), la copia para el cliente y
   la factura nueva; y las transferencias pendientes del administrador.
+- **F3b (códigos y etiquetas):** el código de cada pieza lo pone el sistema al crearla (`PTI-00001`); la pantalla
+  «Etiquetas» (solo el administrador) saca etiquetas con QR de piezas sueltas, de todo lo de la bodega o de lo
+  de una compra, en hoja carta (adhesivas) o una por página. Ver «Etiquetas» más abajo.
 
 Lo demás del menú aparece marcado «Pronto».
 
@@ -651,6 +654,37 @@ En el menú, «Devoluciones». Son para ventas de un turno ya cerrado (con la ca
 La lista tiene tres pestañas (para la sucursal: «Aprobadas», «Esperando aprobación» y «Todas»; para el
 administrador: «Por aprobar», «Aprobadas» y «Todas») y un buscador por factura, número de devolución o cliente.
 Cada devolución muestra su monto; nunca hay una suma.
+
+### Etiquetas
+
+Cada pieza nueva recibe su código al crearla: el prefijo de su categoría y un correlativo (`PTI-00001`,
+`PTI-00002`…). El código no cambia nunca y no se repite. Las piezas que ya tenían código (como `TIT-LAB-16-6`) y
+las que traen el de fábrica se quedan con el suyo. La etiqueta lleva un QR con solo el código, el código y el
+nombre corto (el producto y su variante), sin precio; la venta, la consulta de precios y las devoluciones la
+leen con la cámara.
+
+La pantalla «Etiquetas» es del administrador (primero para el celular):
+
+1. **Qué piezas.** «Piezas sueltas»: se buscan por nombre o código, o se escanean, y se elige cuántas copias.
+   «La bodega»: todo lo que hay, con tantas copias como existencias. «Una compra»: lo que entró con ella, con
+   tantas copias como lo recibido. En las dos últimas las copias se cambian, y 0 quiere decir «esa no».
+2. **El papel.** «Hoja carta» para hojas adhesivas: por defecto la de 30 por hoja (3 columnas × 10 filas de
+   66.7 × 25.4 mm); en «Cambiar las medidas de la hoja» se ponen filas, columnas, tamaño, márgenes y separaciones
+   de otra hoja. «Ya usadas en la primera hoja» deja en blanco las de una hoja empezada. «Dibujar el contorno»
+   sirve para probar en papel normal, poniéndolo encima de la hoja adhesiva a contraluz. «Una por página» es para
+   la impresora de etiquetas: cada etiqueta en su página, del ancho y alto que se escriban. Cada equipo recuerda
+   el papel de la última vez.
+3. **Imprimir** abre el diálogo de imprimir con el PDF. **Preparar el PDF** lo deja listo para compartirlo (en el
+   iPhone: AirPrint, guardar o enviarlo) o descargarlo.
+
+Al imprimir, en el diálogo de Chrome: **Escala → Personalizado, 100** (o «Tamaño real»). Si el PDF se achica o se
+estira, las etiquetas no caen sobre las adhesivas. Con la impresora de etiquetas, elija en su driver el mismo
+tamaño de etiqueta que en la pantalla.
+
+**Una prueba en la Xprinter del rollo de 80 mm** (la de los tickets, ya configurada como en «Preparar una PC de
+caja»): «Una por página», de **60 × 60 mm** (cuadrada o más alta que ancha, así sale derecha; una apaisada como
+50 × 30 también sale y se lee, pero Chrome puede girarla). En el diálogo: Destino **XP-80C**, Tamaño del papel
+**80(72.1) x 3276 mm**, Escala **Personalizado 100**. Cada etiqueta sale en su trozo de papel, cortado.
 
 ### Probar en la tablet y en el celular (túnel de Cloudflare)
 

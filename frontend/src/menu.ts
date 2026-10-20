@@ -28,7 +28,13 @@ export interface OpcionMenu {
 }
 
 /** Hasta qué fase están hechas las pantallas. */
-export const FASES_LISTAS: ReadonlySet<OpcionMenu['fase']> = new Set(['F1', 'F2a1', 'F2a2', 'F2b']);
+export const FASES_LISTAS: ReadonlySet<OpcionMenu['fase']> = new Set([
+  'F1',
+  'F2a1',
+  'F2a2',
+  'F2b',
+  'F3b',
+]);
 
 /**
  * El menú completo, en el orden en que se muestra. Cada quien ve solo lo que sus permisos le dan

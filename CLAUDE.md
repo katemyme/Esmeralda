@@ -15,7 +15,7 @@ bodega central (`BOD`, en casa del dueño). Todo el texto para el usuario va en 
 
 ## Estado actual
 
-_Actualizado el 2026-10-15._
+_Actualizado el 2026-10-20._
 
 - **Terminado y aprobado por el dueño:** esquema de base de datos v1.1 y los pasos **B1**, **B2** (etiqueta
   `guardado-b2`), **B3**, **B4**, **B5**, **B6** y **B7** del backend. Con B5 se hizo también todo lo que había quedado fuera de
@@ -105,6 +105,15 @@ _Actualizado el 2026-10-15._
 - **Plan de F3 aprobado por el dueño el 2026-10-20:** primero **F3b** (códigos y etiquetas, en una sola parte) y
   después **F3** (inventario) **en dos partes**, con su revisión entre cada una. Sus seis decisiones de F3 están en
   «Decisiones de negocio clave», «Inventario en pantalla». **No programar F3 hasta que apruebe F3b y lo pida.**
+- **F3b (códigos y etiquetas) terminada el 2026-10-20, pendiente de la revisión del dueño.** El código de cada
+  pieza nueva lo pone el sistema (prefijo de la categoría + correlativo de 5 dígitos: `PTI-00001`), nunca cambia
+  ni se repite; los de antes y los de fábrica se quedan. Pantalla «Etiquetas» (solo el administrador, primero
+  para celular): piezas sueltas (buscador y escáner), la bodega (copias = existencias) y una compra (copias = lo
+  recibido), con PDF en hoja carta con cuadrícula configurable o una por página. Carga inicial con el código
+  opcional (plantilla ajustada y comprobada en Excel). Un recorrido con una cámara de mentira comprueba que la
+  consulta y la venta leen el QR nuevo. Las decisiones que tomé al programarla están en «Decisiones de negocio
+  clave», «Códigos y etiquetas (F3b)», **para que el dueño las confirme**. Todas las categorías de la base local
+  tienen su prefijo; solo «Perforaciones» queda sin (no le hace falta).
 - **Pendientes para más adelante** (el dueño los dejó anotados el 2026-10-15, al aprobar F2b parte 2): marcar
   defectuosa solo una parte de una línea al recibir una devolución; que en un cambio el buscador cuente como
   disponible lo que el cliente devuelve en buen estado; y un botón de copia para la factura nueva de un cambio.
@@ -121,13 +130,13 @@ _Actualizado el 2026-10-15._
   impresión, con su Xprinter conectada a la PC por su driver y el diálogo normal. El túnel y el celular real,
   solo para la prueba final de cada fase. **Al terminar cada parte hay que darle los pasos:** qué ventana
   registrar como qué equipo, con qué usuario entrar en cada una y qué probar.
-- Pruebas en verde: 785 de base de datos, 618 del backend y, en el frontend, 113 de Vitest y 34 recorridos de
+- Pruebas en verde: 812 de base de datos, 640 del backend y, en el frontend, 127 de Vitest y 37 recorridos de
   Playwright. En GitHub (`main`) está hasta el ajuste de impresión (subido el 2026-10-09, a pedido del dueño);
-  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope, la parte 1 de F2b, el tipo de cambio fijo
-  ni la parte 2 de F2b. Las etiquetas se
+  no se han subido la parte 2 de F2a y su ajuste, el precio sin tope, la parte 1 de F2b, el tipo de cambio fijo,
+  la parte 2 de F2b ni F3b. Las etiquetas de Git se
   quedan en este equipo (en GitHub solo está la rama). La etiqueta `backend-completo` y el respaldo se movieron
-  el 2026-10-12 dos veces (al quitar el tope del precio y al terminar el backend de la parte 1 de F2b) y el
-  2026-10-15, al terminar la parte 2 de F2b (con el tipo de cambio fijo).
+  el 2026-10-12 dos veces (al quitar el tope del precio y al terminar el backend de la parte 1 de F2b), el
+  2026-10-15, al terminar la parte 2 de F2b (con el tipo de cambio fijo), y el 2026-10-20, al terminar F3b.
 - Fuera de F2b parte 2 (decidir si entran más adelante; los tres primeros, por decisión del dueño): ejecutar
   desde el iPhone del administrador eligiendo la caja (la ruta lo admite con `caja_id`; la pantalla no lo
   ofrece), el ticket digital de una devolución y la casilla «admite devolución» de las categorías (F4). Además,
@@ -138,6 +147,16 @@ _Actualizado el 2026-10-15._
   nueva del cambio (hoy se reimprime desde la venta). Y un reporte de transferencias hechas. Sin probar con
   equipo real: la gaveta de verdad (los recorridos leen el pulso ESC p en la impresora
   simulada) y la impresión de dos tickets seguidos por USB en la Xprinter.
+- Fuera de F3b (decidir si entran más adelante): un campo de «nombre corto» propio para la etiqueta (hoy es
+  «producto · variante», achicado y cortado si no cabe; iría con la pantalla de productos de F4); sacar etiquetas
+  desde la pantalla de una compra o de un producto (llegan con F4; mientras, en «Etiquetas» se elige la compra o
+  se busca la pieza); imprimir etiquetas por USB (ESC/POS) desde el celular del negocio (hoy es el PDF por el
+  diálogo, o compartirlo); escribir el código corto (`pti-12` por `PTI-00012`) en los buscadores (hoy se escribe
+  completo, o se escanea); avisar en pantalla cuando una etiqueta es tan chica que su QR cuesta leerlo. Sin probar
+  con equipo real: imprimir las etiquetas en papel (en la Xprinter del rollo, en una hoja adhesiva y en la
+  impresora de etiquetas que comprará el dueño) y leer un QR impreso con la webcam y con la cámara de un celular
+  (el recorrido lo lee de un video de mentira, con el mismo lector de la app); ver los PDF en la pantalla del
+  dueño (se vieron en Chrome al programarlos: QR, código y nombre en su lugar).
 - Fuera de F2b parte 1 (decidir si entran más adelante): avisar solo al administrador (notificaciones: las
   alertas siguen en el panel y el WhatsApp lo manda la persona); buscar una venta sin ticket desde el celular
   personal (decisión del dueño: solo en el equipo); corregir una solicitud (se cancela y se hace otra); los
@@ -192,7 +211,12 @@ _Actualizado el 2026-10-15._
   los permisos de los roles del sistema) y con la parte 2 de F2b
   (`esmeralda-local-2026-10-15-antes-de-ejecutar-en-caja.dump`: la columna `estado_recibido`, sus dos
   restricciones y las funciones nuevas; la función
-  `fn_ejecutar_devolucion` cambió de argumentos, así que la vieja se borró con `DROP FUNCTION`); los respaldos
+  `fn_ejecutar_devolucion` cambió de argumentos, así que la vieja se borró con `DROP FUNCTION`) y con F3b
+  (`esmeralda-local-2026-10-20-antes-de-los-codigos.dump`: las columnas `categoria.prefijo` y `ultimo_codigo`,
+  el disparador del código que no cambia, `fn_nuevo_codigo`, `fn_crear_variante`, `fn_actualizar_variante` y
+  `fn_guardar_categoria`, que cambió de argumentos y se borró la vieja; y los diez prefijos del seed: sus piezas
+  de antes se quedaron con su código). Una columna que se agrega con `ALTER TABLE` queda al final de la tabla:
+  en `01_esquema.sql` va también al final, para que el `pg_dump` de las dos bases sea igual. Los respaldos
   están en `C:\Respaldos\`.
 
 **Levantar el servidor** (desde `backend/`):
@@ -411,8 +435,9 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     No vale `0000`, `1234` ni parecidos. Se guarda con hash.
   - **La pantalla se bloquea** a los 3 minutos sin uso (`PANTALLA_BLOQUEO_MINUTOS`, de 1 a 30), solo en
     equipos registrados.
-  - **Código de los productos (va en F3b):** prefijo de la categoría + correlativo de 5 dígitos por categoría
-    (`PTI-00001`), uno por variante, en el campo `sku`; el QR de la etiqueta lleva solo el código.
+  - **Código de los productos (hecho en F3b; ver «Códigos y etiquetas»):** prefijo de la categoría +
+    correlativo de 5 dígitos por categoría (`PTI-00001`), uno por variante, en el campo `sku`; el QR de la
+    etiqueta lleva solo el código.
 
 - Venta, tickets y cola (F2a parte 2; decisiones tomadas al programarla el 2026-10-09 y aprobadas por el dueño
   el 2026-10-11). Las reglas de la cola están en la base:
@@ -502,6 +527,51 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
     - Si la respuesta de ejecutar se pierde (sin internet), la pantalla vuelve a preguntar la devolución: si ya
       se ejecutó, muestra el resultado; el cambio se reintenta con la misma clave sin duplicar.
 
+- Códigos y etiquetas (F3b; pedido del dueño del 2026-10-20). Lo que pidió:
+  - El código lo pone el sistema al crear la pieza: prefijo de la categoría + correlativo de 5 dígitos por
+    categoría (`PTI-00001`), uno por variante; nunca cambia ni se reutiliza, y nunca choca con uno que ya exista.
+  - Prefijos: PTI (Piercing titanio), PAC (Piercing acero), PBI (Piercing bioflex), CUI (Cuidado posterior), JPL
+    (Joyería plata 925), JXU (Joyería xuping), JDU (Joyería estilo Dubái), ADA (Accesorios dama), ACA (Accesorios
+    caballero), PER (Perfumería). Una categoría nueva necesita prefijo (su pantalla llega en F4).
+  - Los códigos que ya existen (como TIT-LAB-16-8) y los de fábrica se quedan; su etiqueta lleva ese mismo código.
+  - En la plantilla de carga inicial el código es opcional.
+  - La etiqueta lleva QR (solo el código), el código y el nombre corto; sin precio. Dos PDF: hoja carta con
+    cuadrícula configurable (filas, columnas, márgenes y tamaño) y una etiqueta por página de tamaño configurable.
+  - Pantalla «Etiquetas», solo para el administrador, primero para celular: piezas sueltas eligiendo las copias,
+    todo lo de la bodega (copias = existencias, editable) y lo de una compra (copias = cantidad comprada,
+    editable), con buscador además del escáner.
+  - Decisiones tomadas al programarla (el 2026-10-20), **pendientes de que el dueño las confirme**:
+    1. **Ningún código cambia**, tampoco uno escrito a mano (uno de antes o el de fábrica): va en las etiquetas.
+       Uno mal escrito no se corrige: se desactiva la pieza y se crea otra. El de barras sí se puede editar.
+    2. **El prefijo** lleva de 2 a 5 letras y no se repite; se puede cambiar mientras la categoría no haya dado
+       ningún código, y después ya no (el usado no queda libre para otra). Una pieza que se pasa a otra
+       categoría conserva su código.
+    3. **Nunca choca:** el correlativo se salta un código que ya exista como código **o como código de barras**.
+       Llega hasta 99999 por categoría.
+    4. **El nombre corto** es «producto · variante» (sin «Única»), con la letra achicada hasta 5 puntos para que
+       quepa y cortado con «…» si ni así: no hay un campo aparte que escribir.
+    5. **La etiqueta de una pieza con código de fábrica** lleva su código del sistema (`sku`); el de barras de
+       fábrica sigue sirviendo para escanear el empaque.
+    6. **«Cantidad comprada» = lo que se recibió** (lo que entró a la bodega), no lo facturado. Se pueden elegir
+       las compras confirmadas y las en borrador (las canceladas no). Las compras piden además `INVENTARIO_ENTRADA`.
+    7. **La pantalla** tiene tres pestañas, cada una con su lista (no se mezclan): en piezas sueltas las copias
+       van de 1 a 500 y se quitan con un botón; en la bodega y en la compra, de 0 («esa no») a 500. Hasta 3000
+       etiquetas por PDF.
+    8. **La hoja carta** viene con las medidas de las adhesivas más comunes, 30 por hoja (3 × 10 de 66.7 × 25.4 mm,
+       como la Avery 5160). Agregué «Ya usadas en la primera hoja» (para aprovechar una hoja empezada) y «Dibujar
+       el contorno» (para probar en papel normal).
+    9. **Una por página** viene en 50 × 30 mm. Apaisada, el QR va a la izquierda y el texto a su lado; alta o
+       cuadrada, el QR arriba. El PDF pide imprimirse a tamaño real.
+    10. **Cada equipo recuerda el papel** de la última vez (en el navegador; las ya usadas y el contorno, no).
+    11. **Imprimir etiquetas no se anota** (no hay original ni copia): se imprimen las veces que haga falta.
+    12. **«Solo en la bodega»** no lo controla el equipo: es solo del administrador (`PRODUCTOS_GESTIONAR`), desde
+        cualquier lado (también su iPhone, donde «Preparar el PDF» lo comparte para AirPrint).
+    13. **Carga inicial:** una pieza sin código se reconoce por su categoría, su producto y su variante (así no se
+        duplica al volver a cargar el archivo) y en InventarioInicial y PreciosEspeciales se elige como
+        «Producto — Variante» (una columna P nueva en Productos arma esa lista). La hoja Categorias trae el prefijo
+        en una columna C nueva. A una categoría que ya existe no se le cambia el prefijo (si el archivo trae otro,
+        se avisa); si no tenía, se le pone. La hoja Revision cuenta también las categorías nuevas sin prefijo.
+
 - Inventario en pantalla (F3; decisiones del dueño del 2026-10-20 al aprobar el plan, **todavía sin programar**).
   Se programa en dos partes, con su revisión entre una y otra, después de F3b:
   1. **Recepción a ciegas con un solo reconteo**, como el cierre de caja: quien recibe ve qué piezas vienen, pero
@@ -534,7 +604,7 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
 | F2a | En dos partes: (1) caja y consulta de precios, aprobada; (2) venta, tickets y cola, aprobada. Caja y venta: abrir turno, tipo de cambio vigente, consulta de precios y existencias, vender (buscador y escaneo, paquetes, promoción, pagos mixtos C$/US$, vuelto; también desde el celular), anular, movimientos de efectivo, cierre ciego, tickets por WebUSB, cola de impresión y ticket digital |
 | F2b | Devoluciones y cambios, en dos partes: (1) buscar la factura por número o QR, «No tiene el ticket», solicitar, lista, aprobar o rechazar, cancelar y aviso por WhatsApp: aprobada; (2) ejecutar en caja, ticket por USB, gaveta y transferencias pendientes: aprobada. **F2 terminada** (2026-10-15) |
 | F3 | Inventario: envíos con recepción por escaneo, mermas y conteos con su aprobación, existencias y kardex |
-| F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo en la bodega) |
+| F3b | Códigos y etiquetas: código automático de cada producto y PDF de etiquetas con QR (solo el administrador). Hecha el 2026-10-20, pendiente de la revisión del dueño |
 | F4 | Administración: usuarios, roles, sucursales, equipos, categorías, productos y precios, compras, promociones, parámetros, historial del tipo de cambio, carga inicial |
 | F5 | Reportes: filtros por periodo, comparación con el periodo anterior, gráficas, descargas en Excel y PDF |
 | F6 | Puesta en producción: VPS en internet con dominio y HTTPS |
@@ -684,6 +754,21 @@ productos. Se programa **una fase a la vez** y se espera su revisión antes de l
   ese filtro. El recorrido `e2e/devoluciones-caja.spec.ts` (proyecto `ejecutar`) va después de
   `devoluciones.spec.ts`: abre la caja de Las Américas, vende cuatro facturas, la cierra, el administrador
   solicita y aprueba por la API, la vuelve a abrir y la deja abierta; enciende la gaveta y la apaga al final.
+- Etiquetas (F3b): `pantallas/Etiquetas.tsx` (`/etiquetas`, `PRODUCTOS_GESTIONAR`; se carga aparte: trae el
+  escáner). Tres pestañas, cada una con su lista: piezas sueltas (buscador y escáner de `/etiquetas/piezas`), la
+  bodega y una compra (la pestaña, solo con `INVENTARIO_ENTRADA`). La lógica sin React en `etiquetas/papel.ts`:
+  el papel (`HOJA_DE_30`, `PAPEL_INICIAL`), `problemasDelPapel()` (las mismas reglas que la API: rangos, que la
+  cuadrícula quepa en la carta, las ya usadas), `cuerpoDelPdf()` (solo lo que lleva copias) y
+  `papelGuardado()` / `guardarPapel()` (en `localStorage`, con try/catch: una comodidad del equipo; nunca las ya
+  usadas ni el contorno). El PDF lo arma la API; la pantalla no dibuja etiquetas. Se pide una vez por lo elegido
+  (reimprimir lo mismo no lo vuelve a pedir). «Preparar el PDF» lo comparte donde se puede (iPhone) o deja el
+  enlace «Abrir el PDF». `CampoCopias` deja borrar el número mientras se escribe (no salta a 1). Las medidas se
+  escriben como texto (aceptan la coma decimal) y se convierten al usarlas.
+- El recorrido `e2e/etiquetas.spec.ts` (proyecto `etiquetas`, después de `ejecutar`) crea por la API una pieza sin
+  código, descarga su PDF y lee su QR con una **cámara de mentira**: un video Y4M con el QR (armado con `matrizQr`
+  del backend compilado, `backend/dist/exportacion/qr.js`, que `e2e/servidor-api.mjs` compila antes) que se le da
+  a un Chrome que lanza la propia prueba (`--use-file-for-fake-video-capture`). Así se prueba el lector de la app
+  (zxing, el mismo de la webcam de la PC) en la consulta y en la venta. Cada código, su Chrome.
 - Pantalla encendida: `equipo/despierta.tsx` (`PantallaDespierta` envuelve la app; `useDespierta()` da el
   estado). Activa con sesión en un equipo registrado o en su pantalla de PIN con el equipo abierto.
 - Equipo: `src/equipo/impresora.ts` (WebUSB propio, filtra por clase USB de impresora; `enviar()` lanza si
