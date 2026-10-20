@@ -102,8 +102,9 @@ _Actualizado el 2026-10-15._
   (`devolucion_detalle.estado_recibido`, `lineas` al ejecutar). La probó toda en su PC («salió bien») y aprobó,
   tal como quedaron, las decisiones tomadas al programarla (están en «Devoluciones en pantalla»; él las contó
   como seis más las cuatro del tipo de cambio fijo). **Con esto F2 queda terminada.**
-- **Siguiente: F3 (inventario).** El plan se le presentó el 2026-10-15, con la recomendación de hacer antes F3b
-  (códigos y etiquetas). **No programar F3 ni F3b hasta su OK al plan.**
+- **Plan de F3 aprobado por el dueño el 2026-10-20:** primero **F3b** (códigos y etiquetas, en una sola parte) y
+  después **F3** (inventario) **en dos partes**, con su revisión entre cada una. Sus seis decisiones de F3 están en
+  «Decisiones de negocio clave», «Inventario en pantalla». **No programar F3 hasta que apruebe F3b y lo pida.**
 - **Pendientes para más adelante** (el dueño los dejó anotados el 2026-10-15, al aprobar F2b parte 2): marcar
   defectuosa solo una parte de una línea al recibir una devolución; que en un cambio el buscador cuente como
   disponible lo que el cliente devuelve en buen estado; y un botón de copia para la factura nueva de un cambio.
@@ -500,6 +501,21 @@ docs/                  Modelo de datos (HTML) y plantilla Excel de carga inicial
       anota desde el detalle de la devolución.
     - Si la respuesta de ejecutar se pierde (sin internet), la pantalla vuelve a preguntar la devolución: si ya
       se ejecutó, muestra el resultado; el cambio se reintenta con la misma clave sin duplicar.
+
+- Inventario en pantalla (F3; decisiones del dueño del 2026-10-20 al aprobar el plan, **todavía sin programar**).
+  Se programa en dos partes, con su revisión entre una y otra, después de F3b:
+  1. **Recepción a ciegas con un solo reconteo**, como el cierre de caja: quien recibe ve qué piezas vienen, pero
+     no cuántas. Si lo escaneado no cuadra, la pantalla dice «Revise: …» (qué piezas) sin decir cantidades; si al
+     recontar sigue igual, se recibe con lo contado y le llega la alerta al administrador.
+  2. **Lo que falta lo resuelve el administrador**, pieza por pieza, desde el envío: «volvió a la bodega»,
+     «apareció en la sucursal» o «se perdió» (la pérdida, con su costo, en el reporte de mermas). **Lo que sobra:**
+     la pantalla avisa «no viene en este envío, apártela» y no entra al inventario; él lo corrige con otro envío.
+  3. **Solo el administrador crea y envía envíos**, desde cualquier ubicación (también de una sucursal a otra o de
+     vuelta a la bodega).
+  4. **Se puede vender mientras se cuenta:** cada pieza se compara con lo que había a la hora en que se contó.
+  5. **Un conteo enviado** el administrador lo aplica, lo descarta o pide que vuelvan a contar algunas piezas (ellas
+     ven cuáles, nunca cuántas había). Un conteo ya enviado solo lo descarta él.
+  6. **Mermas solo desde el equipo de la sucursal**, no desde el celular personal.
 
 Documentos de referencia (claude.ai): "Sistema Esmeralda — Documento de diseño" y
 "Sistema Esmeralda — Resumen para la dirección".
