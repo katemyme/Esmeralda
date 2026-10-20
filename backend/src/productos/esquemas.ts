@@ -14,11 +14,17 @@ const MENSAJE_GAMA = 'La gama se indica con su id (o null si la pieza no tiene g
 const MENSAJE_ATRIBUTOS =
   'Los atributos van como un objeto de hasta 20 datos, p. ej. { "material": "titanio", "calibre": "16G" }';
 
+/**
+ * El código de la pieza (sku). Es opcional: sin él, la base le pone el siguiente de su categoría
+ * (PTI-00001). Uno escrito (el de fábrica, o uno de antes) se respeta. Después no cambia.
+ */
 const sku = z
-  .string({ error: 'Escriba el SKU' })
+  .string({ error: 'El código debe ser un texto' })
   .trim()
   .toUpperCase()
-  .regex(/^\S{1,40}$/, 'El SKU debe tener de 1 a 40 caracteres, sin espacios');
+  .regex(/^\S{0,40}$/, 'El código debe tener hasta 40 caracteres, sin espacios')
+  .nullish()
+  .transform((codigo) => codigo || null);
 
 const codigoBarras = textoOpcional(40, 'El código de barras es demasiado largo').refine(
   (valor) => valor === null || !/\s/.test(valor),
@@ -41,7 +47,7 @@ const nombreProducto = z
   .min(2, 'El nombre del producto debe tener al menos 2 caracteres')
   .max(120, 'El nombre del producto es demasiado largo');
 
-/** Variante nueva. Sin nombre queda "Única"; sin costo, 0. */
+/** Variante nueva. Sin código, lo pone el sistema; sin nombre queda "Única"; sin costo, 0. */
 export const esquemaCrearVariante = z.object({
   sku,
   nombre: textoOpcional(120, 'El nombre de la variante es demasiado largo'),
@@ -59,7 +65,7 @@ export type DatosCrearVariante = z.output<typeof esquemaCrearVariante>;
 /**
  * Edición de una variante (sin precio ni costo: eso va por /precio). Se envían todos los datos;
  * la gama y los atributos son obligatorios porque borrarlos por omisión cambiaría cómo se cobra
- * el paquete.
+ * el paquete. El código no cambia: se puede omitir, y uno distinto del que tiene se rechaza.
  */
 export const esquemaActualizarVariante = z.object({
   sku,

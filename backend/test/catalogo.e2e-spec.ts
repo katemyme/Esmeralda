@@ -127,9 +127,11 @@ describe('Catálogo', () => {
         descripcion: 'Joyería de titanio ASTM F-136',
         activa: true,
         admite_devolucion: false,
+        prefijo: 'PTI', // el de los códigos de sus piezas: PTI-00001
         productos: 1,
       });
       expect(categorias.find((c) => c.nombre === 'Perfumería')?.productos).toBe(0);
+      expect(categorias.find((c) => c.nombre === 'Perforaciones')?.prefijo).toBeNull();
       // Lo que se puede devolver o cambiar: joyería, accesorios, perfumería y cuidado posterior
       const admite = (nombre: string) =>
         categorias.find((c) => c.nombre === nombre)?.admite_devolucion;
@@ -152,7 +154,7 @@ describe('Catálogo', () => {
 
     it('POST /api/categorias crea la categoría', async () => {
       const { body } = await comoJefa('post', '/api/categorias')
-        .send({ nombre: ' Relojes B4 ', descripcion: '  ' })
+        .send({ nombre: ' Relojes B4 ', descripcion: '  ', prefijo: ' rbq ' })
         .expect(201);
       expect(body.categoria).toEqual({
         id: expect.any(Number),
@@ -160,9 +162,40 @@ describe('Catálogo', () => {
         descripcion: null,
         activa: true,
         admite_devolucion: false, // nace sin la casilla: la marca el administrador
+        prefijo: 'RBQ',
+        ultimo_codigo: 0,
         productos: 0,
       });
       propio.categoria = body.categoria.id;
+    });
+
+    it('el prefijo de los códigos: obligatorio al crearla, sin repetir el de otra', async () => {
+      const sinPrefijo = await comoJefa('post', '/api/categorias')
+        .send({ nombre: 'Sin prefijo B4' })
+        .expect(400);
+      expect(sinPrefijo.body.errores).toEqual([
+        {
+          campo: 'prefijo',
+          mensaje: 'Indique el prefijo de los códigos de la categoría (p. ej. PTI)',
+        },
+      ]);
+      const mal = await comoJefa('post', '/api/categorias')
+        .send({ nombre: 'Sin prefijo B4', prefijo: 'P1' })
+        .expect(400);
+      expect(mal.body.errores).toEqual([
+        {
+          campo: 'prefijo',
+          mensaje:
+            'El prefijo de los códigos lleva de 2 a 5 letras, sin tildes, números ni espacios (p. ej. PTI)',
+        },
+      ]);
+      await comoJefa('post', '/api/categorias')
+        .send({ nombre: 'Sin prefijo B4', prefijo: 'pti' })
+        .expect(422)
+        .expect({
+          codigo: 'REGLA_NEGOCIO',
+          mensaje: 'El prefijo PTI ya lo usa la categoría "Piercing titanio"',
+        });
     });
 
     it('PUT /api/categorias/:id/admite-devolucion: la casilla, solo de quien aprueba devoluciones', async () => {
@@ -213,13 +246,15 @@ describe('Catálogo', () => {
 
     it('nombre repetido → 409; datos inválidos → 400', async () => {
       const repetida = await comoJefa('post', '/api/categorias')
-        .send({ nombre: 'Relojes B4' })
+        .send({ nombre: 'Relojes B4', prefijo: 'RBX' })
         .expect(409);
       expect(repetida.body).toMatchObject({
         codigo: 'DUPLICADO',
         restriccion: 'categoria_nombre_key',
       });
-      const invalida = await comoJefa('post', '/api/categorias').send({ nombre: 'R' }).expect(400);
+      const invalida = await comoJefa('post', '/api/categorias')
+        .send({ nombre: 'R', prefijo: 'RBX' })
+        .expect(400);
       expect(invalida.body.errores).toEqual([
         { campo: 'nombre', mensaje: 'El nombre de la categoría debe tener al menos 2 caracteres' },
       ]);
@@ -628,10 +663,46 @@ describe('Catálogo', () => {
         .expect({ codigo: 'REGLA_NEGOCIO', mensaje: 'El producto 999999 no existe' });
     });
 
+    it('una pieza sin código recibe el siguiente de su categoría; después el prefijo no cambia', async () => {
+      const { body } = await comoJefa('post', '/api/productos')
+        .send({
+          categoria_id: propio.categoria,
+          nombre: 'Reloj sin código B4',
+          variantes: [{ precio_venta: 500 }, { sku: '  ', nombre: 'Dorado', precio_venta: 600 }],
+        })
+        .expect(201);
+      const codigos = (body.producto as ProductoCatalogo).variantes.map((v) => [v.nombre, v.sku]);
+      expect(codigos).toEqual(
+        expect.arrayContaining([
+          ['Única', 'RBQ-00001'],
+          ['Dorado', 'RBQ-00002'],
+        ]),
+      );
+      const otra = await comoJefa('post', `/api/productos/${body.producto.id}/variantes`)
+        .send({ nombre: 'Rosa', precio_venta: 650 })
+        .expect(201);
+      expect(
+        (otra.body.producto as ProductoCatalogo).variantes.find((v) => v.nombre === 'Rosa')?.sku,
+      ).toBe('RBQ-00003');
+      // se encuentra por su código, como cuando se escanea el QR de su etiqueta
+      expect((await listarProductos('?buscar=rbq-00003')).productos[0]?.id).toBe(body.producto.id);
+
+      const { body: lista } = await comoJefa('get', '/api/categorias').expect(200);
+      const categoria = (lista.categorias as CategoriaCatalogo[]).find(
+        (c) => c.id === propio.categoria,
+      );
+      expect(categoria).toMatchObject({ prefijo: 'RBQ', ultimo_codigo: 3 });
+      const cambiar = await comoJefa('put', `/api/categorias/${propio.categoria}`)
+        .send({ nombre: categoria?.nombre, prefijo: 'RBZ' })
+        .expect(422);
+      expect(cambiar.body.mensaje).toBe(
+        `La categoría "${categoria?.nombre}" ya dio códigos con el prefijo RBQ: no se puede cambiar`,
+      );
+    });
+
     it('PUT /api/variantes/:id edita la variante sin tocar su precio', async () => {
       const { body } = await comoJefa('put', `/api/variantes/${propio.relojPlateado}`)
         .send({
-          sku: 'rel-b4-01p',
           nombre: 'Plateado mate',
           codigo_barras: '7509990000555',
           gama_id: ids.titanio,
@@ -642,7 +713,7 @@ describe('Catálogo', () => {
         (body.producto as ProductoCatalogo).variantes.find((v) => v.id === propio.relojPlateado),
       ).toEqual({
         id: propio.relojPlateado,
-        sku: 'REL-B4-01P',
+        sku: 'REL-B4-01', // sin código en el cuerpo, se queda el que tiene
         codigo_barras: '7509990000555',
         nombre: 'Plateado mate',
         atributos: { color: 'plateado' },
@@ -653,8 +724,28 @@ describe('Catálogo', () => {
         activo: true,
       });
 
+      // el código no cambia: va impreso en las etiquetas (el mismo, en minúsculas, sí se acepta)
+      await comoJefa('put', `/api/variantes/${propio.relojPlateado}`)
+        .send({ sku: 'rel-b4-01', nombre: 'Plateado mate', gama_id: ids.titanio, atributos: {} })
+        .expect(200);
+      await comoJefa('put', `/api/variantes/${propio.relojPlateado}`)
+        .send({ sku: 'REL-B4-01P', gama_id: ids.titanio, atributos: {} })
+        .expect(422)
+        .expect({
+          codigo: 'REGLA_NEGOCIO',
+          mensaje: 'El código de una pieza no cambia (REL-B4-01): va impreso en sus etiquetas',
+        });
+      await comoJefa('put', `/api/variantes/${propio.relojPlateado}`)
+        .send({
+          nombre: 'Plateado mate',
+          codigo_barras: '7509990000555',
+          gama_id: ids.titanio,
+          atributos: { color: 'plateado' },
+        })
+        .expect(200);
+
       const sinGama = await comoJefa('put', `/api/variantes/${propio.relojPlateado}`)
-        .send({ sku: 'REL-B4-01P', atributos: {} })
+        .send({ sku: 'REL-B4-01', atributos: {} })
         .expect(400);
       expect(sinGama.body.errores).toEqual([
         {

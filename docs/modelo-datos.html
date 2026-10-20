@@ -272,6 +272,8 @@ erDiagram
     varchar nombre UK
     boolean activa
     boolean admite_devolucion "la marca el administrador"
+    varchar prefijo UK "del código: PTI"
+    int ultimo_codigo "PTI-00001, solo sube"
   }
   PRODUCTO {
     bigint id PK
@@ -280,7 +282,7 @@ erDiagram
   }
   VARIANTE {
     bigint id PK
-    varchar sku UK
+    varchar sku UK "el código: no cambia"
     varchar codigo_barras UK
     numeric precio_venta
     numeric costo "promedio ponderado"

@@ -90,7 +90,7 @@ describe('Devoluciones en caja (pantalla de ejecutar)', () => {
     gala.celular = await tokenDeAcceso(app, 'gala.dec', 'Devolver#2026');
 
     const categoria = await comoJefa('post', '/api/categorias')
-      .send({ nombre: 'Regalos DEC' })
+      .send({ nombre: 'Regalos DEC', prefijo: 'RDEC' })
       .expect(201);
     await comoJefa('put', `/api/categorias/${categoria.body.categoria.id}/admite-devolucion`)
       .send({ admite_devolucion: true })

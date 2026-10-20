@@ -243,6 +243,12 @@ CREATE TABLE categoria (
   -- Lo vendido de esta categoría se puede devolver o cambiar. Nace en falso: lo decide el administrador.
   -- Las piezas de piercing y las perforaciones nunca se devuelven.
   admite_devolucion boolean NOT NULL DEFAULT false,
+  -- Código de las piezas (F3b): prefijo + correlativo de 5 dígitos de la categoría (PTI-00001), que
+  -- el sistema pone al crear la pieza si no se escribe uno (fn_nuevo_codigo). Toda categoría nueva
+  -- lleva prefijo; la de perforaciones no lo usa (sus códigos son SRV-… y PAQ-…). El correlativo
+  -- solo sube: un código no se reutiliza.
+  prefijo      varchar(5)   UNIQUE CHECK (prefijo ~ '^[A-Z]{2,5}$'),
+  ultimo_codigo integer     NOT NULL DEFAULT 0 CHECK (ultimo_codigo BETWEEN 0 AND 99999),
   created_at   timestamptz  NOT NULL DEFAULT now()
 );
 
@@ -265,7 +271,7 @@ CREATE INDEX ix_producto_nombre_trgm ON producto USING gin (lower(nombre) gin_tr
 CREATE TABLE variante (
   id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   producto_id    bigint        NOT NULL REFERENCES producto(id),
-  sku            varchar(40)   NOT NULL UNIQUE,
+  sku            varchar(40)   NOT NULL UNIQUE,  -- el código de la pieza: va en su etiqueta y no cambia
   codigo_barras  varchar(40)   UNIQUE,
   nombre         varchar(120)  NOT NULL DEFAULT 'Única',   -- ej. "Titanio F-136 · 16G · 8 mm"
   atributos      jsonb         NOT NULL DEFAULT '{}'::jsonb, -- {"material":"titanio","calibre":"16G","largo_mm":8}
@@ -279,6 +285,19 @@ CREATE TABLE variante (
 );
 CREATE INDEX ix_variante_producto ON variante (producto_id);
 CREATE INDEX ix_variante_nombre_trgm ON variante USING gin (lower(nombre) gin_trgm_ops);
+
+-- El código de una pieza (sku) no cambia nunca, lo haya puesto el sistema o se haya escrito a mano
+-- (uno de antes o el de fábrica): va impreso en sus etiquetas.
+CREATE OR REPLACE FUNCTION fn_variante_codigo_fijo() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.sku IS DISTINCT FROM OLD.sku THEN
+    RAISE EXCEPTION 'El código de una pieza no cambia (%): va impreso en sus etiquetas', OLD.sku;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tg_variante_codigo_fijo BEFORE UPDATE OF sku ON variante
+  FOR EACH ROW EXECUTE FUNCTION fn_variante_codigo_fijo();
 
 CREATE TABLE historial_precio (
   id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -3020,26 +3039,84 @@ END $$;
 -- ---------------------------------------------------------------------
 -- Crea (p_id NULL) o edita una categoría. "Perforaciones" es del sistema: fn_crear_perforacion
 -- la busca por su nombre.
-CREATE OR REPLACE FUNCTION fn_guardar_categoria(p_admin bigint, p_id integer, p_nombre text, p_descripcion text DEFAULT NULL)
-RETURNS integer
+-- El prefijo de los códigos de sus piezas (PTI → PTI-00001) es obligatorio en una categoría nueva.
+-- Al editar, NULL lo deja como está; cambiarlo solo se puede mientras la categoría no haya dado
+-- ningún código (los que ya dio siguen igual y el prefijo usado no queda libre para otra).
+CREATE OR REPLACE FUNCTION fn_guardar_categoria(
+  p_admin bigint, p_id integer, p_nombre text, p_descripcion text DEFAULT NULL, p_prefijo text DEFAULT NULL
+) RETURNS integer
 LANGUAGE plpgsql AS $$
-DECLARE v_id integer;
+DECLARE
+  v_id      integer;
+  c         categoria%ROWTYPE;
+  v_prefijo text := nullif(upper(trim(p_prefijo)), '');
+  v_otra    text;
 BEGIN
   PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
+  IF p_id IS NOT NULL THEN
+    SELECT * INTO c FROM categoria WHERE id = p_id FOR UPDATE;
+    IF c.id IS NULL THEN RAISE EXCEPTION 'La categoría % no existe', p_id; END IF;
+  ELSIF v_prefijo IS NULL THEN
+    RAISE EXCEPTION 'Indique el prefijo de los códigos de la categoría (de 2 a 5 letras, p. ej. PTI)';
+  END IF;
+  IF v_prefijo IS NOT NULL AND v_prefijo IS DISTINCT FROM c.prefijo THEN
+    IF v_prefijo !~ '^[A-Z]{2,5}$' THEN
+      RAISE EXCEPTION 'El prefijo de los códigos lleva de 2 a 5 letras, sin tildes, números ni espacios (p. ej. PTI)';
+    END IF;
+    SELECT nombre INTO v_otra FROM categoria WHERE prefijo = v_prefijo;
+    IF v_otra IS NOT NULL THEN
+      RAISE EXCEPTION 'El prefijo % ya lo usa la categoría "%"', v_prefijo, v_otra;
+    END IF;
+    IF c.ultimo_codigo > 0 THEN
+      RAISE EXCEPTION 'La categoría "%" ya dio códigos con el prefijo %: no se puede cambiar', c.nombre, c.prefijo;
+    END IF;
+  END IF;
+
   IF p_id IS NULL THEN
-    INSERT INTO categoria (nombre, descripcion)
-    VALUES (trim(p_nombre), nullif(trim(p_descripcion), ''))
+    INSERT INTO categoria (nombre, descripcion, prefijo)
+    VALUES (trim(p_nombre), nullif(trim(p_descripcion), ''), v_prefijo)
     RETURNING id INTO v_id;
   ELSE
-    IF (SELECT nombre FROM categoria WHERE id = p_id) = 'Perforaciones' AND trim(p_nombre) <> 'Perforaciones' THEN
+    IF c.nombre = 'Perforaciones' AND trim(p_nombre) <> 'Perforaciones' THEN
       RAISE EXCEPTION 'La categoría "Perforaciones" es del sistema: no se puede renombrar';
     END IF;
-    UPDATE categoria SET nombre = trim(p_nombre), descripcion = nullif(trim(p_descripcion), '')
+    UPDATE categoria
+       SET nombre = trim(p_nombre), descripcion = nullif(trim(p_descripcion), ''),
+           prefijo = coalesce(v_prefijo, prefijo)
      WHERE id = p_id
     RETURNING id INTO v_id;
-    IF v_id IS NULL THEN RAISE EXCEPTION 'La categoría % no existe', p_id; END IF;
   END IF;
   RETURN v_id;
+END $$;
+
+-- El código que el sistema le pone a una pieza nueva: el prefijo de su categoría y el siguiente
+-- correlativo de 5 dígitos (PTI-00001). El correlativo es de la categoría y solo sube: un código no
+-- se reutiliza aunque la pieza se desactive. Si el que toca ya lo tiene otra pieza (escrito a mano o
+-- de fábrica, como código o como código de barras), se salta. Bloquea la fila de la categoría: dos
+-- piezas creadas a la vez no toman el mismo, y si la creación falla el número no se pierde.
+CREATE OR REPLACE FUNCTION fn_nuevo_codigo(p_categoria integer) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  c        categoria%ROWTYPE;
+  v_numero integer;
+  v_codigo text;
+BEGIN
+  SELECT * INTO c FROM categoria WHERE id = p_categoria FOR UPDATE;
+  IF c.id IS NULL THEN RAISE EXCEPTION 'La categoría % no existe', p_categoria; END IF;
+  IF c.prefijo IS NULL THEN
+    RAISE EXCEPTION 'La categoría "%" no tiene prefijo para los códigos: póngale uno o escriba el código de la pieza', c.nombre;
+  END IF;
+  v_numero := c.ultimo_codigo;
+  LOOP
+    v_numero := v_numero + 1;
+    IF v_numero > 99999 THEN
+      RAISE EXCEPTION 'La categoría "%" ya usó todos sus códigos (hasta %-99999)', c.nombre, c.prefijo;
+    END IF;
+    v_codigo := c.prefijo || '-' || lpad(v_numero::text, 5, '0');
+    EXIT WHEN NOT EXISTS (SELECT 1 FROM variante WHERE sku = v_codigo OR upper(codigo_barras) = v_codigo);
+  END LOOP;
+  UPDATE categoria SET ultimo_codigo = v_numero WHERE id = c.id;
+  RETURN v_codigo;
 END $$;
 
 -- Una categoría inactiva no admite productos nuevos (los que ya tiene siguen igual).
@@ -3159,7 +3236,9 @@ BEGIN
 END $$;
 
 -- Agrega una variante (lo que realmente se vende) a un producto con stock. Fija su precio, por eso
--- pide también PRECIOS_EDITAR. Sin nombre queda "Única".
+-- pide también PRECIOS_EDITAR. Sin nombre queda "Única". Sin código (p_sku NULL o vacío), el
+-- sistema le pone el siguiente de su categoría (fn_nuevo_codigo); uno escrito (el de fábrica) se
+-- respeta.
 CREATE OR REPLACE FUNCTION fn_crear_variante(
   p_admin bigint, p_producto bigint, p_sku text, p_precio_venta numeric, p_nombre text DEFAULT NULL,
   p_costo numeric DEFAULT 0, p_codigo_barras text DEFAULT NULL, p_gama integer DEFAULT NULL,
@@ -3168,12 +3247,14 @@ CREATE OR REPLACE FUNCTION fn_crear_variante(
 LANGUAGE plpgsql AS $$
 DECLARE
   v_tipo text;
+  v_cat  integer;
   v_gama gama%ROWTYPE;
+  v_sku  text := nullif(upper(trim(p_sku)), '');
   v_id   bigint;
 BEGIN
   PERFORM fn_exigir_permiso(p_admin, 'PRODUCTOS_GESTIONAR');
   PERFORM fn_exigir_permiso(p_admin, 'PRECIOS_EDITAR');
-  SELECT tipo INTO v_tipo FROM producto WHERE id = p_producto;
+  SELECT tipo, categoria_id INTO v_tipo, v_cat FROM producto WHERE id = p_producto;
   IF NOT FOUND THEN RAISE EXCEPTION 'El producto % no existe', p_producto; END IF;
   IF v_tipo <> 'PRODUCTO' THEN
     RAISE EXCEPTION 'Las variantes de una perforación las crea el sistema: no se agregan a mano';
@@ -3184,8 +3265,9 @@ BEGIN
     IF NOT v_gama.activa THEN RAISE EXCEPTION 'La gama "%" está inactiva', v_gama.nombre; END IF;
   END IF;
 
+  v_sku := coalesce(v_sku, fn_nuevo_codigo(v_cat));
   INSERT INTO variante (producto_id, sku, codigo_barras, nombre, atributos, precio_venta, costo, gama_id, foto_url)
-  VALUES (p_producto, upper(trim(p_sku)), nullif(trim(p_codigo_barras), ''),
+  VALUES (p_producto, v_sku, nullif(trim(p_codigo_barras), ''),
           coalesce(nullif(trim(p_nombre), ''), 'Única'), coalesce(p_atributos, '{}'::jsonb),
           p_precio_venta, coalesce(p_costo, 0), p_gama, nullif(trim(p_foto_url), ''))
   RETURNING id INTO v_id;
@@ -3193,6 +3275,8 @@ BEGIN
 END $$;
 
 -- Edita los datos de una variante, sin tocar precio ni costo (para eso, fn_set_precio_variante).
+-- El código no cambia (tg_variante_codigo_fijo): p_sku NULL o vacío lo deja igual, y uno distinto
+-- se rechaza.
 CREATE OR REPLACE FUNCTION fn_actualizar_variante(
   p_admin bigint, p_variante bigint, p_sku text, p_nombre text, p_codigo_barras text DEFAULT NULL,
   p_gama integer DEFAULT NULL, p_atributos jsonb DEFAULT '{}'::jsonb, p_foto_url text DEFAULT NULL
@@ -3219,7 +3303,8 @@ BEGIN
   END IF;
 
   UPDATE variante
-     SET sku = upper(trim(p_sku)), nombre = coalesce(nullif(trim(p_nombre), ''), 'Única'),
+     SET sku = coalesce(nullif(upper(trim(p_sku)), ''), sku),
+         nombre = coalesce(nullif(trim(p_nombre), ''), 'Única'),
          codigo_barras = nullif(trim(p_codigo_barras), ''), gama_id = p_gama,
          atributos = coalesce(p_atributos, '{}'::jsonb), foto_url = nullif(trim(p_foto_url), '')
    WHERE id = p_variante;

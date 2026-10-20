@@ -203,15 +203,15 @@ y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tie
 
 | Ruta | Qué hace |
 |---|---|
-| `GET /api/categorias` · `POST` · `PUT /:id` · `PUT /:id/activa` | Categorías: `{ nombre, descripcion }`. "Perforaciones" es del sistema |
+| `GET /api/categorias` · `POST` · `PUT /:id` · `PUT /:id/activa` | Categorías: `{ nombre, descripcion, prefijo }`. El prefijo (2 a 5 letras, p. ej. `PTI`) es el de los códigos de sus piezas: obligatorio al crearla, único, y no cambia una vez que la categoría dio códigos (al editar, sin prefijo se deja el que tiene). Cada una trae su `prefijo` y su `ultimo_codigo`. "Perforaciones" es del sistema (sin prefijo) |
 | `PUT /api/categorias/:id/admite-devolucion` | `{ admite_devolucion }`: la casilla de si lo vendido de la categoría se puede devolver o cambiar. Solo con `DEVOLUCIONES_APROBAR` (el administrador); una categoría nueva nace sin ella |
 | `GET /api/gamas` · `POST` · `PUT /:id` · `PUT /:id/activa` | Gamas de pieza: `{ nombre, modo_precio: TABLA/PIEZA, orden }`. Una gama en uso no cambia de modo |
 | `GET /api/productos` | `?buscar=&categoria_id=&tipo=&estado=activos\|inactivos\|todos&limite=&desplazamiento=` → `{ productos, total }`, cada producto con sus variantes. Busca por nombre, SKU o código de barras |
 | `GET /api/productos/:id` | Un producto con sus variantes |
 | `POST /api/productos` | `{ categoria_id, nombre, descripcion, variantes: [...] }`: crea el producto con sus variantes (todo o nada) |
 | `PUT /api/productos/:id` · `PUT /api/productos/:id/activo` | Edita o desactiva (no se desactiva con existencias) |
-| `POST /api/productos/:id/variantes` | `{ sku, nombre, precio_venta, costo, codigo_barras, gama_id, atributos, foto_url }` |
-| `PUT /api/variantes/:id` | Edita la variante (sin precio): `{ sku, nombre, codigo_barras, gama_id, atributos, foto_url }` |
+| `POST /api/productos/:id/variantes` | `{ sku, nombre, precio_venta, costo, codigo_barras, gama_id, atributos, foto_url }`. El código (`sku`) es opcional: sin él, la base le pone el prefijo de la categoría y el siguiente correlativo de 5 dígitos (`PTI-00001`), que nunca se repite ni choca con uno que ya exista. Uno escrito (el de fábrica, o uno de antes) se respeta |
+| `PUT /api/variantes/:id` | Edita la variante (sin precio): `{ nombre, codigo_barras, gama_id, atributos, foto_url }`. El código de una pieza **no cambia** (va en sus etiquetas): `sku` se puede omitir, y uno distinto responde 422 |
 | `PUT /api/variantes/:id/precio` | `{ precio_venta, costo }`: lo que no se envía no cambia; queda en el historial de precios |
 | `PUT /api/variantes/:id/activo` | Desactiva o reactiva (no se desactiva con existencias) |
 | `POST /api/variantes/:id/foto` · `DELETE /api/variantes/:id/foto` | Sube la foto de la variante (formulario multipart, campo `foto`: JPG, PNG o WebP de hasta 5 MB) o la quita |
@@ -228,6 +228,19 @@ y se devuelven como texto exacto (`"650.00"`). El **costo** solo lo ve quien tie
 | `GET /api/perforaciones/:id/precio-paquete?piezas=12,15` | Precio del paquete con esas piezas y la regla aplicada (`ESPECIAL`, `TABLA_GAMA`, `SERVICIO_MAS_PIEZA`) |
 | `GET /api/promociones` · `POST` · `PUT /:id` · `PUT /:id/activa` | Promociones (`PROMOCIONES_GESTIONAR`): `{ nombre, tipo: PORCENTAJE/MONTO, valor, compra_minima, vigente_desde, vigente_hasta, descripcion }`; nacen inactivas |
 | `GET /api/promociones/disponibles?subtotal=` | Las que el POS puede aplicar hoy y cuánto rebajan (`VENTAS_PROMOCION`) |
+
+### Etiquetas con QR
+
+Solo para quien administra el catálogo (`PRODUCTOS_GESTIONAR`: el administrador, en la bodega). La etiqueta
+lleva un QR con **solo el código** de la pieza, el código y el nombre corto (el producto y su variante); sin
+precio. La venta y la consulta de precios encuentran la pieza al escanear ese QR.
+
+| Ruta | Qué hace |
+|---|---|
+| `GET /api/etiquetas/piezas?texto=` | Busca piezas (no perforaciones) por nombre, código o código de barras, con lo que hay en la bodega |
+| `GET /api/etiquetas/bodega` | Todo lo que hay en la bodega: `cantidad` son las existencias (las copias que se proponen; `null` sin `INVENTARIO_VER_BODEGA` si `BODEGA_VISIBILIDAD` es `SI_NO`) |
+| `GET /api/etiquetas/compras` · `GET /api/etiquetas/compras/:id` | Las compras recientes (sin las canceladas) y lo que entró con una: `cantidad` es lo recibido. Piden además `INVENTARIO_ENTRADA` |
+| `POST /api/etiquetas/pdf` | `{ formato: 'HOJA' \| 'ROLLO', piezas: [{ variante_id, copias }], hoja, rollo }` → el PDF. `HOJA`: carta con cuadrícula para hojas adhesivas (`filas`, `columnas`, `margen_superior`, `margen_izquierdo`, `ancho`, `alto`, `separacion_horizontal`, `separacion_vertical` en mm; `saltar` las ya usadas de la primera hoja; `bordes` para probar en papel normal; sin datos, 3 × 10 de 66.7 × 25.4 mm). `ROLLO`: una etiqueta por página de `ancho` × `alto` mm (sin datos, 50 × 30). De 1 a 500 copias por pieza; la cuadrícula tiene que caber en la carta (400 si no) |
 
 ### Inventario
 
@@ -488,6 +501,13 @@ y crea categorías, perforaciones con sus precios, productos, inventario inicial
   nuevo; se cuentan en `resumen.precios_servicio_actualizados` y `resumen.precios_actualizados`). El costo, el
   inventario y los demás datos de esos productos y perforaciones no cambian.
 - Una perforación o un producto que ya existe y viene dos veces en el archivo es un error.
+- El **código** de cada pieza (hoja Productos, columna A) es opcional: vacío, el sistema le pone uno con el prefijo
+  de su categoría (`PTI-00001`; se cuentan en `resumen.codigos_asignados`). Uno escrito (uno de antes o el de
+  fábrica) se respeta. Una pieza sin código se reconoce por su categoría, su producto y su variante (así no se
+  duplica al volver a cargar el archivo), y en InventarioInicial y PreciosEspeciales se elige como
+  «Producto — Variante» (la columna P de Productos arma esa lista sola).
+- Una categoría nueva lleva el prefijo de sus códigos (hoja Categorias, columna C). A una que ya existe no se le
+  cambia; si el archivo trae otro, se avisa.
 - La respuesta trae las contraseñas temporales de los usuarios creados (se muestran una sola vez).
 
 ## Frontend

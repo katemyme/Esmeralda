@@ -15,6 +15,7 @@ import { ConteosModule } from './conteos/conteos.module';
 import { DevolucionesModule } from './devoluciones/devoluciones.module';
 import { EnviosModule } from './envios/envios.module';
 import { EquiposModule } from './equipos/equipos.module';
+import { EtiquetasModule } from './etiquetas/etiquetas.module';
 import { FotosModule } from './fotos/fotos.module';
 import { GamasModule } from './gamas/gamas.module';
 import { InventarioModule } from './inventario/inventario.module';
@@ -72,6 +73,8 @@ import { VentasModule } from './ventas/ventas.module';
     DevolucionesModule,
     // F2a: la cola de impresión (tickets de las ventas hechas desde un celular)
     ColaImpresionModule,
+    // F3b: etiquetas con QR de las piezas
+    EtiquetasModule,
   ],
   controllers: [SaludController],
   providers: [{ provide: APP_FILTER, useClass: FiltroErrores }],

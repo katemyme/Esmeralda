@@ -982,6 +982,31 @@ ticket de venta), argon2id para contraseñas, JWT de acceso (15 min) + refresh e
   - Pruebas: `test/devoluciones-caja.e2e-spec.ts` trabaja en la sucursal `DEC` y deja `IMPRESION_ABRIR_GAVETA` en
     `NO` en `afterAll`. Como deja devoluciones por transferir, las consultas del administrador de
     `test/devoluciones.e2e-spec.ts` van filtradas por sus sucursales (el orden de los archivos no está fijo).
+- Códigos y etiquetas (backend de F3b):
+  - `categoria.prefijo` (2 a 5 letras, único) y `categoria.ultimo_codigo` (solo sube). `fn_guardar_categoria`
+    tiene un 5.º argumento, `p_prefijo`: obligatorio al crear; al editar, NULL lo deja como está; no cambia si la
+    categoría ya dio códigos (`ultimo_codigo > 0`). `fn_nuevo_codigo(categoria)` da `PREFIJO-00001`: bloquea la fila
+    de la categoría, se salta lo que ya existe (como `sku` o como `codigo_barras`) y, si la creación falla, el
+    número no se gasta. `fn_crear_variante` lo usa cuando `p_sku` viene NULL o vacío. El `sku` no cambia nunca
+    (`tg_variante_codigo_fijo`); `fn_actualizar_variante` con `p_sku` NULL o vacío lo deja igual.
+  - Toda prueba que cree una categoría le pone su prefijo, distinto del de los otros archivos (los e2e comparten la
+    base): RBQ, RCEL, RCOL, RDEC, RDVE, PDVE, ANB, JYB, JRPT, CRPT, JTAR, BCI, RCI y ETQ.
+  - Módulo `etiquetas/` (`PRODUCTOS_GESTIONAR`; las dos rutas de compras piden además `INVENTARIO_ENTRADA` dentro
+    del servicio, con `fn_exigir_permiso`). El PDF lo dibuja `etiquetas/etiquetas-pdf.ts` (`etiquetasEnHoja`,
+    `etiquetasEnRollo`): QR con solo el código (`dibujarQr` de `exportacion/qr.ts`, el mismo del ticket), el código
+    en negrita y el nombre corto (`nombreCorto`: «producto · variante», sin «Única»), achicando la letra hasta 5 pt
+    y cortando con «…» lo que ni así cabe; apaisada, el QR a la izquierda; alta o cuadrada, arriba. Pide
+    imprimirse a tamaño real (`/PrintScaling /None`). Imprimir etiquetas no se anota.
+  - Carga inicial: el código es opcional. Una pieza sin código se busca por categoría, producto y variante, y en
+    InventarioInicial y PreciosEspeciales se nombra «Producto — Variante» (`nombreDePieza`, `clavesDePieza` en
+    `plantilla.ts`, sin importar mayúsculas, tildes ni si la raya es un guion). La hoja Categorias trae el prefijo
+    en la columna C.
+  - La plantilla de Excel se cambia con un script de exceljs fuera del repositorio, que al guardar vuelve a juntar
+    las validaciones de datos (exceljs 4.4 las parte en rangos que se pisan y Excel las rechaza); después se abre
+    en Excel (COM, sin mostrarlo) para comprobar que abre y que sus fórmulas dan lo esperado.
+  - Pruebas: `test/etiquetas.e2e-spec.ts` (categoría `Llaveros ETQ`; cambia los permisos del VENDEDOR y los
+    restaura en un `finally`). `etiquetas-pdf.spec.ts` rearma el QR con los cuadros del PDF y lo compara con
+    `matrizQr`: `leerPaginas()` de `test/textos-pdf.ts` da una entrada por página y los rectángulos con su alto.
 - Escrituras: siempre con `BaseDatosService.transaccion(usuarioId, async (trx) => ...)`, que fija
   `app.usuario_id` con `set_config(..., true)` (= `SET LOCAL`). Las `fn_*` se llaman con
   ``sql`select fn_x(${a}, ${b})`.execute(trx)``. Las lecturas simples pueden usar `bd.db`.

@@ -3,14 +3,20 @@ import { sql } from 'kysely';
 import type { z } from 'zod';
 import { generarPasswordTemporal, hashearPassword } from '../autenticacion/seguridad';
 import { BaseDatosService, type Trx } from '../base-datos/base-datos.service';
-import { esquemaCategoria } from '../categorias/esquemas';
+import { esquemaCategoria, esquemaEditarCategoria } from '../categorias/esquemas';
 import { traducirError } from '../comun/errores';
 import { esquemaCrearPerforacion } from '../perforaciones/esquemas';
 import { esquemaCrearVariante } from '../productos/esquemas';
 import { esquemaPromocion } from '../promociones/esquemas';
 import { esquemaProveedor } from '../proveedores/esquemas';
 import { esquemaCrearUsuario } from '../usuarios/esquemas';
-import { leerPlantilla, normalizar, type Plantilla } from './plantilla';
+import {
+  clavesDePieza,
+  leerPlantilla,
+  nombreDePieza,
+  normalizar,
+  type Plantilla,
+} from './plantilla';
 
 /** Algo que la persona debe saber o corregir, ubicado en su hoja y fila de la plantilla. */
 export interface Observacion {
@@ -31,6 +37,8 @@ export interface ResultadoCarga {
     precios_especiales: number;
     productos: number;
     variantes: number;
+    /** Piezas nuevas que venían sin código: el sistema les puso uno (PTI-00001). */
+    codigos_asignados: number;
     /** Productos que ya existían y cuyo precio de venta cambió con esta carga. */
     precios_actualizados: number;
     /** Perforaciones que ya existían y cuyo precio de solo servicio cambió con esta carga. */
@@ -55,9 +63,26 @@ class Deshacer extends Error {}
 /** Una variante que ya estaba en el sistema, con su precio y el que trae la plantilla. */
 interface VarianteExistente {
   id: number;
+  sku: string;
   tipo: string;
   precio: string;
   precio_nuevo: string;
+}
+
+/** Una pieza de la hoja Productos, para encontrarla desde InventarioInicial y PreciosEspeciales. */
+interface PiezaDeLaCarga {
+  /** «El código CI-TIT-01» o «La pieza "Reloj CI — Dorado"»: para los mensajes. */
+  quien: string;
+  id: number;
+  /** true si se creó con esta carga (solo entonces se carga su inventario). */
+  creada: boolean;
+}
+
+/** «El código X» o «La pieza "Producto — Variante"», y cómo concuerda el resto de la frase. */
+function quienEs(sku: string, nombre: string): { quien: string; repetido: string } {
+  return sku
+    ? { quien: `El código ${sku}`, repetido: 'repetido' }
+    : { quien: `La pieza "${nombre}"`, repetido: 'repetida' };
 }
 
 /** Una perforación que ya estaba en el sistema, con su precio de servicio y el de la plantilla. */
@@ -70,13 +95,14 @@ interface PerforacionExistente {
 
 // Restricciones de la base con un mensaje más claro que el genérico
 const RESTRICCIONES: Record<string, string> = {
-  variante_sku_key: 'ese SKU ya existe (o está repetido en la plantilla)',
+  variante_sku_key: 'ese código ya lo tiene otra pieza (o está repetido en la plantilla)',
   variante_codigo_barras_key: 'ese código de barras ya lo tiene otra pieza',
   usuario_username_key: 'ese nombre de usuario ya existe (o está repetido en la plantilla)',
   ux_usuario_email: 'ese correo ya lo tiene otro usuario',
   perforacion_codigo_key: 'ese código de perforación ya existe (o está repetido en la plantilla)',
   perforacion_nombre_key: 'ya hay una perforación con ese nombre',
   categoria_nombre_key: 'esa categoría ya existe',
+  categoria_prefijo_key: 'ese prefijo ya lo usa otra categoría',
   proveedor_nombre_key: 'ese proveedor ya existe',
   promocion_nombre_key: 'ya hay una promoción con ese nombre',
 };
@@ -112,6 +138,8 @@ function entero(celda: string | number | null): number | null | 'invalido' {
  * volver a cargar sin duplicar nada). Los precios sí quedan como diga el archivo: la tabla de
  * precios, los precios especiales, el precio de solo servicio de las perforaciones que ya existen
  * y el precio de venta de los productos que ya existen (su costo no: es el promedio de las compras).
+ * El código de una pieza es opcional: sin él, el sistema le pone el de su categoría (PTI-00001), y
+ * al volver a cargar el archivo se la reconoce por su categoría, su producto y su variante.
  */
 @Injectable()
 export class CargaInicialService {
@@ -152,6 +180,7 @@ class Carga {
     precios_especiales: 0,
     productos: 0,
     variantes: 0,
+    codigos_asignados: 0,
     precios_actualizados: 0,
     precios_servicio_actualizados: 0,
     piezas_en_inventario: 0,
@@ -165,12 +194,13 @@ class Carga {
   readonly errores: Observacion[] = [];
 
   private trx!: Trx;
-  /** SKU de las filas de ejemplo o que ya existían: su inventario tampoco se carga. */
-  private readonly skuOmitidos = new Map<string, string>();
-  /** SKU creados en esta carga → id de la variante. */
-  private readonly skuCreados = new Map<string, number>();
-  /** SKU que ya existían y ya salieron en una fila de Productos de este archivo. */
-  private readonly skuExistentes = new Set<string>();
+  /**
+   * Piezas de la hoja Productos (creadas con esta carga o que ya existían), por su clave
+   * (`clavesDePieza`): por su código, o por «Producto — Variante» si venían sin código.
+   */
+  private readonly piezas = new Map<string, PiezaDeLaCarga>();
+  /** Filas de ejemplo o piezas que ya existían, por su clave: su inventario no se carga (el motivo). */
+  private readonly omitidas = new Map<string, { quien: string; motivo: string }>();
   /** Perforaciones que ya existían y ya salieron en una fila de Perforaciones de este archivo. */
   private readonly perforacionesExistentes = new Set<string>();
   /** Lo creado en esta carga, para distinguir "ya existía" de "está dos veces en la plantilla". */
@@ -260,17 +290,67 @@ class Carga {
   // -------------------------------------------------------------------- Categorias
   private async categorias(): Promise<void> {
     for (const { fila, datos } of this.plantilla.categorias) {
-      const valida = this.validar(esquemaCategoria, 'Categorias', fila, datos);
+      const escrito = {
+        nombre: datos.nombre,
+        descripcion: datos.descripcion === null ? null : String(datos.descripcion),
+        prefijo: datos.prefijo === null ? undefined : String(datos.prefijo),
+      };
+      // Primero solo el nombre: de una que ya existe no se toca nada (ni hace falta su prefijo)
+      const nombrada = this.validar(esquemaEditarCategoria, 'Categorias', fila, {
+        ...escrito,
+        prefijo: undefined,
+      });
+      if (!nombrada) continue;
+      const existente = (
+        await sql<{ id: number; nombre: string; prefijo: string | null }>`
+          select id, nombre, prefijo from categoria
+           where lower(nombre) = lower(${nombrada.nombre})`.execute(this.trx)
+      ).rows.at(0);
+      if (existente) {
+        // la plantilla ya trae las categorías del sistema: no es novedad
+        await this.prefijoDeExistente(fila, existente, escrito.prefijo);
+        continue;
+      }
+      const valida = this.validar(esquemaCategoria, 'Categorias', fila, escrito);
       if (!valida) continue;
-      const existe = await this.unId(
-        sql`select id from categoria where lower(nombre) = lower(${valida.nombre})`,
-      );
-      if (existe) continue; // la plantilla ya trae las categorías del sistema: no es novedad
       const creada = await this.intentar('Categorias', fila, () =>
         sql`select fn_guardar_categoria(${this.adminId}, null, ${valida.nombre},
-                   ${valida.descripcion})`.execute(this.trx),
+                   ${valida.descripcion}, ${valida.prefijo}::text)`.execute(this.trx),
       );
       if (creada) this.resumen.categorias++;
+    }
+  }
+
+  /**
+   * Una categoría que ya existe se queda como está. Si el archivo le pone otro prefijo se avisa
+   * (los códigos ya dados no cambian); si no tenía (una de antes de los códigos), se le pone.
+   */
+  private async prefijoDeExistente(
+    fila: number,
+    categoria: { id: number; nombre: string; prefijo: string | null },
+    escrito: string | undefined,
+  ): Promise<void> {
+    const prefijo = escrito?.trim().toUpperCase();
+    if (!prefijo || prefijo === categoria.prefijo) return;
+    if (categoria.prefijo !== null) {
+      this.aviso(
+        'Categorias',
+        fila,
+        `La categoría "${categoria.nombre}" ya existe con el prefijo ${categoria.prefijo}: no se cambió`,
+      );
+      return;
+    }
+    const puesto = await this.intentar('Categorias', fila, () =>
+      sql`select fn_guardar_categoria(${this.adminId}, ${categoria.id}::integer, c.nombre,
+                 c.descripcion, ${prefijo}::text)
+            from categoria c where c.id = ${categoria.id}`.execute(this.trx),
+    );
+    if (puesto) {
+      this.aviso(
+        'Categorias',
+        fila,
+        `La categoría "${categoria.nombre}" ya existía sin prefijo: se le puso ${prefijo}`,
+      );
     }
   }
 
@@ -424,10 +504,18 @@ class Carga {
     const productos = new Map<string, number>();
 
     for (const { fila, datos } of this.plantilla.productos) {
-      const skuFila = datos.sku.toUpperCase();
+      // Con código se la nombra por él; sin código (lo pone el sistema), como «Producto — Variante»
+      const skuFila = datos.sku.trim().toUpperCase();
+      const nombre = nombreDePieza(
+        datos.producto,
+        datos.variante === null ? null : String(datos.variante),
+      );
+      const claves = clavesDePieza(skuFila || nombre);
+      const clave = skuFila ? claves.codigo : claves.nombre;
+      const { quien, repetido } = quienEs(skuFila, nombre);
       if (/^ejemplo/i.test(datos.notas)) {
         this.aviso('Productos', fila, 'Fila de ejemplo de la plantilla: se omitió');
-        this.skuOmitidos.set(skuFila, 'es la fila de ejemplo de Productos');
+        this.omitidas.set(clave, { quien, motivo: 'es la fila de ejemplo de Productos' });
         continue;
       }
       const gama = datos.gama
@@ -469,21 +557,31 @@ class Carga {
         );
         continue;
       }
-      if (this.skuCreados.has(valida.sku) || this.skuExistentes.has(valida.sku)) {
-        this.error('Productos', fila, `El SKU ${valida.sku} está repetido en la plantilla`);
+      if (this.piezas.has(clave)) {
+        this.error('Productos', fila, `${quien} está ${repetido} en la plantilla`);
         continue;
       }
+      // Ya existe: con código, la que lo tiene; sin código, la de esa categoría, producto y variante
       const existente = (
         await sql<VarianteExistente>`
-          select v.id, p.tipo, v.precio_venta as precio,
+          select v.id, v.sku, p.tipo, v.precio_venta as precio,
                  ${valida.precio_venta}::numeric(12,2) as precio_nuevo
             from variante v join producto p on p.id = v.producto_id
-           where v.sku = ${valida.sku}`.execute(this.trx)
+           where ${
+             valida.sku
+               ? sql`v.sku = ${valida.sku}`
+               : sql`p.categoria_id = ${categoria} and p.tipo = 'PRODUCTO'
+                     and lower(p.nombre) = lower(${datos.producto})
+                     and lower(v.nombre) = lower(${valida.nombre ?? 'Única'})`
+           }
+           order by v.id
+           limit 1`.execute(this.trx)
       ).rows[0];
       if (existente) {
-        this.skuExistentes.add(valida.sku);
-        this.skuOmitidos.set(valida.sku, 'ya existía en el sistema');
-        await this.actualizarPrecio(fila, valida.sku, existente);
+        const conCodigo = valida.sku ? quien : `${quien} (${existente.sku})`;
+        this.piezas.set(clave, { quien: conCodigo, id: existente.id, creada: false });
+        this.omitidas.set(clave, { quien: conCodigo, motivo: 'ya existía en el sistema' });
+        await this.actualizarPrecio(fila, conCodigo, existente);
         continue;
       }
       const minimos: [number, number][] = [];
@@ -509,10 +607,10 @@ class Carga {
       }
       if (!minimosValidos) continue;
 
-      const clave = `${categoria}|${normalizar(datos.producto)}`;
+      const claveProducto = `${categoria}|${normalizar(datos.producto)}`;
       const creada = await this.intentar('Productos', fila, async () => {
         let producto =
-          productos.get(clave) ??
+          productos.get(claveProducto) ??
           (await this.unId(
             sql`select id from producto
                  where categoria_id = ${categoria} and tipo = 'PRODUCTO'
@@ -522,8 +620,9 @@ class Carga {
         producto ??= await this.unId(
           sql`select fn_guardar_producto(${this.adminId}, null, ${categoria}, ${datos.producto}) as id`,
         );
+        // Sin código, la base le pone el siguiente de la categoría (PTI-00001)
         const variante = await this.unId(
-          sql`select fn_crear_variante(${this.adminId}, ${producto}, ${valida.sku},
+          sql`select fn_crear_variante(${this.adminId}, ${producto}, ${valida.sku}::text,
                      ${valida.precio_venta}::numeric, ${valida.nombre}, ${valida.costo}::numeric,
                      ${valida.codigo_barras}, ${valida.gama_id}::integer,
                      ${JSON.stringify(valida.atributos)}::jsonb, null) as id`,
@@ -536,11 +635,18 @@ class Carga {
         return { producto, productoNuevo, variante };
       });
       if (!creada?.producto || !creada.variante) continue;
-      productos.set(clave, creada.producto);
+      productos.set(claveProducto, creada.producto);
       if (creada.productoNuevo) this.resumen.productos++;
       this.resumen.variantes++;
-      this.skuCreados.set(valida.sku, creada.variante);
+      if (!valida.sku) this.resumen.codigos_asignados++;
+      this.piezas.set(clave, { quien, id: creada.variante, creada: true });
     }
+  }
+
+  /** La pieza de la hoja Productos que nombra una celda (por su código o por su nombre). */
+  private piezaDe(texto: string): PiezaDeLaCarga | undefined {
+    const { codigo, nombre } = clavesDePieza(texto);
+    return this.piezas.get(codigo) ?? this.piezas.get(nombre);
   }
 
   /**
@@ -550,15 +656,15 @@ class Carga {
    */
   private async actualizarPrecio(
     fila: number,
-    sku: string,
+    quien: string,
     variante: VarianteExistente,
   ): Promise<void> {
     if (variante.tipo !== 'PRODUCTO') {
-      this.aviso('Productos', fila, `El SKU ${sku} es de una perforación: no se modificó`);
+      this.aviso('Productos', fila, `${quien} es de una perforación: no se modificó`);
       return;
     }
     if (variante.precio === variante.precio_nuevo) {
-      this.aviso('Productos', fila, `El SKU ${sku} ya existe: no se modificó`);
+      this.aviso('Productos', fila, `${quien} ya existe: no se modificó`);
       return;
     }
     const actualizado = await this.intentar('Productos', fila, () =>
@@ -570,7 +676,7 @@ class Carga {
     this.aviso(
       'Productos',
       fila,
-      `El SKU ${sku} ya existe: se actualizó su precio de C$ ${variante.precio} a C$ ${variante.precio_nuevo} (lo demás no se modificó)`,
+      `${quien} ya existe: se actualizó su precio de C$ ${variante.precio} a C$ ${variante.precio_nuevo} (lo demás no se modificó)`,
     );
   }
 
@@ -587,8 +693,8 @@ class Carga {
         this.error(hoja, fila, 'El precio del paquete debe ser un monto mayor que 0');
         continue;
       }
-      if (!!datos.sku === !!datos.gama) {
-        this.error(hoja, fila, 'Indique el SKU de una pieza o una gama, no las dos');
+      if (!!datos.pieza === !!datos.gama) {
+        this.error(hoja, fila, 'Indique una pieza (su código) o una gama, no las dos');
         continue;
       }
       const perforacion = await this.unId(
@@ -598,14 +704,23 @@ class Carga {
         this.error(hoja, fila, `No existe la perforación "${datos.perforacion}"`);
         continue;
       }
-      const variante = datos.sku
-        ? await this.unId(sql`select id from variante where sku = ${datos.sku.toUpperCase()}`)
+      // La pieza: una de la hoja Productos (por su código o, sin código, por su nombre), o una que
+      // ya estaba en el sistema, por su código
+      const variante = datos.pieza
+        ? (this.piezaDe(datos.pieza)?.id ??
+          (await this.unId(
+            sql`select id from variante where sku = ${datos.pieza.trim().toUpperCase()}`,
+          )))
         : null;
       const gama = datos.gama
         ? await this.unId(sql`select id from gama where lower(nombre) = lower(${datos.gama})`)
         : null;
-      if (datos.sku && !variante) {
-        this.error(hoja, fila, `No existe una pieza con el SKU "${datos.sku}"`);
+      if (datos.pieza && !variante) {
+        this.error(
+          hoja,
+          fila,
+          `No existe la pieza "${datos.pieza}" (ni en la hoja Productos ni en el sistema)`,
+        );
         continue;
       }
       if (datos.gama && !gama) {
@@ -640,21 +755,23 @@ class Carga {
     const reparto = new Map<number, [number, number][]>();
 
     for (const { fila, datos } of this.plantilla.inventario) {
-      const sku = datos.sku.toUpperCase();
-      const omitido = this.skuOmitidos.get(sku);
-      if (omitido) {
-        this.aviso(hoja, fila, `El SKU ${sku} ${omitido}: su inventario no se cargó`);
+      // Solo de lo que se crea con esta carga: lo que ya existía tiene su inventario en el sistema
+      const pieza = this.piezaDe(datos.pieza);
+      const { codigo, nombre } = clavesDePieza(datos.pieza);
+      const omitida = this.omitidas.get(codigo) ?? this.omitidas.get(nombre);
+      if (!pieza?.creada && omitida) {
+        this.aviso(hoja, fila, `${omitida.quien} ${omitida.motivo}: su inventario no se cargó`);
         continue;
       }
-      const variante = this.skuCreados.get(sku);
-      if (!variante) {
+      if (!pieza?.creada) {
         this.error(
           hoja,
           fila,
-          `El SKU "${datos.sku}" no está en la hoja Productos de este archivo`,
+          `La pieza "${datos.pieza}" no está en la hoja Productos de este archivo`,
         );
         continue;
       }
+      const variante = pieza.id;
       if (!bodega) {
         this.error(hoja, fila, 'No hay una bodega central activa');
         continue;

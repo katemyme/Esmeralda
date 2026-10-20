@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { sql } from 'kysely';
 import { BaseDatosService } from '../base-datos/base-datos.service';
 import { NoEncontrado } from '../comun/no-encontrado';
-import type { DatosCategoria } from './esquemas';
+import type { DatosCategoria, DatosEditarCategoria } from './esquemas';
 
 export interface CategoriaCatalogo {
   id: number;
@@ -11,13 +11,18 @@ export interface CategoriaCatalogo {
   activa: boolean;
   /** Lo vendido de esta categoría se puede devolver o cambiar (lo decide el administrador). */
   admite_devolucion: boolean;
+  /** Prefijo de los códigos que el sistema les pone a sus piezas (PTI-00001); null en perforaciones. */
+  prefijo: string | null;
+  /** El último correlativo que dio (0: ninguno todavía, y el prefijo aún se puede cambiar). */
+  ultimo_codigo: number;
   /** Cuántos productos tiene (activos o no). */
   productos: number;
 }
 
 /**
- * Categorías del catálogo. Las reglas las aplican fn_guardar_categoria, fn_set_categoria_activa y
- * fn_set_categoria_devolucion (la casilla "admite devolución": una categoría nueva nace sin ella).
+ * Categorías del catálogo. Las reglas las aplican fn_guardar_categoria (con el prefijo de los
+ * códigos), fn_set_categoria_activa y fn_set_categoria_devolucion (la casilla "admite devolución":
+ * una categoría nueva nace sin ella).
  */
 @Injectable()
 export class CategoriasService {
@@ -27,17 +32,16 @@ export class CategoriasService {
     return this.consultar();
   }
 
-  /** Crea la categoría (id null) o la edita. */
+  /** Crea la categoría (id null) o la edita (sin prefijo, se deja el que tiene). */
   async guardar(
     adminId: number,
     id: number | null,
-    datos: DatosCategoria,
+    datos: DatosCategoria | DatosEditarCategoria,
   ): Promise<CategoriaCatalogo> {
     const guardada = await this.bd.transaccion(adminId, async (trx) => {
       const { rows } = await sql<{ id: number }>`
-        select fn_guardar_categoria(${adminId}, ${id}::integer, ${datos.nombre}, ${datos.descripcion}) as id`.execute(
-        trx,
-      );
+        select fn_guardar_categoria(${adminId}, ${id}::integer, ${datos.nombre}, ${datos.descripcion},
+               ${datos.prefijo}::text) as id`.execute(trx);
       return rows[0].id;
     });
     return this.buscar(guardada);
@@ -77,6 +81,8 @@ export class CategoriasService {
         'c.descripcion',
         'c.activa',
         'c.admite_devolucion',
+        'c.prefijo',
+        'c.ultimo_codigo',
         eb
           .selectFrom('producto as p')
           .select(eb.fn.countAll<number>().as('total'))

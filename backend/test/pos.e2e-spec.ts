@@ -178,7 +178,7 @@ describe('POS y caja', () => {
       (gamas.body.gamas as { id: number; nombre: string }[]).find((g) => g.nombre === 'Titanio')
         ?.id ?? 0;
     const categoria = await comoJefa('post', '/api/categorias')
-      .send({ nombre: 'Joyas B6' })
+      .send({ nombre: 'Joyas B6', prefijo: 'JYB' })
       .expect(201);
     const producto = await comoJefa('post', '/api/productos')
       .send({

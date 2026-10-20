@@ -62,7 +62,7 @@ describe('Tareas programadas', () => {
       .expect(201);
     ids.caja = conCaja.body.sucursal.cajas[0].id;
     const categoria = await comoJefa('post', '/api/categorias')
-      .send({ nombre: 'Joyas TAR' })
+      .send({ nombre: 'Joyas TAR', prefijo: 'JTAR' })
       .expect(201);
     const producto = await comoJefa('post', '/api/productos')
       .send({

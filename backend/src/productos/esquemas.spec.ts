@@ -15,9 +15,9 @@ function mensajes(esquema: z.ZodType, datos: unknown): Record<string, string> {
 }
 
 describe('esquemaCrearVariante', () => {
-  it('lo mínimo: SKU y precio; lo demás toma su valor por defecto', () => {
-    expect(esquemaCrearVariante.parse({ sku: ' rel-01 ', precio_venta: 900 })).toEqual({
-      sku: 'REL-01',
+  it('lo mínimo: el precio; sin código lo pone la base y lo demás toma su valor por defecto', () => {
+    const minima = {
+      sku: null,
       nombre: null,
       precio_venta: '900',
       costo: '0',
@@ -25,6 +25,14 @@ describe('esquemaCrearVariante', () => {
       gama_id: null,
       atributos: {},
       foto_url: null,
+    };
+    expect(esquemaCrearVariante.parse({ precio_venta: 900 })).toEqual(minima);
+    expect(esquemaCrearVariante.parse({ sku: '  ', precio_venta: 900 })).toEqual(minima);
+    expect(esquemaCrearVariante.parse({ sku: null, precio_venta: 900 })).toEqual(minima);
+    // Uno escrito (el de fábrica o uno de antes) se respeta, en mayúsculas
+    expect(esquemaCrearVariante.parse({ sku: ' rel-01 ', precio_venta: 900 })).toEqual({
+      ...minima,
+      sku: 'REL-01',
     });
   });
 
@@ -54,8 +62,13 @@ describe('esquemaCrearVariante', () => {
 
   it('mensajes en español por campo', () => {
     expect(mensajes(esquemaCrearVariante, {})).toEqual({
-      sku: 'Escriba el SKU',
       precio_venta: 'El precio debe ser un monto de 0 en adelante, con 2 decimales como máximo',
+    });
+    expect(mensajes(esquemaCrearVariante, { sku: 7501, precio_venta: 1 })).toEqual({
+      sku: 'El código debe ser un texto',
+    });
+    expect(mensajes(esquemaCrearVariante, { sku: 'X'.repeat(41), precio_venta: 1 })).toEqual({
+      sku: 'El código debe tener hasta 40 caracteres, sin espacios',
     });
     expect(
       mensajes(esquemaCrearVariante, {
@@ -68,7 +81,7 @@ describe('esquemaCrearVariante', () => {
         foto_url: 'javascript:alert(1)',
       }),
     ).toEqual({
-      sku: 'El SKU debe tener de 1 a 40 caracteres, sin espacios',
+      sku: 'El código debe tener hasta 40 caracteres, sin espacios',
       precio_venta: 'El precio debe ser un monto de 0 en adelante, con 2 decimales como máximo',
       costo: 'El costo debe ser un monto de 0 en adelante, con 2 decimales como máximo',
       codigo_barras: 'El código de barras no lleva espacios',
@@ -106,6 +119,12 @@ describe('esquemaActualizarVariante', () => {
       gama_id: null,
       atributos: {},
       foto_url: null,
+    });
+  });
+
+  it('el código se puede omitir: no cambia (la base rechaza uno distinto)', () => {
+    expect(esquemaActualizarVariante.parse({ gama_id: null, atributos: {} })).toMatchObject({
+      sku: null,
     });
   });
 

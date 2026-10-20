@@ -213,11 +213,13 @@ describe('Devoluciones y cambios', () => {
     }
 
     // Catálogo propio: regalos (se devuelven) y piezas de piercing (no)
-    for (const [clave, nombre] of [
-      ['regalos', 'Regalos DVE'],
-      ['piezas', 'Piezas DVE'],
+    for (const [clave, nombre, prefijo] of [
+      ['regalos', 'Regalos DVE', 'RDVE'],
+      ['piezas', 'Piezas DVE', 'PDVE'],
     ]) {
-      const categoria = await comoJefa('post', '/api/categorias').send({ nombre }).expect(201);
+      const categoria = await comoJefa('post', '/api/categorias')
+        .send({ nombre, prefijo })
+        .expect(201);
       Object.assign(ids, { [clave]: categoria.body.categoria.id });
     }
     await comoJefa('put', `/api/categorias/${ids.regalos}/admite-devolucion`)

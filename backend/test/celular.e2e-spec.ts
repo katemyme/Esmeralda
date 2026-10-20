@@ -240,7 +240,7 @@ describe('Acceso desde el celular', () => {
 
     // Un producto que se puede devolver, con existencias en las dos sucursales
     const categoria = await comoJefa('post', '/api/categorias')
-      .send({ nombre: 'Regalos CEL' })
+      .send({ nombre: 'Regalos CEL', prefijo: 'RCEL' })
       .expect(201);
     await comoJefa('put', `/api/categorias/${categoria.body.categoria.id}/admite-devolucion`)
       .send({ admite_devolucion: true })

@@ -91,7 +91,7 @@ describe('Inventario', () => {
 
     // Catálogo propio: una categoría con un producto de dos variantes
     const categoria = await comoJefa('post', '/api/categorias')
-      .send({ nombre: 'Anillos B5' })
+      .send({ nombre: 'Anillos B5', prefijo: 'ANB' })
       .expect(201);
     ids.categoria = categoria.body.categoria.id;
     const producto = await comoJefa('post', '/api/productos')

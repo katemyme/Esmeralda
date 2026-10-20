@@ -14,6 +14,7 @@ import type {
 /** Una variante: lo que realmente se vende (material / calibre / largo / color). */
 export interface VarianteCatalogo {
   id: number;
+  /** El código de la pieza (el de su etiqueta): lo pone el sistema o se escribe al crearla; no cambia. */
   sku: string;
   codigo_barras: string | null;
   nombre: string;
@@ -197,7 +198,7 @@ export class ProductosService {
     datos: DatosActualizarVariante,
   ): Promise<ProductoCatalogo> {
     await this.bd.transaccion(adminId, (trx) =>
-      sql`select fn_actualizar_variante(${adminId}, ${varianteId}, ${datos.sku}, ${datos.nombre},
+      sql`select fn_actualizar_variante(${adminId}, ${varianteId}, ${datos.sku}::text, ${datos.nombre},
                  ${datos.codigo_barras}, ${datos.gama_id}::integer,
                  ${JSON.stringify(datos.atributos)}::jsonb, ${datos.foto_url})`.execute(trx),
     );
@@ -320,6 +321,7 @@ export class ProductosService {
     if (!variante) throw new NoEncontrado(`La variante ${varianteId} no existe`);
   }
 
+  /** Sin código, la base le pone el siguiente de la categoría del producto (fn_nuevo_codigo). */
   private async crearVariante(
     trx: Trx,
     adminId: number,
@@ -327,7 +329,7 @@ export class ProductosService {
     datos: DatosCrearVariante,
   ): Promise<void> {
     await sql`
-      select fn_crear_variante(${adminId}, ${productoId}, ${datos.sku}, ${datos.precio_venta}::numeric,
+      select fn_crear_variante(${adminId}, ${productoId}, ${datos.sku}::text, ${datos.precio_venta}::numeric,
              ${datos.nombre}, ${datos.costo}::numeric, ${datos.codigo_barras}, ${datos.gama_id}::integer,
              ${JSON.stringify(datos.atributos)}::jsonb, ${datos.foto_url})`.execute(trx);
   }

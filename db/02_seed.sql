@@ -177,19 +177,21 @@ INSERT INTO gama (nombre, modo_precio, orden) VALUES
 -- Categorías (rubros de Esmeralda)
 --   admite_devolucion: las piezas de piercing y las perforaciones nunca se devuelven ni se cambian;
 --   joyería, accesorios, perfumería y cuidado posterior, sí (lo cambia el administrador en el panel).
+--   prefijo: el de los códigos que el sistema les pone a sus piezas (PTI-00001), decidido por el
+--   dueño el 2026-10-20. Las perforaciones no llevan (sus códigos son SRV-… y PAQ-…).
 -- ---------------------------------------------------------------------
-INSERT INTO categoria (nombre, descripcion, admite_devolucion) VALUES
-  ('Perforaciones',        'Servicios de perforación (no manejan inventario)', false),
-  ('Piercing titanio',     'Joyería de titanio ASTM F-136',                    false),
-  ('Piercing acero',       'Joyería de acero quirúrgico y de diseño',          false),
-  ('Piercing bioflex',     'Joyería de bioflex',                               false),
-  ('Cuidado posterior',    'NeilMed Piercing Aftercare y otros',               true),
-  ('Joyería plata 925',    'Plata 925',                                        true),
-  ('Joyería xuping',       'Xuping',                                           true),
-  ('Joyería estilo Dubái', 'Estilo Dubái',                                     true),
-  ('Accesorios dama',      'Accesorios para dama',                             true),
-  ('Accesorios caballero', 'Accesorios para caballero',                        true),
-  ('Perfumería',           'Perfumes',                                         true);
+INSERT INTO categoria (nombre, descripcion, admite_devolucion, prefijo) VALUES
+  ('Perforaciones',        'Servicios de perforación (no manejan inventario)', false, NULL),
+  ('Piercing titanio',     'Joyería de titanio ASTM F-136',                    false, 'PTI'),
+  ('Piercing acero',       'Joyería de acero quirúrgico y de diseño',          false, 'PAC'),
+  ('Piercing bioflex',     'Joyería de bioflex',                               false, 'PBI'),
+  ('Cuidado posterior',    'NeilMed Piercing Aftercare y otros',               true,  'CUI'),
+  ('Joyería plata 925',    'Plata 925',                                        true,  'JPL'),
+  ('Joyería xuping',       'Xuping',                                           true,  'JXU'),
+  ('Joyería estilo Dubái', 'Estilo Dubái',                                     true,  'JDU'),
+  ('Accesorios dama',      'Accesorios para dama',                             true,  'ADA'),
+  ('Accesorios caballero', 'Accesorios para caballero',                        true,  'ACA'),
+  ('Perfumería',           'Perfumes',                                         true,  'PER');
 
 -- ---------------------------------------------------------------------
 -- Administrador inicial

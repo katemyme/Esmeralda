@@ -20,16 +20,26 @@ export interface TextoPdf {
   y: number;
 }
 
+/**
+ * Lo dibujado que no es texto (las líneas punteadas, los cuadros del QR, los bordes): de dónde a
+ * dónde va. Los rectángulos dicen también su alto (`arriba`/`abajo`, desde el borde de arriba).
+ */
+export interface TrazoPdf {
+  izquierda: number;
+  derecha: number;
+  arriba?: number;
+  abajo?: number;
+}
+
 export interface PaginaPdf {
   ancho: number;
   alto: number;
   textos: TextoPdf[];
-  /** Lo dibujado que no es texto (las líneas punteadas y los cuadros del QR): de dónde a dónde va. */
-  trazos: { izquierda: number; derecha: number }[];
+  trazos: TrazoPdf[];
 }
 
-/** El contenido de las páginas, sin comprimir (pdfkit lo guarda con Flate). */
-function contenido(pdf: Buffer): string {
+/** El contenido de cada página, sin comprimir (pdfkit lo guarda con Flate, un flujo por página). */
+function flujos(pdf: Buffer): string[] {
   const crudo = pdf.toString('latin1');
   const [abre, cierra] = ['stream\n', '\nendstream'];
   const partes: string[] = [];
@@ -40,7 +50,7 @@ function contenido(pdf: Buffer): string {
     partes.push(inflateSync(pdf.subarray(inicio + abre.length, fin)).toString('latin1'));
     desde = fin + cierra.length;
   }
-  return partes.join('\n');
+  return partes;
 }
 
 /** `F1` → `Helvetica`: el nombre con que la página llama a cada fuente y cuál es. */
@@ -62,6 +72,21 @@ function fuentes(crudo: string): Map<string, string> {
  * para que la prueba no pase por no haber leído nada.
  */
 export function leerPdf(pdf: Buffer): PaginaPdf {
+  return leerContenido(pdf, flujos(pdf).join('\n'));
+}
+
+/**
+ * Como `leerPdf`, una entrada por página (las etiquetas: una hoja carta tras otra, o una etiqueta
+ * por página). Todas las páginas deben medir lo mismo.
+ */
+export function leerPaginas(pdf: Buffer): PaginaPdf[] {
+  const crudo = pdf.toString('latin1');
+  const tamanos = new Set([...crudo.matchAll(/\/MediaBox \[[^\]]*\]/g)].map(([caja]) => caja));
+  if (tamanos.size !== 1) throw new Error('Las páginas del PDF no miden todas lo mismo');
+  return flujos(pdf).map((flujo) => leerContenido(pdf, flujo));
+}
+
+function leerContenido(pdf: Buffer, contenido: string): PaginaPdf {
   const crudo = pdf.toString('latin1');
   const caja = /\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/.exec(crudo);
   if (!caja) throw new Error('El PDF no trae el tamaño de su página');
@@ -80,11 +105,11 @@ export function leerPdf(pdf: Buffer): PaginaPdf {
   let y = 0;
   let fuente = '';
   let letra = 0;
-  for (const linea of contenido(pdf).split('\n')) {
+  for (const linea of contenido.split('\n')) {
     const posicion = /^1 0 0 1 (\S+) (\S+) Tm$/.exec(linea);
     const tipo = /^\/(F\d+) (\S+) Tf$/.exec(linea);
     const escrito = /^\[(.*)\] TJ$/.exec(linea);
-    const rectangulo = /^(\S+) \S+ (\S+) \S+ re$/.exec(linea);
+    const rectangulo = /^(\S+) (\S+) (\S+) (\S+) re$/.exec(linea);
     const punto = /^(\S+) \S+ [ml]$/.exec(linea);
     if (posicion) {
       x = Number(posicion[1]);
@@ -108,8 +133,11 @@ export function leerPdf(pdf: Buffer): PaginaPdf {
         y: (altoEnPuntos - y) * MM_POR_PUNTO,
       });
     } else if (rectangulo) {
-      const izquierda = Number(rectangulo[1]) * MM_POR_PUNTO;
-      pagina.trazos.push({ izquierda, derecha: izquierda + Number(rectangulo[2]) * MM_POR_PUNTO });
+      // pdfkit dibuja con el origen arriba a la izquierda (1 0 0 -1 0 alto cm al empezar la página)
+      const [izquierda, arriba, ancho, alto] = rectangulo
+        .slice(1)
+        .map((n) => Number(n) * MM_POR_PUNTO);
+      pagina.trazos.push({ izquierda, derecha: izquierda + ancho, arriba, abajo: arriba + alto });
     } else if (punto) {
       const donde = Number(punto[1]) * MM_POR_PUNTO;
       pagina.trazos.push({ izquierda: donde, derecha: donde });
@@ -129,7 +157,7 @@ export function loQueSeSale(
   { desde = 0, hasta = ANCHO_IMPRIMIBLE_MM }: { desde?: number; hasta?: number } = {},
 ): string[] {
   const holgura = 0.01; // redondeo de los números del PDF
-  const fuera = (algo: { izquierda: number; derecha: number }) =>
+  const fuera = (algo: TrazoPdf) =>
     algo.izquierda < desde - holgura || algo.derecha > hasta + holgura;
   const medidas = (algo: { izquierda: number; derecha: number }) =>
     `de ${algo.izquierda.toFixed(2)} a ${algo.derecha.toFixed(2)} mm`;

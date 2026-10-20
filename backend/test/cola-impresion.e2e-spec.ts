@@ -125,7 +125,7 @@ describe('Cola de impresión', () => {
     ximena.acceso = await tokenDeAcceso(app, 'ximena.cola', CLAVE);
 
     const categoria = await con('post', '/api/categorias', jefa.acceso)
-      .send({ nombre: 'Regalos COLA' })
+      .send({ nombre: 'Regalos COLA', prefijo: 'RCOL' })
       .expect(201);
     const producto = await con('post', '/api/productos', jefa.acceso)
       .send({

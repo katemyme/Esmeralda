@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { leerPlantilla, normalizar } from './plantilla';
+import { clavesDePieza, leerPlantilla, nombreDePieza, normalizar } from './plantilla';
 
 const RUTA_PLANTILLA = join(__dirname, '..', '..', '..', 'docs', 'plantilla-carga-inicial.xlsx');
 
@@ -9,6 +9,25 @@ describe('normalizar', () => {
   it('compara nombres sin importar mayúsculas, tildes ni espacios de más', () => {
     expect(normalizar('  ACERO   Clásica ')).toBe('acero clasica');
     expect(normalizar('Multicentro Las Américas')).toBe('multicentro las americas');
+  });
+});
+
+describe('nombreDePieza y clavesDePieza', () => {
+  it('una pieza sin código se nombra «Producto — Variante» (sin variante, «Única»)', () => {
+    expect(nombreDePieza('Barra', '10 mm')).toBe('Barra — 10 mm');
+    expect(nombreDePieza('Perfume', null)).toBe('Perfume — Única');
+  });
+
+  it('lo escrito se busca como código o como nombre, sin importar mayúsculas, tildes ni el guion', () => {
+    expect(clavesDePieza(' tit-lab-16-6 ')).toEqual({
+      codigo: 'codigo:TIT-LAB-16-6',
+      nombre: 'nombre:tit-lab-16-6',
+    });
+    const comoLoDaLaLista = clavesDePieza('Cadena Única — Plata · 45 cm').nombre;
+    expect(clavesDePieza('cadena unica - plata · 45 CM').nombre).toBe(comoLoDaLaLista);
+    expect(clavesDePieza('Cadena única – Plata · 45 cm').nombre).toBe(comoLoDaLaLista);
+    // un guion pegado (16-6) es parte del nombre, no la raya entre producto y variante
+    expect(clavesDePieza('Labret — 16-6').nombre).not.toBe(clavesDePieza('Labret — 16 — 6').nombre);
   });
 });
 
@@ -27,6 +46,20 @@ describe('leerPlantilla', () => {
       'Accesorios dama',
       'Accesorios caballero',
       'Perfumería',
+    ]);
+    // cada categoría con el prefijo de los códigos de sus piezas; las perforaciones no llevan
+    expect(plantilla.categorias.map((c) => c.datos.prefijo)).toEqual([
+      null,
+      'PTI',
+      'PAC',
+      'PBI',
+      'CUI',
+      'JPL',
+      'JXU',
+      'JDU',
+      'ADA',
+      'ACA',
+      'PER',
     ]);
     expect(plantilla.perforaciones).toEqual([
       {
@@ -66,14 +99,14 @@ describe('leerPlantilla', () => {
       {
         fila: 2,
         datos: {
-          sku: 'TIT-LAB-16-6',
+          pieza: 'TIT-LAB-16-6',
           cantidades: { 'Bodega central': 10, 'Las Américas': 20, 'Las Brisas': 10 },
         },
       },
     ]);
     expect(plantilla.preciosEspeciales[0].datos).toMatchObject({
       perforacion: 'HLX',
-      sku: 'TIT-LAB-16-8',
+      pieza: 'TIT-LAB-16-8',
       gama: '',
       precio: 900,
     });

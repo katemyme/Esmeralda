@@ -19,6 +19,8 @@ type Celda = string | number | null;
 export interface FilaCategoria {
   nombre: string;
   descripcion: Celda;
+  /** Prefijo de los códigos de sus piezas (columna C): obligatorio en una categoría nueva. */
+  prefijo: Celda;
 }
 
 export interface FilaPerforacion {
@@ -35,13 +37,15 @@ export interface FilaPerforacion {
 
 export interface FilaPrecioEspecial {
   perforacion: string;
-  sku: string;
+  /** La pieza: su código o, si no tiene, «Producto — Variante» (ver `claveDePieza`). */
+  pieza: string;
   gama: string;
   precio: Celda;
   motivo: string;
 }
 
 export interface FilaProducto {
+  /** El código: vacío, lo pone el sistema al crear la pieza. */
   sku: string;
   codigo_barras: Celda;
   categoria: string;
@@ -59,7 +63,8 @@ export interface FilaProducto {
 }
 
 export interface FilaInventario {
-  sku: string;
+  /** La pieza: su código o, si no tiene, «Producto — Variante» (ver `claveDePieza`). */
+  pieza: string;
   /** Cantidad por ubicación. Clave: el encabezado de la columna ("Bodega central", "Las Brisas"). */
   cantidades: Record<string, Celda>;
 }
@@ -148,6 +153,24 @@ export function normalizar(nombre: string): string {
   return nombre.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Cómo se nombra una pieza en InventarioInicial y en PreciosEspeciales: por su código o, si no
+ * tiene (se lo pone el sistema al crearla), como «Producto — Variante». La plantilla arma esa lista
+ * sola (columna P de Productos) para elegirla. Al comparar no importan las mayúsculas, las tildes ni
+ * si la raya se escribió como guion.
+ */
+export function nombreDePieza(producto: string, variante: string | null): string {
+  return `${producto} — ${variante || 'Única'}`;
+}
+
+/** Las dos claves con que se puede buscar lo escrito en una celda: como código y como nombre. */
+export function clavesDePieza(texto: string): { codigo: string; nombre: string } {
+  return {
+    codigo: `codigo:${texto.trim().toUpperCase()}`,
+    nombre: `nombre:${normalizar(texto.replace(/\s+[-–—]+\s+/g, ' — '))}`,
+  };
+}
+
 class Hoja {
   constructor(private readonly hoja: ExcelJS.Worksheet) {}
 
@@ -226,7 +249,11 @@ export async function leerPlantilla(contenido: Buffer): Promise<Plantilla> {
   return {
     categorias: categorias.filas([1]).map((fila) => ({
       fila,
-      datos: { nombre: texto(categorias.celda(fila, 1)), descripcion: categorias.celda(fila, 2) },
+      datos: {
+        nombre: texto(categorias.celda(fila, 1)),
+        descripcion: categorias.celda(fila, 2),
+        prefijo: categorias.celda(fila, 3),
+      },
     })),
     perforaciones: perforaciones.filas([1, 2, 3]).map((fila) => ({
       fila,
@@ -251,13 +278,13 @@ export async function leerPlantilla(contenido: Buffer): Promise<Plantilla> {
       fila,
       datos: {
         perforacion: texto(especiales.celda(fila, 1)),
-        sku: texto(especiales.celda(fila, 2)),
+        pieza: texto(especiales.celda(fila, 2)),
         gama: texto(especiales.celda(fila, 3)),
         precio: especiales.celda(fila, 4),
         motivo: texto(especiales.celda(fila, 5)),
       },
     })),
-    // (la columna N, "Margen", es una fórmula: no cuenta como dato escrito)
+    // (las columnas N, "Margen", y P, "Pieza", son fórmulas: no cuentan como dato escrito)
     productos: productos.filas([1, 2, 3, 4, 5, 10]).map((fila) => ({
       fila,
       datos: {
@@ -284,7 +311,7 @@ export async function leerPlantilla(contenido: Buffer): Promise<Plantilla> {
     inventario: inventario.filas([1]).map((fila) => ({
       fila,
       datos: {
-        sku: texto(inventario.celda(fila, 1)),
+        pieza: texto(inventario.celda(fila, 1)),
         cantidades: Object.fromEntries(
           columnasCantidad.map(([columna, encabezado]) => [
             encabezado,

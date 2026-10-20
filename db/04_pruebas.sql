@@ -834,9 +834,9 @@ SELECT set_config('app.usuario_id', :'admin', false);
 
 -- Categorías
 SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L)', :maria, 'Relojes'), 'PRODUCTOS_GESTIONAR');
-SELECT fn_guardar_categoria(:admin, NULL, '  Relojes ', ' Relojes de pulsera ') AS cat_rel \gset
+SELECT fn_guardar_categoria(:admin, NULL, '  Relojes ', ' Relojes de pulsera ', 'REL') AS cat_rel \gset
 SELECT pg_temp.afirma((SELECT nombre = 'Relojes' AND descripcion = 'Relojes de pulsera' AND activa FROM categoria WHERE id = :cat_rel), 'categoría nueva, con el texto limpio');
-SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L)', :admin, 'Relojes'), 'duplicate key');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Relojes', 'RLJ'), 'duplicate key');
 SELECT fn_guardar_categoria(:admin, :cat_rel, 'Relojes y pulseras', '');
 SELECT pg_temp.afirma((SELECT nombre = 'Relojes y pulseras' AND descripcion IS NULL FROM categoria WHERE id = :cat_rel), 'categoría editada (descripción vacía → sin descripción)');
 SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, 999999, %L)', :admin, 'Nada'), 'La categoría 999999 no existe');
@@ -1372,7 +1372,7 @@ SELECT pg_temp.afirma((SELECT count(*) = 7 AND bool_and(admite_devolucion) FROM 
                          WHERE nombre IN ('Cuidado posterior', 'Joyería plata 925', 'Joyería xuping', 'Joyería estilo Dubái',
                                           'Accesorios dama', 'Accesorios caballero', 'Perfumería')),
                       'datos iniciales: joyería, accesorios, perfumería y cuidado posterior sí la admiten');
-SELECT fn_guardar_categoria(:admin, NULL, 'Regalos DEV') AS cat_dev \gset
+SELECT fn_guardar_categoria(:admin, NULL, 'Regalos DEV', NULL, 'RDV') AS cat_dev \gset
 SELECT pg_temp.afirma((SELECT NOT admite_devolucion FROM categoria WHERE id = :cat_dev), 'una categoría nueva nace sin admitir devoluciones');
 SELECT pg_temp.espera_error(format('SELECT fn_set_categoria_devolucion(%s, %s, true)', :maria, :cat_dev), 'DEVOLUCIONES_APROBAR');
 -- administrar el catálogo no alcanza: la casilla es de quien aprueba las devoluciones
@@ -2286,5 +2286,82 @@ SELECT pg_temp.afirma((SELECT sum(ultimo_numero_venta) FROM sucursal) > 0
                                                            WHERE v.sucursal_id = s.id
                                                              AND v.numero = s.codigo || '-' || lpad(n::text, 8, '0')))),
                   'en cada sucursal las facturas van del 1 al último número, sin saltos (las anuladas conservan el suyo)');
+
+\echo '\n=== 30. CÓDIGOS DE LAS PIEZAS (F3b): PREFIJO DE LA CATEGORÍA Y UN CORRELATIVO QUE NO SE REPITE NI CAMBIA'
+SELECT set_config('app.usuario_id', :'admin', false);
+SELECT pg_temp.afirma((SELECT jsonb_object_agg(nombre, prefijo) FROM categoria
+                        WHERE nombre IN ('Perforaciones', 'Piercing titanio', 'Piercing acero', 'Piercing bioflex', 'Cuidado posterior',
+                                         'Joyería plata 925', 'Joyería xuping', 'Joyería estilo Dubái', 'Accesorios dama',
+                                         'Accesorios caballero', 'Perfumería'))
+                      = '{"Perforaciones": null, "Piercing titanio": "PTI", "Piercing acero": "PAC", "Piercing bioflex": "PBI",
+                          "Cuidado posterior": "CUI", "Joyería plata 925": "JPL", "Joyería xuping": "JXU",
+                          "Joyería estilo Dubái": "JDU", "Accesorios dama": "ADA", "Accesorios caballero": "ACA",
+                          "Perfumería": "PER"}'::jsonb,
+                      'datos iniciales: cada categoría con el prefijo que decidió el dueño; las perforaciones no llevan');
+SELECT pg_temp.afirma((SELECT bool_and(ultimo_codigo = 0) FROM categoria), 'ninguna categoría ha dado códigos todavía: las piezas de antes tienen el suyo, escrito a mano');
+
+-- Toda categoría nueva lleva prefijo: de 2 a 5 letras, sin repetir el de otra
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L)', :admin, 'Llaveros F3B'), 'Indique el prefijo');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Llaveros F3B', 'L1'), 'de 2 a 5 letras');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Llaveros F3B', 'paño'), 'de 2 a 5 letras');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Llaveros F3B', 'LLAVERO'), 'de 2 a 5 letras');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Llaveros F3B', ' pti '), 'El prefijo PTI ya lo usa la categoría "Piercing titanio"');
+SELECT fn_guardar_categoria(:admin, NULL, 'Llaveros F3B', NULL, ' llv ') AS cat_llv \gset
+SELECT pg_temp.afirma((SELECT prefijo = 'LLV' AND ultimo_codigo = 0 FROM categoria WHERE id = :cat_llv), 'el prefijo se guarda en mayúsculas y sin espacios');
+SELECT fn_guardar_categoria(:admin, :cat_llv, 'Llaveros F3B', 'Llaveros de regalo');
+SELECT pg_temp.afirma((SELECT prefijo = 'LLV' AND descripcion = 'Llaveros de regalo' FROM categoria WHERE id = :cat_llv), 'editar la categoría sin prefijo lo deja como estaba');
+SELECT fn_guardar_categoria(:admin, :cat_llv, 'Llaveros F3B', 'Llaveros de regalo', 'LLA');
+SELECT pg_temp.afirma((SELECT prefijo = 'LLA' FROM categoria WHERE id = :cat_llv), 'mientras la categoría no haya dado códigos, su prefijo se puede cambiar');
+
+-- Sin código, el sistema pone el siguiente de la categoría; uno escrito (el de fábrica) se respeta
+SELECT fn_guardar_producto(:admin, NULL, :cat_llv, 'Llavero corazón') AS prod_llv \gset
+SELECT fn_crear_variante(:admin, :prod_llv, NULL, 150, 'Rojo') AS llv1 \gset
+SELECT fn_crear_variante(:admin, :prod_llv, '  ', 150, 'Azul') AS llv2 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :llv1) = 'LLA-00001' AND (SELECT sku FROM variante WHERE id = :llv2) = 'LLA-00002'
+                  AND (SELECT ultimo_codigo FROM categoria WHERE id = :cat_llv) = 2,
+                      'sin código (o vacío), la pieza recibe el prefijo de su categoría y el siguiente correlativo de 5 dígitos');
+SELECT fn_crear_variante(:admin, :prod_llv, ' 7501234500017 ', 150, 'Verde') AS llv3 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :llv3) = '7501234500017' AND (SELECT ultimo_codigo FROM categoria WHERE id = :cat_llv) = 2,
+                      'un código escrito (el de fábrica) se respeta y no gasta número');
+-- Nunca choca con uno que ya existe: si el que toca ya lo tiene otra pieza (como código o como código de barras), se salta
+SELECT fn_crear_variante(:admin, :prod_llv, 'lla-00003', 150, 'Negro') AS llv4 \gset
+SELECT fn_crear_variante(:admin, :prod_llv, 'LLV-NEGRO-2', 150, 'Negro mate', 0, 'lla-00004') AS llv5 \gset
+SELECT fn_crear_variante(:admin, :prod_llv, NULL, 150, 'Blanco') AS llv6 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :llv6) = 'LLA-00005' AND (SELECT ultimo_codigo FROM categoria WHERE id = :cat_llv) = 5,
+                      'el correlativo se salta los códigos que ya existen, escritos a mano o como código de barras');
+-- Ya dio códigos: el prefijo no cambia ni queda libre para otra categoría
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, %s, %L, NULL, %L)', :admin, :cat_llv, 'Llaveros F3B', 'LLX'), 'ya dio códigos con el prefijo LLA');
+SELECT pg_temp.espera_error(format('SELECT fn_guardar_categoria(%s, NULL, %L, NULL, %L)', :admin, 'Otra F3B', 'LLA'), 'ya lo usa la categoría "Llaveros F3B"');
+SELECT fn_guardar_categoria(:admin, :cat_llv, 'Llaveros F3B', 'Llaveros de regalo', 'lla');
+SELECT pg_temp.afirma((SELECT prefijo = 'LLA' FROM categoria WHERE id = :cat_llv), 'volver a escribir el mismo prefijo no es cambiarlo');
+-- Una creación que falla no gasta número (no deja saltos), y una pieza desactivada no devuelve el suyo
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, NULL, 150, %L, 0, %L)', :admin, :prod_llv, 'Gris', 'lla-00004'), 'duplicate key');
+SELECT pg_temp.afirma((SELECT ultimo_codigo FROM categoria WHERE id = :cat_llv) = 5, 'si la pieza no se pudo crear, el número no se gastó');
+SELECT fn_set_variante_activa(:admin, :llv6, false);
+SELECT fn_crear_variante(:admin, :prod_llv, NULL, 150, 'Gris') AS llv7 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :llv7) = 'LLA-00006', 'el código de una pieza desactivada no se vuelve a dar');
+-- El correlativo es de cada categoría
+SELECT id AS cat_tit FROM categoria WHERE nombre = 'Piercing titanio' \gset
+SELECT fn_guardar_producto(:admin, NULL, :cat_tit, 'Labret F3B') AS prod_tit \gset
+SELECT fn_crear_variante(:admin, :prod_tit, NULL, 700, 'Titanio · 16G · 6 mm', 0, NULL, (SELECT id FROM gama WHERE nombre = 'Titanio')) AS tit1 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :tit1) = 'PTI-00001', 'cada categoría lleva su propio correlativo: la primera pieza de titanio es PTI-00001');
+SELECT pg_temp.afirma((SELECT count(*) = 1 AND bool_and(variante_id = :tit1) FROM fn_buscar_variantes('pti-00001', :bod)),
+                      'la venta encuentra la pieza por su código (el QR de la etiqueta), también en minúsculas');
+-- Sin prefijo no hay código automático (la categoría de perforaciones, o una de antes sin prefijo)
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, fn_guardar_producto(%s, NULL, %s, %L), NULL, 100)', :admin, :admin, :cat_perf, 'Pieza F3B'),
+                            'no tiene prefijo para los códigos');
+-- El último código posible es el 99999
+UPDATE categoria SET ultimo_codigo = 99998 WHERE id = :cat_llv;
+SELECT fn_crear_variante(:admin, :prod_llv, NULL, 150, 'Lila') AS llv8 \gset
+SELECT pg_temp.afirma((SELECT sku FROM variante WHERE id = :llv8) = 'LLA-99999', 'el correlativo llega hasta 99999');
+SELECT pg_temp.espera_error(format('SELECT fn_crear_variante(%s, %s, NULL, 150, %L)', :admin, :prod_llv, 'Café'), 'ya usó todos sus códigos');
+
+-- El código no cambia nunca: va impreso en las etiquetas
+SELECT pg_temp.espera_error(format('SELECT fn_actualizar_variante(%s, %s, %L, %L)', :admin, :llv1, 'LLA-00099', 'Rojo'), 'El código de una pieza no cambia (LLA-00001)');
+SELECT fn_actualizar_variante(:admin, :llv1, NULL, 'Rojo vivo');
+SELECT fn_actualizar_variante(:admin, :llv1, ' lla-00001 ', 'Rojo vivo');
+SELECT pg_temp.afirma((SELECT sku = 'LLA-00001' AND nombre = 'Rojo vivo' FROM variante WHERE id = :llv1),
+                      'editar la pieza sin código, o con el mismo, deja el código como estaba');
+SELECT pg_temp.espera_error(format('UPDATE variante SET sku = %L WHERE id = %s', 'TIT-LAB-NUEVO', :lab6), 'no cambia (TIT-LAB-16-6)');
 
 \echo '\n*** TODAS LAS PRUEBAS PASARON ***'

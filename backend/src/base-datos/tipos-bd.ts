@@ -86,6 +86,8 @@ export interface Categoria {
   descripcion: string | null;
   id: Generated<number>;
   nombre: string;
+  prefijo: string | null;
+  ultimo_codigo: Generated<number>;
 }
 
 export interface CierreCajaDetalle {

@@ -39,8 +39,9 @@ async function plantilla(...cambios: Llenar[]): Promise<Buffer> {
 
 /** Lo que llenaría el dueño: una categoría, dos perforaciones, tres piezas, inventario, etc. */
 const datosValidos: Llenar = (hoja) => {
-  escribir(hoja('Categorias'), 13, ['Barras CI', 'Piezas de la carga de prueba']);
-  escribir(hoja('Categorias'), 14, ['Relojes CI']);
+  //                               categoría     descripción                     prefijo
+  escribir(hoja('Categorias'), 13, ['Barras CI', 'Piezas de la carga de prueba', ' bci ']);
+  escribir(hoja('Categorias'), 14, ['Relojes CI', null, 'RCI']);
 
   //                              código  nombre           servicio piezas clásica lujo  titanio
   escribir(hoja('Perforaciones'), 3, ['cix', 'Industrial CI', 400, 1, 'Sí', 'Sí', 'No']);
@@ -49,6 +50,8 @@ const datosValidos: Llenar = (hoja) => {
   escribir(hoja('PreciosPaquete'), 3, [undefined, undefined, undefined, 520, 620]);
   escribir(hoja('PreciosPaquete'), 4, [undefined, undefined, undefined, 500]);
   escribir(hoja('PreciosEspeciales'), 3, ['CIY', 'CI-TIT-01', null, 950, 'Lanzamiento']);
+  // una pieza sin código se elige por «Producto — Variante» (como la ofrece la columna P)
+  escribir(hoja('PreciosEspeciales'), 4, ['CIY', 'Barra CI — 10 mm', null, 990, 'Por nombre']);
 
   const productos = hoja('Productos');
   //                     SKU          barras           categoría    producto    variante          material   cal.   mm gama       precio costo mínLAM mínLBR
@@ -92,10 +95,25 @@ const datosValidos: Llenar = (hoja) => {
     1500,
     600,
   ]);
+  // Sin código: el sistema le pone el siguiente de su categoría (BCI-00001)
+  escribir(productos, 9, [
+    null,
+    null,
+    'Barras CI',
+    'Barra CI',
+    '10 mm',
+    'Titanio',
+    '16G',
+    10,
+    'Titanio',
+    740,
+  ]);
 
-  //                                  SKU          (fórmula)  bodega LAM LBR
+  //                                  pieza        (fórmula)  bodega LAM LBR
   escribir(hoja('InventarioInicial'), 3, ['CI-TIT-01', undefined, 10, 6, 4]);
   escribir(hoja('InventarioInicial'), 4, ['CI-REL-01', undefined, 3, 0, 0]);
+  // escrita a mano, con guion y en minúsculas: también vale
+  escribir(hoja('InventarioInicial'), 6, ['barra ci - 10 MM', undefined, 2, 1, 0]);
 
   escribir(hoja('Proveedores'), 3, [
     'Proveedor CI',
@@ -165,9 +183,24 @@ const datosConErrores: Llenar = (hoja) => {
     null,
     100,
   ]);
+  // la misma pieza sin código dos veces (la de la fila 9)
+  escribir(productos, 10, [
+    null,
+    null,
+    'Barras CI',
+    'Barra CI',
+    '10 mm',
+    null,
+    null,
+    null,
+    'Titanio',
+    750,
+  ]);
   escribir(hoja('InventarioInicial'), 5, ['NO-EXISTE-CI', undefined, 1, 0, 0]);
   escribir(hoja('Usuarios'), 5, ['Pepe Grillo', 'Pepe Grillo', 'Gerente', 'Las Brisas']);
   escribir(hoja('Promociones'), 4, ['Imposible CI', 'PORCENTAJE', 150]);
+  // una categoría nueva sin el prefijo de sus códigos
+  escribir(hoja('Categorias'), 15, ['Sin prefijo CI']);
 };
 
 /** La plantilla válida con otro precio (columna J) y otro costo (K) para la barra CI-TIT-01 (fila 3). */
@@ -259,12 +292,13 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         categorias: 2,
         perforaciones: 2,
         precios_paquete: 3,
-        precios_especiales: 1,
+        precios_especiales: 2,
         productos: 2,
-        variantes: 3,
+        variantes: 4,
+        codigos_asignados: 1, // la barra de 10 mm vino sin código
         precios_actualizados: 0,
         precios_servicio_actualizados: 0,
-        piezas_en_inventario: 23,
+        piezas_en_inventario: 26,
         envios: 2, // uno a cada sucursal
         proveedores: 1,
         usuarios: 2,
@@ -288,7 +322,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       'Falta el precio de CIY con Acero de lujo: ese paquete no se podrá vender hasta fijarlo',
     );
     expect(resultado.avisos.find((a) => a.hoja === 'InventarioInicial')?.mensaje).toBe(
-      'El SKU TIT-LAB-16-6 es la fila de ejemplo de Productos: su inventario no se cargó',
+      'El código TIT-LAB-16-6 es la fila de ejemplo de Productos: su inventario no se cargó',
     );
 
     expect(await productosCI()).toEqual([]);
@@ -303,32 +337,42 @@ describe('Carga inicial desde la plantilla de Excel', () => {
     const { body } = await cargar(conErrores, '?aplicar=true').expect(422);
     expect(body).toMatchObject({
       codigo: 'CARGA_CON_ERRORES',
-      mensaje: 'La plantilla tiene 6 errores: no se guardó nada. Corríjala y vuelva a cargarla.',
+      mensaje: 'La plantilla tiene 8 errores: no se guardó nada. Corríjala y vuelva a cargarla.',
       aplicada: false,
       simulacion: false,
       usuarios: [],
     });
     expect((body as ResultadoCarga).errores).toEqual([
       {
+        hoja: 'Categorias',
+        fila: 15,
+        mensaje: 'Indique el prefijo de los códigos de la categoría (p. ej. PTI)',
+      },
+      {
         hoja: 'InventarioInicial',
         fila: 5,
-        mensaje: 'El SKU "NO-EXISTE-CI" no está en la hoja Productos de este archivo',
+        mensaje: 'La pieza "NO-EXISTE-CI" no está en la hoja Productos de este archivo',
       },
       {
         hoja: 'Productos',
         fila: 6,
         mensaje:
-          'El SKU debe tener de 1 a 40 caracteres, sin espacios. El precio debe ser un monto de 0 en adelante, con 2 decimales como máximo',
+          'El código debe tener hasta 40 caracteres, sin espacios. El precio debe ser un monto de 0 en adelante, con 2 decimales como máximo',
       },
       {
         hoja: 'Productos',
         fila: 7,
-        mensaje: 'El SKU CI-TIT-01 está repetido en la plantilla',
+        mensaje: 'El código CI-TIT-01 está repetido en la plantilla',
       },
       {
         hoja: 'Productos',
         fila: 8,
         mensaje: 'No existe la categoría "No existe CI" (agréguela en la hoja Categorias)',
+      },
+      {
+        hoja: 'Productos',
+        fila: 10,
+        mensaje: 'La pieza "Barra CI — 10 mm" está repetida en la plantilla',
       },
       { hoja: 'Promociones', fila: 4, mensaje: 'Un porcentaje no puede pasar de 100' },
       { hoja: 'Usuarios', fila: 5, mensaje: 'No existe el rol "Gerente"' },
@@ -350,7 +394,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       expect(resultado).toMatchObject({
         aplicada: true,
         simulacion: false,
-        resumen: { productos: 2, variantes: 3, usuarios: 2, piezas_en_inventario: 23, envios: 2 },
+        resumen: { productos: 2, variantes: 4, usuarios: 2, piezas_en_inventario: 26, envios: 2 },
         errores: [],
       });
       expect(resultado.usuarios).toEqual([
@@ -370,7 +414,7 @@ describe('Carga inicial desde la plantilla de Excel', () => {
     it('productos y variantes quedan como en la plantilla', async () => {
       const productos = await productosCI();
       expect(productos.map((p) => [p.nombre, p.categoria.nombre, p.variantes.length])).toEqual([
-        ['Barra CI', 'Barras CI', 2],
+        ['Barra CI', 'Barras CI', 3],
         ['Reloj CI', 'Relojes CI', 1],
       ]);
       barra = productos[0];
@@ -388,6 +432,21 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         precio_venta: '720.50',
         costo: '0.00',
       });
+      // la que vino sin código recibió el primero de su categoría, con el prefijo de la plantilla
+      expect(barra.variantes.find((v) => v.nombre === '10 mm')).toMatchObject({
+        sku: 'BCI-00001',
+        precio_venta: '740.00',
+        gama: { nombre: 'Titanio' },
+      });
+      const categorias = (await comoJefa('/api/categorias').expect(200)).body.categorias as {
+        nombre: string;
+        prefijo: string | null;
+        ultimo_codigo: number;
+      }[];
+      expect(categorias.filter((c) => c.nombre.endsWith(' CI'))).toEqual([
+        expect.objectContaining({ nombre: 'Barras CI', prefijo: 'BCI', ultimo_codigo: 1 }),
+        expect.objectContaining({ nombre: 'Relojes CI', prefijo: 'RCI', ultimo_codigo: 0 }),
+      ]);
       expect(productos[1].variantes[0]).toMatchObject({
         nombre: 'Única',
         gama: null,
@@ -419,13 +478,21 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       expect(precio(daith, 'Acero clásica')).toBe('500.00');
       expect(precio(daith, 'Acero de lujo')).toBeNull();
       expect(daith?.piezas_permitidas).toEqual([]); // acepta cualquier pieza con gama
-      expect(daith?.precios_especiales).toEqual([
-        expect.objectContaining({
-          variante: expect.objectContaining({ sku: 'CI-TIT-01' }),
-          precio: '950.00',
-          motivo: 'Lanzamiento',
-        }),
-      ]);
+      expect(daith?.precios_especiales).toHaveLength(2);
+      expect(daith?.precios_especiales).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            variante: expect.objectContaining({ sku: 'CI-TIT-01' }),
+            precio: '950.00',
+            motivo: 'Lanzamiento',
+          }),
+          // elegida por su nombre: la pieza sin código de la hoja Productos
+          expect.objectContaining({
+            variante: expect.objectContaining({ sku: 'BCI-00001' }),
+            precio: '990.00',
+          }),
+        ]),
+      );
     });
 
     it('el inventario entra por la bodega y llega a cada sucursal con un envío ya recibido', async () => {
@@ -435,6 +502,15 @@ describe('Carga inicial desde la plantilla de Excel', () => {
         (body.existencias as ExistenciaUbicacion[]).find((e) => e.sucursal_id === sucursal)
           ?.cantidad;
       expect([cantidad(ids.bod), cantidad(ids.lam), cantidad(ids.lbr)]).toEqual([10, 6, 4]);
+      // la pieza sin código, elegida en InventarioInicial por su nombre
+      const sinCodigo = barra?.variantes.find((v) => v.sku === 'BCI-00001');
+      const { body: suyas } = await comoJefa(`/api/variantes/${sinCodigo?.id}/existencias`).expect(
+        200,
+      );
+      const deLaBarra = (sucursal: number) =>
+        (suyas.existencias as ExistenciaUbicacion[]).find((e) => e.sucursal_id === sucursal)
+          ?.cantidad;
+      expect([deLaBarra(ids.bod), deLaBarra(ids.lam), deLaBarra(ids.lbr)]).toEqual([2, 1, 0]);
 
       const enLam = await comoJefa(
         `/api/inventario/existencias?sucursal_id=${ids.lam}&buscar=CI-TIT-01`,
@@ -516,9 +592,10 @@ describe('Carga inicial desde la plantilla de Excel', () => {
           proveedores: 0,
           usuarios: 0,
           promociones: 0,
+          codigos_asignados: 0,
           // los precios sí quedan como diga el archivo
           precios_paquete: 3,
-          precios_especiales: 1,
+          precios_especiales: 2,
           precios_actualizados: 0, // los de los productos no cambiaron
           precios_servicio_actualizados: 0, // ni los de solo servicio
         },
@@ -528,8 +605,11 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       expect(repetida.avisos.map((a) => a.mensaje)).toEqual(
         expect.arrayContaining([
           'La perforación CIX ya existe: no se modificó',
-          'El SKU CI-TIT-01 ya existe: no se modificó',
-          'El SKU CI-TIT-01 ya existía en el sistema: su inventario no se cargó',
+          'El código CI-TIT-01 ya existe: no se modificó',
+          'El código CI-TIT-01 ya existía en el sistema: su inventario no se cargó',
+          // la que vino sin código se reconoce por su categoría, su producto y su variante
+          'La pieza "Barra CI — 10 mm" (BCI-00001) ya existe: no se modificó',
+          'La pieza "Barra CI — 10 mm" (BCI-00001) ya existía en el sistema: su inventario no se cargó',
           'El proveedor "Proveedor CI" ya existe: no se modificó',
           'El usuario carla.ci ya existe: no se modificó',
           'La promoción "Promo CI" ya existe: no se modificó',
@@ -574,9 +654,10 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       });
       expect(aplicada.avisos.filter((a) => a.hoja === 'Productos').map((a) => a.mensaje)).toEqual([
         'Fila de ejemplo de la plantilla: se omitió',
-        'El SKU CI-TIT-01 ya existe: se actualizó su precio de C$ 700.00 a C$ 750.00 (lo demás no se modificó)',
-        'El SKU CI-TIT-02 ya existe: no se modificó',
-        'El SKU CI-REL-01 ya existe: no se modificó',
+        'El código CI-TIT-01 ya existe: se actualizó su precio de C$ 700.00 a C$ 750.00 (lo demás no se modificó)',
+        'El código CI-TIT-02 ya existe: no se modificó',
+        'El código CI-REL-01 ya existe: no se modificó',
+        'La pieza "Barra CI — 10 mm" (BCI-00001) ya existe: no se modificó',
       ]);
 
       // cambió solo el precio: el costo de la plantilla (999) no se aplica y el inventario no se repite
@@ -680,8 +761,26 @@ describe('Carga inicial desde la plantilla de Excel', () => {
       );
       const { body } = await cargar(repetido).expect(200);
       expect((body as ResultadoCarga).errores).toEqual([
-        { hoja: 'Productos', fila: 6, mensaje: 'El SKU CI-TIT-01 está repetido en la plantilla' },
+        {
+          hoja: 'Productos',
+          fila: 6,
+          mensaje: 'El código CI-TIT-01 está repetido en la plantilla',
+        },
       ]);
+    });
+
+    it('a una categoría que ya existe no se le cambia el prefijo: se avisa', async () => {
+      const otroPrefijo = await plantilla(datosValidos, (hoja) =>
+        escribir(hoja('Categorias'), 13, [undefined, undefined, 'BCX']),
+      );
+      const { body } = await cargar(otroPrefijo).expect(200);
+      const resultado = body as ResultadoCarga;
+      expect(resultado.errores).toEqual([]);
+      expect(resultado.avisos).toContainEqual({
+        hoja: 'Categorias',
+        fila: 13,
+        mensaje: 'La categoría "Barras CI" ya existe con el prefijo BCI: no se cambió',
+      });
     });
 
     it('cambiar un precio con la carga pide PRECIOS_EDITAR, igual que en el catálogo', async () => {

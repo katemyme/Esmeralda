@@ -180,7 +180,7 @@ describe('Reportes', () => {
       (g) => g.nombre === 'Titanio',
     );
     const categoria = await enviar(jefa.acceso, 'post', '/api/categorias')
-      .send({ nombre: 'Joyas RPT' })
+      .send({ nombre: 'Joyas RPT', prefijo: 'JRPT' })
       .expect(201);
     const producto = await enviar(jefa.acceso, 'post', '/api/productos')
       .send({
@@ -888,7 +888,7 @@ describe('Reportes', () => {
       const a = await proveedor('Proveedor A RPT', 'USD');
       const b = await proveedor('Proveedor B RPT', 'NIO');
       const categoria = await enviar(jefa.acceso, 'post', '/api/categorias')
-        .send({ nombre: 'Compras RPT' })
+        .send({ nombre: 'Compras RPT', prefijo: 'CRPT' })
         .expect(201);
       const producto = await enviar(jefa.acceso, 'post', '/api/productos')
         .send({
